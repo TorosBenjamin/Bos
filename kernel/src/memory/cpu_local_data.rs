@@ -1,19 +1,19 @@
-use core::default::Default;
+use crate::gdt::Gdt;
+use crate::limine_requests::MP_REQUEST;
+use crate::task::local_scheduler::RunQueue;
 use alloc::boxed::Box;
+use core::default::Default;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU64};
+use core::sync::atomic::AtomicU64;
 use force_send_sync::SendSync;
 use limine::mp::Cpu;
 use limine::response::MpResponse;
 use spin::{Lazy, Mutex, Once};
 use x2apic::lapic::LocalApic;
+use x86_64::VirtAddr;
 use x86_64::registers::model_specific::GsBase;
 use x86_64::structures::idt::InterruptDescriptorTable;
 use x86_64::structures::tss::TaskStateSegment;
-use x86_64::VirtAddr;
-use crate::gdt::Gdt;
-use crate::limine_requests::MP_REQUEST;
-use crate::task::local_scheduler::RunQueue;
 
 pub struct CpuLocalData {
     pub kernel_id: u32,
@@ -36,7 +36,9 @@ static CPU_LOCAL_DATA: Lazy<Box<[Once<CpuLocalData>]>> =
     Lazy::new(|| mp_response().cpus().iter().map(|_| Once::new()).collect());
 
 fn write_gs_base(ptr: &'static CpuLocalData) {
-    unsafe { GsBase::write(VirtAddr::from_ptr(ptr)); }
+    unsafe {
+        GsBase::write(VirtAddr::from_ptr(ptr));
+    }
 }
 
 /// Initializes the item in 'CPU_LOCAL_DATA' and GS.Base
@@ -52,7 +54,7 @@ fn init_cpu(kernel_id: u32, local_apic_id: u32) {
             syscall_handler_scratch: Default::default(),
             syscall_handler_stack_pointer: Default::default(),
             run_queue: Once::new(),
-        })
+        }),
     )
 }
 
@@ -88,7 +90,7 @@ pub unsafe fn init_bsp() {
 
 pub unsafe fn init_ap(cpu: &Cpu) {
     let local_apic_id = cpu.lapic_id;
-    init_cpu (
+    init_cpu(
         // Get the position within the array (0 is BSP)
         mp_response()
             .cpus()
@@ -96,7 +98,7 @@ pub unsafe fn init_ap(cpu: &Cpu) {
             .filter(|cpu| cpu.lapic_id != mp_response().bsp_lapic_id())
             .position(|cpu| cpu.lapic_id == local_apic_id)
             .expect("CPUs array should contain this AP") as u32
-            +1,
+            + 1,
         local_apic_id,
     )
 }

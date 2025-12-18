@@ -1,18 +1,18 @@
 use alloc::string::String;
 use core::fmt::Display;
-use log::{Level, LevelFilter, Log};
-use uart_16550::SerialPort;
 use core::fmt::Write;
 use embedded_graphics::geometry::Point;
 use embedded_graphics::pixelcolor::{Rgb888, RgbColor};
-use owo_colors::OwoColorize;
-use unicode_segmentation::UnicodeSegmentation;
 use kernel::graphics::DisplayData;
 use kernel::graphics::writer::Writer;
+use log::{Level, LevelFilter, Log};
+use owo_colors::OwoColorize;
+use uart_16550::SerialPort;
+use unicode_segmentation::UnicodeSegmentation;
 
 struct Inner {
     serial_port: SerialPort,
-    display: Option<DisplayData>
+    display: Option<DisplayData>,
 }
 
 impl Inner {
@@ -63,9 +63,9 @@ struct KernelLogger {
 
 static LOGGER: KernelLogger = KernelLogger {
     inner: spin::Mutex::new(Inner {
-        serial_port: unsafe {SerialPort::new(0x3f8)},
+        serial_port: unsafe { SerialPort::new(0x3f8) },
         display: None,
-    })
+    }),
 };
 
 impl Log for KernelLogger {
@@ -86,8 +86,8 @@ impl Log for KernelLogger {
             },
             format_args!("{level:5} "),
         );
-        let cpu_id = kernel::memory::cpu_local_data::try_get_local()
-            .map_or(0, |data| data.kernel_id);
+        let cpu_id =
+            kernel::memory::cpu_local_data::try_get_local().map_or(0, |data| data.kernel_id);
         let width = match kernel::memory::cpu_local_data::cpus_count() {
             1 => 1,
             n => (n - 1).ilog(16) as usize + 1,
@@ -96,7 +96,6 @@ impl Log for KernelLogger {
         inner.write_with_color(Color::Default, record.args());
         inner.write_with_color(Color::Default, "\n");
     }
-
 
     fn flush(&self) {
         todo!()
@@ -112,7 +111,6 @@ pub fn init() -> Result<(), log::SetLoggerError> {
     log::set_max_level(LevelFilter::max());
     log::set_logger(&LOGGER)
 }
-
 
 struct WriterWithCr<T> {
     writer: T,

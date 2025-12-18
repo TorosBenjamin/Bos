@@ -1,9 +1,9 @@
+use crate::memory::cpu_local_data::{CpuLocalData, get_local};
+use crate::task::task::{Task, TaskId, TaskState};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 use spin::Mutex;
-use crate::memory::cpu_local_data::{get_local, CpuLocalData};
-use crate::task::task::{Task, TaskId, TaskState};
 
 pub static TASK_TABLE: Mutex<BTreeMap<TaskId, Arc<Task>>> = Mutex::new(BTreeMap::new());
 

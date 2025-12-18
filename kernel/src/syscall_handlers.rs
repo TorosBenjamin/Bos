@@ -1,16 +1,15 @@
-use embedded_graphics::geometry::Point;
+use crate::graphics::display::DISPLAY;
 use embedded_graphics::Pixel;
+use embedded_graphics::geometry::Point;
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::primitives::Rectangle;
-use owo_colors::OwoColorize;
 use kernel_api_types::graphics::{GraphicsResult, PixelData, Rect, Rgb888Raw};
-use crate::graphics::display::DISPLAY;
+use owo_colors::OwoColorize;
 
 /// Syscall: draw multiple pixels from user-space
 pub fn sys_draw_iter(pixels_ptr: u64, len: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
-    let pixels: &[PixelData] = unsafe {
-        core::slice::from_raw_parts(pixels_ptr as *const PixelData, len as usize)
-    };
+    let pixels: &[PixelData] =
+        unsafe { core::slice::from_raw_parts(pixels_ptr as *const PixelData, len as usize) };
 
     let pixels_iter = pixels.iter().map(|p| {
         let color = raw_to_rgb888(p.rgb_raw);
@@ -27,7 +26,6 @@ pub fn sys_draw_iter(pixels_ptr: u64, len: u64, _: u64, _: u64, _: u64, _: u64) 
 
 /// Syscall: fill a solid rectangle
 pub fn sys_fill_solid(rect_ptr: u64, rgb_raw: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
-
     // SAFETY: rect_ptr comes from userspace, must be validated in real kernel
     // TODO: Pointer validation
     let rect = unsafe { &*(rect_ptr as *const Rect) };

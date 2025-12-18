@@ -1,14 +1,14 @@
+use crate::memory::cpu_local_data::{CpuLocalData, get_local};
+use crate::memory::guarded_stack::{GuardedStack, StackId, StackType};
+use crate::syscall_handlers::{sys_draw_iter, sys_fill_solid, sys_get_bounding_box};
 use core::arch::{asm, naked_asm};
 use core::mem::offset_of;
 use core::sync::atomic::Ordering;
+use kernel_api_types::SysCallNumber;
+use kernel_api_types::graphics::{GraphicsResult, PixelData, Rect};
+use x86_64::VirtAddr;
 use x86_64::registers::control::{Efer, EferFlags};
 use x86_64::registers::model_specific::LStar;
-use x86_64::VirtAddr;
-use crate::memory::cpu_local_data::{get_local, CpuLocalData};
-use crate::memory::guarded_stack::{GuardedStack, StackId, StackType};
-use kernel_api_types::graphics::{GraphicsResult, PixelData, Rect};
-use kernel_api_types::SysCallNumber;
-use crate::syscall_handlers::{sys_draw_iter, sys_fill_solid, sys_get_bounding_box};
 
 #[unsafe(naked)]
 unsafe extern "sysv64" fn raw_syscall_handler() -> ! {
@@ -53,10 +53,10 @@ unsafe extern "sysv64" fn syscall_handler(
     input6: u64,
     rflags: u64,
     return_instruction_pointer: u64,
-    return_stack_pointer: u64,) -> ! {
-
+    return_stack_pointer: u64,
+) -> ! {
     let inputs = [input1, input2, input3, input4, input5, input6];
-    let ret = unsafe { dispatch_syscall(input0, &inputs)};
+    let ret = unsafe { dispatch_syscall(input0, &inputs) };
 
     // Output
     unsafe {
@@ -85,7 +85,7 @@ unsafe extern "sysv64" fn syscall_handler(
 type SyscallFn = fn(u64, u64, u64, u64, u64, u64) -> u64;
 static mut SYS_CALL_TABLE: [Option<SyscallFn>; 256] = [None; 256];
 
-unsafe fn dispatch_syscall(syscall_number: u64, args: &[u64;6]) -> u64 {
+unsafe fn dispatch_syscall(syscall_number: u64, args: &[u64; 6]) -> u64 {
     if let Some(f) = SYS_CALL_TABLE[syscall_number as usize] {
         f(args[0], args[1], args[2], args[3], args[4], args[5])
     } else {
@@ -101,7 +101,6 @@ pub fn init() {
             _type: StackType::SyscallHandler,
             cpu_id: local.kernel_id,
         },
-
     );
     local
         .syscall_handler_stack_pointer

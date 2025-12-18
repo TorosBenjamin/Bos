@@ -1,10 +1,10 @@
+use crate::memory::guarded_stack::GuardedStack;
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU64, Ordering};
 use atomic_enum::atomic_enum;
+use core::sync::atomic::{AtomicU64, Ordering};
 use ez_paging::ManagedL4PageTable;
 use spin::Mutex;
 use x86_64::VirtAddr;
-use crate::memory::guarded_stack::GuardedStack;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskId(u64);
@@ -58,11 +58,13 @@ pub struct Task {
     pub user_stack: GuardedStack,
 
     // Memory
-    pub address_space: Arc<ManagedL4PageTable>
+    pub address_space: Arc<ManagedL4PageTable>,
 }
 
 impl Task {
     pub fn new(func: TaskFn, kernel_stack: GuardedStack) -> Arc<Self> {
+        todo!();
+        /*
         let rsp = kernel_stack.top().as_u64();
         let context = CpuContext {
             r15: 0,
@@ -74,8 +76,8 @@ impl Task {
             rip: func as u64,     // start executing the function
             rsp,                  // top of kernel stack
             rflags: 0x202,        // interrupt enable
-            cs: KERNEL_CS,
-            ss: KERNEL_SS,
+            cs: ,
+            ss: ,
         };
 
         Arc::new(Task {
@@ -85,5 +87,6 @@ impl Task {
             kernel_stack,
             user_stack: GuardedStack::new_kernel()
         })
+        */
     }
 }

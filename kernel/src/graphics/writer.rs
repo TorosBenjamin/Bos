@@ -1,16 +1,16 @@
+use crate::graphics::display::{DISPLAY, DisplayDraw};
+use crate::graphics::frame_buffer_embedded_graphics::FrameBufferEmbeddedGraphics;
 use core::fmt::{Display, Write};
-use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::Drawable;
+use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::geometry::{Dimensions, Point, Size};
-use embedded_graphics::mono_font::ascii::FONT_10X20;
 use embedded_graphics::mono_font::MonoTextStyleBuilder;
+use embedded_graphics::mono_font::ascii::FONT_10X20;
 use embedded_graphics::pixelcolor::{Rgb888, RgbColor};
 use embedded_graphics::prelude::Primitive;
 use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
 use embedded_graphics::text::{Baseline, Text};
 use unicode_segmentation::UnicodeSegmentation;
-use crate::graphics::display::{DisplayDraw, DISPLAY};
-use crate::graphics::frame_buffer_embedded_graphics::FrameBufferEmbeddedGraphics;
 
 pub struct Writer<'a> {
     pub position: &'a mut Point,
@@ -39,18 +39,17 @@ impl Write for Writer<'_> {
                     Rectangle::new(
                         *self.position,
                         Size::new(
-                            DISPLAY.bounding_box().size.width
-                                - self.position.x as u32,
+                            DISPLAY.bounding_box().size.width - self.position.x as u32,
                             font.character_size.height,
                         ),
                     )
-                        .into_styled(
-                            PrimitiveStyleBuilder::new()
-                                .fill_color(background_color)
-                                .build(),
-                        )
-                        .draw(&mut display_draw)
-                        .map_err(|_| core::fmt::Error)?;
+                    .into_styled(
+                        PrimitiveStyleBuilder::new()
+                            .fill_color(background_color)
+                            .build(),
+                    )
+                    .draw(&mut display_draw)
+                    .map_err(|_| core::fmt::Error)?;
                     self.position.y += font.character_size.height as i32;
                     self.position.x = 0;
                 }
@@ -60,10 +59,9 @@ impl Write for Writer<'_> {
                         .text_color(self.text_color)
                         .background_color(background_color)
                         .build();
-                    *self.position =
-                        Text::with_baseline(c, *self.position, style, Baseline::Top)
-                            .draw(&mut display_draw)
-                            .map_err(|_| core::fmt::Error)?;
+                    *self.position = Text::with_baseline(c, *self.position, style, Baseline::Top)
+                        .draw(&mut display_draw)
+                        .map_err(|_| core::fmt::Error)?;
                     if self.position.x as u32 + font.character_size.width
                         > DISPLAY.bounding_box().size.width
                     {

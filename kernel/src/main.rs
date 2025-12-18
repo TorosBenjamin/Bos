@@ -1,17 +1,17 @@
 #![no_std]
 #![no_main]
 
-extern crate kernel;
 extern crate alloc;
+extern crate kernel;
 
+use crate::kernel::limine_requests::{FRAME_BUFFER_REQUEST, MEMORY_MAP_REQUEST, MP_REQUEST};
 use core::sync::atomic::{AtomicBool, Ordering};
-use kernel::{gdt, interrupt, acpi, apic, nmi_handler_state, hlt_loop};
 use kernel::graphics::display;
 use kernel::limine_requests::{BASE_REVISION, RSDP_REQUEST};
 use kernel::memory::cpu_local_data::get_local;
-use kernel::memory::guarded_stack::{GuardedStack, StackId, StackType, NORMAL_STACK_SIZE};
+use kernel::memory::guarded_stack::{GuardedStack, NORMAL_STACK_SIZE, StackId, StackType};
 use kernel::user_land::run_user_land;
-use crate::kernel::limine_requests::{FRAME_BUFFER_REQUEST, MEMORY_MAP_REQUEST, MP_REQUEST};
+use kernel::{acpi, apic, gdt, hlt_loop, interrupt, nmi_handler_state};
 
 mod logger;
 
@@ -29,9 +29,10 @@ unsafe extern "C" fn kernel_main() -> ! {
 
     let memory_map = MEMORY_MAP_REQUEST.get_response().unwrap();
     unsafe { kernel::memory::init_bsp(memory_map) };
-    unsafe { kernel::memory::cpu_local_data::init_bsp(); }
+    unsafe {
+        kernel::memory::cpu_local_data::init_bsp();
+    }
     log::info!("BSP memory initialized.");
-
 
     GuardedStack::new_kernel(
         NORMAL_STACK_SIZE,
@@ -39,7 +40,8 @@ unsafe extern "C" fn kernel_main() -> ! {
             _type: StackType::Normal,
             cpu_id: get_local().kernel_id,
         },
-    ).switch(init_bsp);
+    )
+    .switch(init_bsp);
 
     // For now pause
     hlt_loop();
@@ -61,7 +63,6 @@ extern "sysv64" fn init_bsp() -> ! {
     log::info!("BSP APIC initialized.");
     apic::init_local_apic();
     log::info!("Local APIC initialized.");
-
 
     let mp_response = MP_REQUEST.get_response().unwrap();
     for cpu in mp_response.cpus() {
@@ -88,7 +89,8 @@ unsafe extern "C" fn ap_entry(_cpu: &limine::mp::Cpu) -> ! {
             _type: StackType::Normal,
             cpu_id: get_local().kernel_id,
         },
-    ).switch(init_ap);
+    )
+    .switch(init_ap);
 
     // Shouldn't run
     hlt_loop();

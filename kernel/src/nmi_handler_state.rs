@@ -1,7 +1,7 @@
+use crate::memory::cpu_local_data::cpus_count;
 use alloc::boxed::Box;
 use atomic_enum::atomic_enum;
 use spin::once::Once;
-use crate::memory::cpu_local_data::cpus_count;
 
 #[atomic_enum]
 pub enum NmiHandlerState {

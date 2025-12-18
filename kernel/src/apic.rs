@@ -1,22 +1,22 @@
-use core::num::NonZero;
+use crate::InterruptVector;
+use crate::memory::MEMORY;
+use crate::memory::cpu_local_data::get_local;
 use acpi::AcpiTables;
 use acpi::platform::InterruptModel;
+use core::num::NonZero;
 use ez_paging::{ConfigurableFlags, Frame, PageSize};
 use force_send_sync::SendSync;
 use limine::mp::Cpu;
 use raw_cpuid::CpuId;
 use spin::Once;
 use x2apic::lapic::LocalApicBuilder;
-use x86_64::{PhysAddr, VirtAddr};
 use x86_64::registers::model_specific::PatMemoryType;
-use crate::InterruptVector;
-use crate::memory::cpu_local_data::get_local;
-use crate::memory::MEMORY;
+use x86_64::{PhysAddr, VirtAddr};
 
 pub enum LocalApicAccess {
     RegisterBased,
     /// Pointer to the mapped local Apic
-    Mmio(VirtAddr)
+    Mmio(VirtAddr),
 }
 
 pub static LOCAL_APIC_ACCESS: Once<LocalApicAccess> = Once::new();
@@ -40,7 +40,7 @@ pub fn init_bsp(acpi_tables: &AcpiTables<impl acpi::Handler>) {
             let mut frame_allocator = physical_memory.get_kernel_frame_allocator();
             let mut virtual_memory = memory.virtual_memory.lock();
             let page = virtual_memory
-                .allocate_contiguous_pages(page_size, NonZero::new(1).unwrap())
+                .allocate_kernel_contiguous_pages(page_size, NonZero::new(1).unwrap())
                 .unwrap();
             let flags = ConfigurableFlags {
                 writable: true,
@@ -54,7 +54,7 @@ pub fn init_bsp(acpi_tables: &AcpiTables<impl acpi::Handler>) {
                     .l4_mut()
                     .map_page(page, frame, flags, &mut frame_allocator)
             }
-                .unwrap();
+            .unwrap();
             LocalApicAccess::Mmio(page.start_addr())
         }
     });
@@ -78,8 +78,8 @@ pub fn init_local_apic() {
 
                 let mut local_apic = builder.build().unwrap();
 
-                unsafe {local_apic.enable()}
-                unsafe {local_apic.disable()}
+                unsafe { local_apic.enable() }
+                unsafe { local_apic.disable() }
                 local_apic
             };
             unsafe { SendSync::new(local_apic) }

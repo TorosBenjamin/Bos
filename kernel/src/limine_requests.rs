@@ -2,7 +2,10 @@ use core::ffi::CStr;
 use limine::BaseRevision;
 use limine::modules::InternalModule;
 use limine::mp::RequestFlags;
-use limine::request::{FramebufferRequest, HhdmRequest, MemoryMapRequest, ModuleRequest, MpRequest, RequestsEndMarker, RequestsStartMarker, RsdpRequest};
+use limine::request::{
+    FramebufferRequest, HhdmRequest, MemoryMapRequest, ModuleRequest, MpRequest, RequestsEndMarker,
+    RequestsStartMarker, RsdpRequest,
+};
 
 pub const USER_LAND_PATH: &CStr = c"/user_land";
 
@@ -32,9 +35,8 @@ pub static RSDP_REQUEST: RsdpRequest = RsdpRequest::new();
 
 #[used]
 #[unsafe(link_section = ".requests")]
-pub static MODULE_REQUEST: ModuleRequest = ModuleRequest::new()
-    .with_internal_modules(&[&InternalModule::new().with_path(USER_LAND_PATH)]);
-
+pub static MODULE_REQUEST: ModuleRequest =
+    ModuleRequest::new().with_internal_modules(&[&InternalModule::new().with_path(USER_LAND_PATH)]);
 
 #[used]
 #[unsafe(link_section = ".requests_start_marker")]

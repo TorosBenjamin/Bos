@@ -1,9 +1,9 @@
-use std::{env, io};
 use std::fs::{create_dir_all, remove_file};
 use std::io::ErrorKind;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::{env, io};
 
 fn main() {
     check_command_exists("xorriso");
@@ -15,7 +15,9 @@ fn main() {
     // This folder contains Limine files such as `BOOTX64.EFI`
     let limine_dir = match env::var("LIMINE_PATH") {
         Ok(path) => PathBuf::from(path),
-        Err(_) => panic!("LIMINE_PATH environment variable not set. Please set it to the Limine directory."),
+        Err(_) => panic!(
+            "LIMINE_PATH environment variable not set. Please set it to the Limine directory."
+        ),
     };
 
     // We will create an ISO file for our OS
@@ -41,7 +43,6 @@ fn main() {
     let user_land_executable_file = env::var("CARGO_BIN_FILE_USER_LAND").unwrap();
     ensure_symlink(user_land_executable_file, iso_dir.join("user_land")).unwrap();
 
-
     // Copy files from the Limine packaeg into `boot/limine`
     let out_limine_dir = boot_dir.join("limine");
     create_dir_all(&out_limine_dir).unwrap();
@@ -65,7 +66,6 @@ fn main() {
 
     // Symlink the out dir so we get a constant path to it
     ensure_symlink(&out_dir, runner_dir.join("out_dir")).unwrap();
-
 
     // We'll call the output iso `os.iso`
     let output_iso = out_dir.join("os.iso");
@@ -105,8 +105,6 @@ fn main() {
         .unwrap();
     assert!(status.success());
 
-
-
     // This is needed to create a hybrid ISO that boots on both BIOS and UEFI. See https://github.com/limine-bootloader/limine/blob/v9.x/USAGE.md#biosuefi-hybrid-iso-creation
     let status = std::process::Command::new("limine")
         .arg("bios-install")
@@ -134,7 +132,11 @@ pub fn ensure_symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> i
 }
 
 fn check_command_exists(cmd: &str) {
-    if std::process::Command::new(cmd).arg("--version").output().is_err() {
+    if std::process::Command::new(cmd)
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         panic!("Command '{}' not found. Please install it.", cmd);
     }
 }

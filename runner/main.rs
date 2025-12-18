@@ -1,5 +1,5 @@
-use std::{env, process};
 use std::process::Command;
+use std::{env, process};
 
 fn main() {
     let ovmf_code = "/usr/share/edk2/x64/OVMF_CODE.4m.fd";
@@ -12,8 +12,9 @@ fn main() {
     qemu.arg("-cdrom").arg(env!("ISO"));
 
     // UEFI firmware (two parts)
-    qemu.arg("-drive")
-        .arg(format!("if=pflash,format=raw,unit=0,file={ovmf_code},readonly=on"));
+    qemu.arg("-drive").arg(format!(
+        "if=pflash,format=raw,unit=0,file={ovmf_code},readonly=on"
+    ));
 
     qemu.arg("-drive")
         .arg(format!("if=pflash,format=raw,unit=1,file={ovmf_vars}"));

@@ -1,11 +1,13 @@
+use crate::memory::cpu_local_data::get_local;
+use crate::memory::guarded_stack::{
+    EXCEPTION_HANDLER_STACK_SIZE, GuardedStack, StackId, StackType,
+};
 use num_enum::IntoPrimitive;
-use x86_64::instructions::segmentation::{Segment, CS, SS};
+use x86_64::instructions::segmentation::{CS, SS, Segment};
 use x86_64::instructions::tables::load_tss;
 use x86_64::registers::segmentation::SegmentSelector;
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable};
 use x86_64::structures::tss::TaskStateSegment;
-use crate::memory::cpu_local_data::get_local;
-use crate::memory::guarded_stack::{GuardedStack, StackId, StackType, EXCEPTION_HANDLER_STACK_SIZE};
 
 #[derive(Debug, IntoPrimitive)]
 #[repr(u8)]
@@ -22,7 +24,7 @@ pub struct Gdt {
 
 pub fn init() {
     let local = get_local();
-    let tss = local.tss.call_once( || {
+    let tss = local.tss.call_once(|| {
         let mut tss = TaskStateSegment::new();
         tss.interrupt_stack_table[u8::from(IstStackIndexes::Exception) as usize] =
             GuardedStack::new_kernel(
@@ -32,7 +34,7 @@ pub fn init() {
                     cpu_id: local.kernel_id,
                 },
             )
-                .top();
+            .top();
         tss
     });
 
@@ -50,10 +52,9 @@ pub fn init() {
     });
 
     gdt.gdt.load();
-    
+
     // Reload selectors
     unsafe { CS::set_reg(gdt.kernel_code_selector) };
     unsafe { SS::set_reg(gdt.kernel_data_selector) };
     unsafe { load_tss(gdt.tss_selector) };
 }
-

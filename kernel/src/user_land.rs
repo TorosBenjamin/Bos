@@ -1,24 +1,24 @@
+use crate::limine_requests::{MODULE_REQUEST, USER_LAND_PATH};
+use crate::memory::MEMORY;
+use crate::memory::physical_memory::{MemoryType, OffsetMappedPhysAddr, OffsetMappedPhysFrame};
+use crate::memory::virtual_memory_allocator::OffsetMappedVirtAddr;
+use crate::{LOWER_HALF_END, raw_syscall_handler};
+use bitflags::bitflags;
 use core::arch::asm;
 use core::num::NonZero;
 use core::ops::Range;
-use core::ptr::{slice_from_raw_parts_mut, NonNull};
+use core::ptr::{NonNull, slice_from_raw_parts_mut};
 use core::sync::atomic::{AtomicBool, Ordering};
-use bitflags::bitflags;
 use elf::ElfBytes;
 use elf::endian::AnyEndian;
 use elf::segment::ProgramHeader;
 use ez_paging::{ConfigurableFlags, Frame, Page, PageSize};
 use nodit::interval::ie;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
-use x86_64::{PhysAddr, VirtAddr};
 use x86_64::registers::control::{Efer, EferFlags};
 use x86_64::registers::model_specific::PatMemoryType;
 use x86_64::registers::rflags::RFlags;
-use crate::limine_requests::{MODULE_REQUEST, USER_LAND_PATH};
-use crate::{raw_syscall_handler, LOWER_HALF_END};
-use crate::memory::MEMORY;
-use crate::memory::physical_memory::{MemoryType, OffsetMappedPhysAddr, OffsetMappedPhysFrame};
-use crate::memory::virtual_memory_allocator::OffsetMappedVirtAddr;
+use x86_64::{PhysAddr, VirtAddr};
 
 static CONSUMED_USER_LAND: AtomicBool = AtomicBool::new(false);
 
@@ -62,10 +62,11 @@ pub fn run_user_land() {
     let ptr = NonNull::new(slice_from_raw_parts_mut(
         module.addr(),
         module.size() as usize,
-    )).unwrap();
+    ))
+    .unwrap();
 
     // Safety: Limine provides valid pointer and len
-    let elf_bytes = unsafe {ptr.as_ref()};
+    let elf_bytes = unsafe { ptr.as_ref() };
 
     let elf = ElfBytes::<AnyEndian>::minimal_parse(elf_bytes).expect("Failed to parse ELF");
 
@@ -75,7 +76,8 @@ pub fn run_user_land() {
     let mut user_l4 = memory.virtual_memory.lock().l4_mut().new_user(
         physical_memory
             .get_user_mode_frame_allocator()
-            .allocate_frame_4kib().unwrap()
+            .allocate_frame_4kib()
+            .unwrap(),
     );
 
     // Remove the module from physical memory map
@@ -104,7 +106,7 @@ pub fn run_user_land() {
             VirtAddr::new(segment.p_vaddr).align_down(page_size.byte_len_u64()),
             page_size,
         )
-            .unwrap();
+        .unwrap();
         let file_pages_len = if segment.p_filesz > 0 {
             (segment.p_vaddr + segment.p_filesz).div_ceil(page_size.byte_len_u64())
                 - segment.p_vaddr / page_size.byte_len_u64()
@@ -116,7 +118,7 @@ pub fn run_user_land() {
                 .align_down(page_size.byte_len_u64()),
             page_size,
         )
-            .unwrap();
+        .unwrap();
 
         // Map the virtual memory to the ELF's frames
         let flags = ElfSegmentFlags::from(segment);
@@ -232,7 +234,7 @@ pub fn run_user_land() {
             VirtAddr::new(rsp - pages_len * page_size.byte_len_u64()),
             page_size,
         )
-            .unwrap();
+        .unwrap();
         for i in 0..pages_len {
             let page = start_page.offset(i).unwrap();
             let frame = physical_memory

@@ -1,17 +1,15 @@
+use crate::graphics::frame_buffer_embedded_graphics::FrameBufferEmbeddedGraphics;
 use core::convert::Infallible;
-use embedded_graphics::geometry::{Dimensions, Point};
 use embedded_graphics::Pixel;
+use embedded_graphics::geometry::{Dimensions, Point};
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::DrawTarget;
 use embedded_graphics::primitives::Rectangle;
 use limine::response::FramebufferResponse;
-use crate::graphics::frame_buffer_embedded_graphics::FrameBufferEmbeddedGraphics;
 
 /// Safety: Call display init before accessing it
 pub static DISPLAY: Display = Display {
-    inner: spin::Mutex::new(Inner {
-        fb: None,
-    })
+    inner: spin::Mutex::new(Inner { fb: None }),
 };
 
 pub struct Display {
@@ -25,16 +23,23 @@ struct Inner {
 }
 
 impl Display {
-
     /// Shifts display rows by amount
     pub fn shift_up(&self, amount: usize) {
         let mut inner = self.inner.lock();
-        inner.fb.as_mut().expect("Display not initialized").shift_up(amount);
+        inner
+            .fb
+            .as_mut()
+            .expect("Display not initialized")
+            .shift_up(amount);
     }
 
     pub fn bounding_box(&self) -> Rectangle {
         let inner = self.inner.lock();
-        inner.fb.as_ref().expect("Display not initialized").bounding_box
+        inner
+            .fb
+            .as_ref()
+            .expect("Display not initialized")
+            .bounding_box
     }
 
     pub fn draw_iter<I>(&self, pixels: I) -> Result<(), Infallible>
@@ -82,7 +87,5 @@ pub fn init(framebuffer: &'static FramebufferResponse) {
     let frame_buffer = framebuffer.framebuffers().next().unwrap();
     let addr = frame_buffer.addr().addr().try_into().unwrap();
     let info = (&frame_buffer).into();
-    inner.fb = Some(unsafe {
-        FrameBufferEmbeddedGraphics::new(addr, info)
-    });
+    inner.fb = Some(unsafe { FrameBufferEmbeddedGraphics::new(addr, info) });
 }

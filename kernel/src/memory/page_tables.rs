@@ -1,19 +1,17 @@
+use crate::memory::hhdm_offset::hhdm_offset;
+use crate::memory::physical_memory::{OffsetMappedPhysAddr, OffsetMappedPhysFrame, PhysicalMemory};
+use crate::memory::virtual_memory_allocator::VirtualMemoryAllocator;
 use core::ops::Deref;
 use core::ptr::NonNull;
-use ez_paging::{max_page_size, ConfigurableFlags, Frame, ManagedPat, PagingConfig};
+use ez_paging::{ConfigurableFlags, Frame, ManagedPat, PagingConfig, max_page_size};
 use limine::memory_map::EntryType;
 use limine::response::MemoryMapResponse;
-use nodit::interval::iu;
 use nodit::NoditSet;
+use nodit::interval::iu;
 use x86_64::PhysAddr;
 use x86_64::registers::control::{Cr3, Cr3Flags};
 use x86_64::registers::model_specific::PatMemoryType;
 use x86_64::structures::paging::{PageTable, PhysFrame};
-use crate::memory::hhdm_offset::hhdm_offset;
-use crate::memory::physical_memory::{PhysicalMemory, OffsetMappedPhysAddr, OffsetMappedPhysFrame};
-use crate::memory::virtual_memory_allocator::VirtualMemoryAllocator;
-
-
 
 /// Creates new page tables
 pub fn create_page_tables(
@@ -27,7 +25,7 @@ pub fn create_page_tables(
         unsafe { ManagedPat::new() },
         hhdm_offset.into(),
     )
-        .new_kernel(frame_allocator.allocate_frame_4kib().unwrap());
+    .new_kernel(frame_allocator.allocate_frame_4kib().unwrap());
 
     // Offset map everything that is currently offset mapped
     let page_size = max_page_size();
@@ -39,7 +37,7 @@ pub fn create_page_tables(
             EntryType::EXECUTABLE_AND_MODULES,
             EntryType::FRAMEBUFFER,
         ]
-            .contains(&entry.entry_type)
+        .contains(&entry.entry_type)
         {
             let range_to_map = {
                 let start = PhysAddr::new(entry.base);
@@ -61,7 +59,8 @@ pub fn create_page_tables(
                 let first_frame = Frame::new(
                     range_to_map.start.align_down(page_size.byte_len_u64()),
                     page_size,
-                ).unwrap();
+                )
+                .unwrap();
 
                 let pages_len = range_to_map.end.as_u64().div_ceil(page_size.byte_len_u64())
                     - range_to_map.start.as_u64() / page_size.byte_len_u64();
@@ -91,7 +90,7 @@ pub fn create_page_tables(
                 .offset_mapped()
                 .as_mut_ptr::<PageTable>(),
         )
-            .unwrap();
+        .unwrap();
         // Safety: we are just going to reference it immutably, and nothing is referencing it mutably
         unsafe { ptr.as_ref() }
     };
@@ -117,13 +116,13 @@ pub fn create_page_tables(
                         EntryType::EXECUTABLE_AND_MODULES,
                         EntryType::FRAMEBUFFER,
                     ]
-                        .contains(&entry.entry_type)
+                    .contains(&entry.entry_type)
                     {
                         let start = u64::from(hhdm_offset)
                             + entry.base / page_size.byte_len_u64() * page_size.byte_len_u64();
                         let end = u64::from(hhdm_offset)
                             + (entry.base + (entry.length - 1)) / page_size.byte_len_u64()
-                            * page_size.byte_len_u64()
+                                * page_size.byte_len_u64()
                             + (page_size.byte_len_u64() - 1);
                         set.insert_merge_touching_or_overlapping((start..=end).into());
                     }

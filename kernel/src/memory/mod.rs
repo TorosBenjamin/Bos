@@ -1,18 +1,18 @@
+use crate::memory::page_tables::create_page_tables;
+use crate::memory::physical_memory::PhysicalMemory;
+use crate::memory::virtual_memory_allocator::VirtualMemoryAllocator;
 use limine::response::MemoryMapResponse;
 use spin::Once;
 use x86_64::registers::control::{Cr3, Cr3Flags};
 use x86_64::structures::paging::{PhysFrame, Size4KiB};
-use crate::memory::page_tables::create_page_tables;
-use crate::memory::physical_memory::PhysicalMemory;
-use crate::memory::virtual_memory_allocator::VirtualMemoryAllocator;
 
 pub mod cpu_local_data;
 pub mod global_allocator;
-pub mod physical_memory;
-pub mod page_tables;
-pub mod hhdm_offset;
-pub mod virtual_memory_allocator;
 pub mod guarded_stack;
+pub mod hhdm_offset;
+pub mod page_tables;
+pub mod physical_memory;
+pub mod virtual_memory_allocator;
 
 /// Initializes global allocator, creates new page tables, and switches to new page tables.
 /// This function must be called before mapping pages or running our kernel's code on APs.

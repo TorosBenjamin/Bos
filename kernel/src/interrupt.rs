@@ -1,11 +1,11 @@
-use core::sync::atomic::Ordering;
-use x86_64::registers::control::Cr2;
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 use crate::gdt::IstStackIndexes;
 use crate::hlt_loop;
 use crate::memory::cpu_local_data::{get_local, local_apic_id_of, try_get_local};
 use crate::memory::guarded_stack::STACK_GUARD_PAGES;
-use crate::nmi_handler_state::{NmiHandlerState, NMI_HANDLER_STATES};
+use crate::nmi_handler_state::{NMI_HANDLER_STATES, NmiHandlerState};
+use core::sync::atomic::Ordering;
+use x86_64::registers::control::Cr2;
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 
 extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
@@ -46,9 +46,9 @@ extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
 fn handle_panic_from_other_cpu() -> ! {
     if let Some(local) = try_get_local()
         && let Some(mut local_apic) = local
-        .local_apic
-        .get()
-        .and_then(|local_apic| local_apic.try_lock())
+            .local_apic
+            .get()
+            .and_then(|local_apic| local_apic.try_lock())
         && let Some(nmi_handler_states) = NMI_HANDLER_STATES.get()
     {
         for (cpu_id, nmi_handler_state) in nmi_handler_states
@@ -101,7 +101,8 @@ pub fn init() {
             Ordering::Relaxed,
             Ordering::Relaxed,
         )
-        .is_err() {
+        .is_err()
+    {
         // Kernel already panicked
         handle_panic_from_other_cpu()
     }

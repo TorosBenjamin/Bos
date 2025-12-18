@@ -1,15 +1,15 @@
+use crate::memory::MEMORY;
+use crate::memory::virtual_memory_allocator::VirtualMemoryAllocator;
+use acpi::aml::AmlError;
+use acpi::{AcpiTable, AcpiTables, Handle, PciAddress, PhysicalMapping};
 use core::marker::PhantomData;
 use core::num::NonZero;
 use core::ops::Div;
 use core::ptr::NonNull;
-use acpi::{AcpiTable, AcpiTables, Handle, PciAddress, PhysicalMapping};
-use acpi::aml::AmlError;
-use ez_paging::{max_page_size, ConfigurableFlags, Frame, Page};
+use ez_paging::{ConfigurableFlags, Frame, Page, max_page_size};
 use limine::response::RsdpResponse;
-use x86_64::{PhysAddr, VirtAddr};
 use x86_64::registers::model_specific::PatMemoryType;
-use crate::memory::MEMORY;
-use crate::memory::virtual_memory_allocator::VirtualMemoryAllocator;
+use x86_64::{PhysAddr, VirtAddr};
 
 #[derive(Debug, Clone)]
 struct KernelAcpiHandler {
@@ -17,14 +17,18 @@ struct KernelAcpiHandler {
 }
 
 impl acpi::Handler for KernelAcpiHandler {
-    unsafe fn map_physical_region<T>(&self, physical_address: usize, size: usize) -> PhysicalMapping<Self, T> {
+    unsafe fn map_physical_region<T>(
+        &self,
+        physical_address: usize,
+        size: usize,
+    ) -> PhysicalMapping<Self, T> {
         let page_size = max_page_size();
         let memory = MEMORY.get().unwrap();
         let mut virtual_memory = memory.virtual_memory.lock();
         let n_pages = ((size + physical_address) as u64).div_ceil(page_size.byte_len_u64())
             - physical_address as u64 / page_size.byte_len_u64();
         let start_page = virtual_memory
-            .allocate_contiguous_pages(
+            .allocate_kernel_contiguous_pages(
                 page_size,
                 NonZero::new(n_pages).expect("at least 1 byte mapped"),
             )
@@ -35,7 +39,7 @@ impl acpi::Handler for KernelAcpiHandler {
             ),
             page_size,
         )
-            .unwrap();
+        .unwrap();
         let mut physical_memory = memory.physical_memory.lock();
         let mut frame_allocator = physical_memory.get_kernel_frame_allocator();
         for i in 0..n_pages {
@@ -44,7 +48,7 @@ impl acpi::Handler for KernelAcpiHandler {
             let flags = ConfigurableFlags {
                 executable: false,
                 writable: false,
-                pat_memory_type: PatMemoryType::WriteBack
+                pat_memory_type: PatMemoryType::WriteBack,
             };
             unsafe {
                 virtual_memory
@@ -57,8 +61,9 @@ impl acpi::Handler for KernelAcpiHandler {
             physical_start: physical_address,
             virtual_start: NonNull::new(
                 (start_page.start_addr() + physical_address as u64 % page_size.byte_len_u64())
-                    .as_mut_ptr()
-            ).unwrap(),
+                    .as_mut_ptr(),
+            )
+            .unwrap(),
             region_length: size,
             mapped_length: n_pages as usize * page_size.byte_len(),
             handler: self.clone(),
@@ -70,12 +75,15 @@ impl acpi::Handler for KernelAcpiHandler {
         let start_page = Page::new(
             VirtAddr::from_ptr(region.virtual_start.as_ptr()).align_down(page_size.byte_len_u64()),
             page_size,
-        ).unwrap();
+        )
+        .unwrap();
         let mut virtual_memory = MEMORY.get().unwrap().virtual_memory.lock();
-        let n_pages = region.mapped_length as u64/ page_size.byte_len_u64();
+        let n_pages = region.mapped_length as u64 / page_size.byte_len_u64();
         for i in 0..n_pages {
             let page = start_page.offset(i).unwrap();
-            unsafe {virtual_memory.l4_mut().unmap_page(page).unwrap();}
+            unsafe {
+                virtual_memory.l4_mut().unmap_page(page).unwrap();
+            }
         }
     }
 
@@ -193,5 +201,6 @@ pub fn parse(rsdp: &RsdpResponse) -> AcpiTables<impl acpi::Handler> {
             },
             address,
         )
-    }.unwrap()
+    }
+    .unwrap()
 }

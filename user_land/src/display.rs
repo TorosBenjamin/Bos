@@ -1,12 +1,12 @@
+use crate::syscalls::{rgb888_to_raw, sys_draw_iter, sys_fill_solid, sys_get_bounding_box};
 use core::convert::Infallible;
 use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::geometry::{Point, Size};
-use embedded_graphics::{Drawable, Pixel};
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::{OriginDimensions, Primitive};
 use embedded_graphics::primitives::{Circle, PrimitiveStyle, Rectangle};
+use embedded_graphics::{Drawable, Pixel};
 use kernel_api_types::graphics::{GraphicsResult, PixelData, Rect};
-use crate::syscalls::{rgb888_to_raw, sys_draw_iter, sys_fill_solid, sys_get_bounding_box};
 
 pub struct Display;
 
@@ -27,12 +27,20 @@ pub fn draw_fun(display: &mut Display) {
 
 impl OriginDimensions for Display {
     fn size(&self) -> Size {
-        let mut bb = Rect {x: 0, y: 0, width: 0, height: 0};
+        let mut bb = Rect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
         let result = sys_get_bounding_box(&mut bb);
 
         match result {
-            GraphicsResult::Ok => Size {width: bb.width, height: bb.height},
-            _ => panic!("Failed to get bounding box")
+            GraphicsResult::Ok => Size {
+                width: bb.width,
+                height: bb.height,
+            },
+            _ => panic!("Failed to get bounding box"),
         }
     }
 }

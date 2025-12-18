@@ -1,15 +1,13 @@
+use crate::hlt_loop;
+use crate::memory::cpu_local_data::{CpuLocalData, get_local};
+use crate::task::global_scheduler::TASK_TABLE;
+use crate::task::task::{CpuContext, Task, TaskId, TaskState};
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
 use core::arch::{asm, naked_asm};
 use core::sync::atomic::Ordering;
 use core::task::Context;
 use spin::Mutex;
-use crate::hlt_loop;
-use crate::memory::cpu_local_data::{get_local, CpuLocalData};
-use crate::task::global_scheduler::TASK_TABLE;
-use crate::task::task::{CpuContext, Task, TaskId, TaskState};
-
-
 
 pub struct RunQueue {
     pub current: Option<TaskId>,
@@ -66,18 +64,20 @@ pub fn add(cpu: &CpuLocalData, task_id: TaskId) {
     }
 }
 
-
-
 pub unsafe fn context_switch_to_task(new: &CpuContext) {
     let cpu = get_local(); // get CPU-local data
     if let Some(current_id) = cpu.run_queue.get().unwrap().lock().current {
         let tasks = TASK_TABLE.lock();
         if let Some(current) = tasks.get(&current_id) {
-            unsafe {context_switch(&current.context as *const _ as *mut _, new as *const _); }
+            unsafe {
+                context_switch(&current.context as *const _ as *mut _, new as *const _);
+            }
         }
     } else {
         // No current task, just jump to new
-        unsafe { context_switch(core::ptr::null_mut(), new as *const _); }
+        unsafe {
+            context_switch(core::ptr::null_mut(), new as *const _);
+        }
     }
 }
 
@@ -91,15 +91,12 @@ pub unsafe extern "C" fn context_switch(old: *mut CpuContext, new: *const CpuCon
         "mov [rdi + 0x18], r12",
         "mov [rdi + 0x20], rbx",
         "mov [rdi + 0x28], rbp",
-
-
         // Save rsp, rip, rflags
         "mov [rdi + 0x30], rsp",
         "pushfq",
         "pop [rdi + 0x38]",
         "lea rax, [rip + 0f]",
         "mov [rdi + 0x40], rax",
-
         // Load new task registers
         "mov r15, [rsi + 0x00]",
         "mov r14, [rsi + 0x08]",
@@ -107,17 +104,14 @@ pub unsafe extern "C" fn context_switch(old: *mut CpuContext, new: *const CpuCon
         "mov r12, [rsi + 0x18]",
         "mov rbx, [rsi + 0x20]",
         "mov rbp, [rsi + 0x28]",
-
         "mov rsp, [rsi + 0x30]",
-        "push [rsi + 0x38]",   // rflags
+        "push [rsi + 0x38]", // rflags
         "popfq",
-        "jmp [rsi + 0x40]",    // rip
-
+        "jmp [rsi + 0x40]", // rip
         // label for next instruction after returning
         "0:"
     );
 }
-
 
 /// # Safety
 /// Stack must be valid

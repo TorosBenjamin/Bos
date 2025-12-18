@@ -1,14 +1,12 @@
+use crate::graphics::frame_buffer_info::FrameBufferInfo;
 use core::convert::Infallible;
 use core::num::NonZero;
-use core::ptr::{slice_from_raw_parts_mut, NonNull};
+use core::ptr::{NonNull, slice_from_raw_parts_mut};
+use embedded_graphics::Pixel;
 use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::geometry::{Dimensions, Point, Size};
-use embedded_graphics::Pixel;
 use embedded_graphics::pixelcolor::{Rgb565, Rgb888};
 use embedded_graphics::primitives::Rectangle;
-use crate::graphics::frame_buffer_info::FrameBufferInfo;
-
-
 
 pub struct FrameBufferEmbeddedGraphics<'a> {
     buffer: &'a mut [u32],
@@ -28,7 +26,7 @@ impl FrameBufferEmbeddedGraphics<'_> {
                         addr.get() as *mut u32,
                         (info.pitch * info.height) as usize / size_of::<u32>(),
                     ))
-                        .unwrap();
+                    .unwrap();
                     // Safety: This memory is mapped
                     unsafe { ptr.as_mut() }
                 },
@@ -68,9 +66,9 @@ impl FrameBufferEmbeddedGraphics<'_> {
         let width = area.size.width as usize;
         let x0 = area.top_left.x as usize;
 
-        for y in area.top_left.y as usize .. area.top_left.y as usize + area.size.height as usize {
+        for y in area.top_left.y as usize..area.top_left.y as usize + area.size.height as usize {
             let idx = y * self.pixel_pitch + x0;
-            self.buffer[idx .. idx + width].fill(pixel);
+            self.buffer[idx..idx + width].fill(pixel);
         }
     }
 

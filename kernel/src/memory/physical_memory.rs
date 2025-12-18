@@ -1,17 +1,17 @@
+use crate::memory::global_allocator;
+use crate::memory::hhdm_offset::hhdm_offset;
 use ez_paging::{Frame, Owned4KibFrame, Page, PageSize};
 use limine::memory_map::EntryType;
 use limine::response::MemoryMapResponse;
 use nodit::{Interval, NoditMap};
-use x86_64::{PhysAddr, VirtAddr};
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
-use crate::memory::global_allocator;
-use crate::memory::hhdm_offset::hhdm_offset;
+use x86_64::{PhysAddr, VirtAddr};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum KernelMemoryUsageType {
     PageTables,
     GlobalAllocatorHeap,
-    Stack
+    Stack,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -19,17 +19,21 @@ pub enum MemoryType {
     Usable,
     UsedByLimine,
     UsedByKernel(KernelMemoryUsageType),
-    UsedByUserMode
+    UsedByUserMode,
 }
 
 #[derive(Debug)]
 pub struct PhysicalMemory {
+    /// A map of used physical memory
     map: NoditMap<u64, Interval<u64>, MemoryType>,
 }
 
 /// Track used physical memory
 impl PhysicalMemory {
-    pub(super) fn new(memory_map: &'static MemoryMapResponse, global_allocator_start: PhysAddr) -> Self {
+    pub(super) fn new(
+        memory_map: &'static MemoryMapResponse,
+        global_allocator_start: PhysAddr,
+    ) -> Self {
         Self {
             map: {
                 let mut map = NoditMap::default();
@@ -44,12 +48,11 @@ impl PhysicalMemory {
                         }
                     };
                     if let Some(memory_type) = should_insert {
-                        map
-                            .insert_merge_touching_if_values_equal(
-                                (entry.base..entry.base + entry.length).into(),
-                                memory_type,
-                            )
-                            .unwrap();
+                        map.insert_merge_touching_if_values_equal(
+                            (entry.base..entry.base + entry.length).into(),
+                            memory_type,
+                        )
+                        .unwrap();
                     }
                 }
                 // Track the memory used for the global allocator
@@ -62,9 +65,9 @@ impl PhysicalMemory {
                     interval,
                     MemoryType::UsedByKernel(KernelMemoryUsageType::GlobalAllocatorHeap),
                 )
-                    .unwrap();
+                .unwrap();
                 map
-            }
+            },
         }
     }
 
@@ -78,7 +81,7 @@ impl PhysicalMemory {
     pub fn get_user_mode_frame_allocator(&mut self) -> PhysicalMemoryFrameAllocator<'_> {
         PhysicalMemoryFrameAllocator {
             physical_memory: self,
-            memory_type: MemoryType::UsedByUserMode
+            memory_type: MemoryType::UsedByUserMode,
         }
     }
 

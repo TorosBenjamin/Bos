@@ -1,17 +1,18 @@
-use alloc::collections::BTreeMap;
-use core::num::NonZero;
-use ez_paging::{ConfigurableFlags, ManagedL4PageTable, Page, PageSize};
-use x86_64::registers::model_specific::PatMemoryType;
-use x86_64::VirtAddr;
 use crate::memory::MEMORY;
 use crate::memory::physical_memory::{KernelMemoryUsageType, MemoryType};
 use crate::task::local_scheduler::switch_to;
-
+use alloc::collections::BTreeMap;
+use core::num::NonZero;
+use ez_paging::{ConfigurableFlags, ManagedL4PageTable, Page, PageSize};
+use x86_64::VirtAddr;
+use x86_64::registers::model_specific::PatMemoryType;
 
 pub const NORMAL_STACK_SIZE: u64 = 64 * 0x400;
 pub const EXCEPTION_HANDLER_STACK_SIZE: u64 = 64 * 0x400;
 
 pub const STACK_PAGE_SIZE: PageSize = PageSize::_4KiB;
+
+// Keep track of stack guard pages for debugging
 pub static STACK_GUARD_PAGES: spin::Mutex<BTreeMap<Page, StackInfo>> =
     spin::Mutex::new(BTreeMap::new());
 
@@ -53,7 +54,10 @@ impl GuardedStack {
 
         // allocate contiguous virtual pages including the guard page
         let allocated_pages = virtual_memory
-            .allocate_contiguous_pages(STACK_PAGE_SIZE, NonZero::new(n_virtual_pages).unwrap())
+            .allocate_kernel_contiguous_pages(
+                STACK_PAGE_SIZE,
+                NonZero::new(n_virtual_pages).unwrap(),
+            )
             .unwrap();
 
         // create the guard page
@@ -62,9 +66,9 @@ impl GuardedStack {
             .lock()
             .insert(guard_page, StackInfo { id, size });
 
-        // start of the reals tack memory
+        // start of the real stack memory
         let start_page = guard_page.offset(1).unwrap();
-        
+
         // map the real stack pages
         for i in 0..n_mapped_pages {
             let page = start_page.offset(i).unwrap();
@@ -85,7 +89,7 @@ impl GuardedStack {
                     .l4_mut()
                     .map_page(page, frame, flags, &mut frame_allocator)
             }
-                .unwrap();
+            .unwrap();
         }
         Self {
             top: (start_page.start_addr() + n_mapped_pages * STACK_PAGE_SIZE.byte_len_u64()),
@@ -93,11 +97,11 @@ impl GuardedStack {
     }
 
     pub fn new_kernel(size: u64, id: StackId) -> Self {
-        Self::allocate_stack(size, id, &mut ManagedL4PageTable::(), false)
+        Self::allocate_stack(size, id)
     }
 
     pub fn new_user(size: u64, id: StackId, address_space: &mut ManagedL4PageTable) -> Self {
-        Self::allocate_stack(size, id, address_space, true)
+        Self::allocate_stack(size, id)
     }
 
     pub fn top(&self) -> VirtAddr {
@@ -106,6 +110,6 @@ impl GuardedStack {
 
     pub fn switch(self, f: extern "sysv64" fn() -> !) {
         let new_rsp = self.top.as_u64();
-        unsafe {switch_to(new_rsp, f)}
+        unsafe { switch_to(new_rsp, f) }
     }
 }

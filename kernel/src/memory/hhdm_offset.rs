@@ -1,8 +1,8 @@
+use crate::limine_requests::HHDM_REQUEST;
 use core::fmt::Debug;
 use ez_paging::VirtualOffset;
 use limine::response::HhdmResponse;
 use x86_64::{PhysAddr, VirtAddr};
-use crate::limine_requests::HHDM_REQUEST;
 
 /// Wrapper around u64 representing HHDM offset
 #[derive(Clone, Copy)]

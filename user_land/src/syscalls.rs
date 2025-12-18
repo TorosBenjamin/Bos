@@ -1,7 +1,7 @@
-use embedded_graphics::pixelcolor::{Rgb888, RgbColor};
-use kernel_api_types::graphics::{GraphicsResult, PixelData, Rect, Rgb888Raw};
-use kernel_api_types::SysCallNumber;
 use crate::syscall;
+use embedded_graphics::pixelcolor::{Rgb888, RgbColor};
+use kernel_api_types::SysCallNumber;
+use kernel_api_types::graphics::{GraphicsResult, PixelData, Rect, Rgb888Raw};
 
 pub fn sys_draw_iter(pixels: &[PixelData]) -> GraphicsResult {
     let mut args = [0u64; 7];
@@ -43,7 +43,5 @@ pub fn sys_get_bounding_box(out_rect: &mut Rect) -> GraphicsResult {
 }
 
 pub fn rgb888_to_raw(color: Rgb888) -> Rgb888Raw {
-    ((color.r() as u32) << 16) |
-        ((color.g() as u32) << 8) |
-        (color.b() as u32)
+    ((color.r() as u32) << 16) | ((color.g() as u32) << 8) | (color.b() as u32)
 }
