@@ -1,0 +1,36 @@
+[package]
+name = "kernel"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+limine = "0.5.0"
+x86_64 = { git = "https://github.com/rust-osdev/x86_64", branch = "next" }
+uart_16550 = "0.4.0"
+log = "0.4.29"
+spin = "0.10.0"
+embedded-graphics = "0.8.1"
+unicode-segmentation = "1.12.0"
+owo-colors = "4.2.3"
+talc = "4.4.3"
+nodit = {version = "0.10.0", default-features = false}
+ez_paging = { git = "https://github.com/ChocolateLoverRaj/ez_paging", version = "0.1.0", default-features = false }
+num_enum = {version = "0.7.5", default-features = false }
+acpi = "6.0.1"
+x2apic = "0.5.0"
+raw-cpuid = "11.6.0"
+force-send-sync = "2.0.0"
+atomic_enum = "0.3.0"
+elf = {version = "0.8.0", default-features = false}
+bitflags = "2.10.0"
+kernel_api_types = {path = "../kernel_api_types"}
+
+[patch.crates-io]
+x86_64 = "=0.15.4"
+
+
+[[bin]]
+name = "kernel"
+test = false
+bench = false

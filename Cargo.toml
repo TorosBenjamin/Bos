@@ -1,0 +1,4 @@
+[workspace]
+resolver = "3"
+members = ["runner", "kernel", "user_land", "kernel_api_types"]
+default-members = ["runner"]
