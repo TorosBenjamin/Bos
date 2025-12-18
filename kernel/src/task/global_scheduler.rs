@@ -1,5 +1,5 @@
-use crate::memory::cpu_local_data::{CpuLocalData, get_local};
-use crate::task::task::{Task, TaskId, TaskState};
+use crate::memory::cpu_local_data::get_local;
+use crate::task::process::{Task, TaskId, TaskState};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;

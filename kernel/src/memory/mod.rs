@@ -19,7 +19,6 @@ pub mod virtual_memory_allocator;
 ///
 /// # Safety
 /// This function must be called exactly once, and no page tables should be modified before calling this function.
-
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct Memory {

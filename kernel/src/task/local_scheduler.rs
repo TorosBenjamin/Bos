@@ -1,13 +1,10 @@
 use crate::hlt_loop;
 use crate::memory::cpu_local_data::{CpuLocalData, get_local};
 use crate::task::global_scheduler::TASK_TABLE;
-use crate::task::task::{CpuContext, Task, TaskId, TaskState};
-use alloc::collections::{BTreeMap, VecDeque};
-use alloc::sync::Arc;
-use core::arch::{asm, naked_asm};
+use crate::task::process::{CpuContext, TaskId, TaskState};
+use alloc::collections::VecDeque;
+use core::arch::naked_asm;
 use core::sync::atomic::Ordering;
-use core::task::Context;
-use spin::Mutex;
 
 pub struct RunQueue {
     pub current: Option<TaskId>,

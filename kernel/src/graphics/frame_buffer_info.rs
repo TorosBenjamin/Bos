@@ -1,11 +1,4 @@
-use crate::graphics::frame_buffer_embedded_graphics::FrameBufferEmbeddedGraphics;
 use crate::graphics::rgb_pixel::RgbPixel;
-use core::convert::Infallible;
-use embedded_graphics::Pixel;
-use embedded_graphics::draw_target::DrawTarget;
-use embedded_graphics::geometry::Dimensions;
-use embedded_graphics::pixelcolor::Rgb888;
-use embedded_graphics::primitives::Rectangle;
 
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]

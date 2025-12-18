@@ -81,7 +81,7 @@ pub fn get_local() -> &'static CpuLocalData {
 
 /// Initialize CPU local data for the BSP
 ///
-/// # Safety
+/// # Safety:
 /// Must be called on the AP
 pub unsafe fn init_bsp() {
     // Always assign 0 to BSP

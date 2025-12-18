@@ -15,7 +15,6 @@ use elf::segment::ProgramHeader;
 use ez_paging::{ConfigurableFlags, Frame, Page, PageSize};
 use nodit::interval::ie;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
-use x86_64::registers::control::{Efer, EferFlags};
 use x86_64::registers::model_specific::PatMemoryType;
 use x86_64::registers::rflags::RFlags;
 use x86_64::{PhysAddr, VirtAddr};

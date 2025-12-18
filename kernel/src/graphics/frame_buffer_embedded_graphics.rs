@@ -5,7 +5,7 @@ use core::ptr::{NonNull, slice_from_raw_parts_mut};
 use embedded_graphics::Pixel;
 use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::geometry::{Dimensions, Point, Size};
-use embedded_graphics::pixelcolor::{Rgb565, Rgb888};
+use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::primitives::Rectangle;
 
 pub struct FrameBufferEmbeddedGraphics<'a> {

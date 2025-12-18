@@ -1,6 +1,6 @@
 use crate::graphics::display::{DISPLAY, DisplayDraw};
 use crate::graphics::frame_buffer_embedded_graphics::FrameBufferEmbeddedGraphics;
-use core::fmt::{Display, Write};
+use core::fmt::Write;
 use embedded_graphics::Drawable;
 use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::geometry::{Dimensions, Point, Size};

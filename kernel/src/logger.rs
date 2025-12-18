@@ -1,4 +1,3 @@
-use alloc::string::String;
 use core::fmt::Display;
 use core::fmt::Write;
 use embedded_graphics::geometry::Point;

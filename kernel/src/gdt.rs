@@ -42,7 +42,7 @@ pub fn init() {
         let mut gdt = GlobalDescriptorTable::new();
         let kernel_code_selector = gdt.append(Descriptor::kernel_code_segment());
         let kernel_data_selector = gdt.append(Descriptor::kernel_data_segment());
-        let tss_selector = gdt.append(Descriptor::tss_segment(&tss));
+        let tss_selector = gdt.append(Descriptor::tss_segment(tss));
         Gdt {
             gdt,
             kernel_code_selector,

@@ -6,7 +6,6 @@ use acpi::platform::InterruptModel;
 use core::num::NonZero;
 use ez_paging::{ConfigurableFlags, Frame, PageSize};
 use force_send_sync::SendSync;
-use limine::mp::Cpu;
 use raw_cpuid::CpuId;
 use spin::Once;
 use x2apic::lapic::LocalApicBuilder;
@@ -23,7 +22,7 @@ pub static LOCAL_APIC_ACCESS: Once<LocalApicAccess> = Once::new();
 
 /// Maps the Local APIC memory if needed, and initializes LOCAL_APIC_ACCESS
 pub fn init_bsp(acpi_tables: &AcpiTables<impl acpi::Handler>) {
-    let apic = match InterruptModel::new(&acpi_tables).unwrap().0 {
+    let apic = match InterruptModel::new(acpi_tables).unwrap().0 {
         InterruptModel::Apic(apic) => apic,
         interrupt_model => panic!("Unknown interrupt model: {:#?}", interrupt_model),
     };

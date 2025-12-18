@@ -100,7 +100,7 @@ impl GuardedStack {
         Self::allocate_stack(size, id)
     }
 
-    pub fn new_user(size: u64, id: StackId, address_space: &mut ManagedL4PageTable) -> Self {
+    pub fn new_user(size: u64, id: StackId, _address_space: &mut ManagedL4PageTable) -> Self {
         Self::allocate_stack(size, id)
     }
 

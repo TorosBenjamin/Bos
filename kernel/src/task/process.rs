@@ -3,8 +3,6 @@ use alloc::sync::Arc;
 use atomic_enum::atomic_enum;
 use core::sync::atomic::{AtomicU64, Ordering};
 use ez_paging::ManagedL4PageTable;
-use spin::Mutex;
-use x86_64::VirtAddr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskId(u64);
@@ -62,7 +60,7 @@ pub struct Task {
 }
 
 impl Task {
-    pub fn new(func: TaskFn, kernel_stack: GuardedStack) -> Arc<Self> {
+    pub fn new(_func: TaskFn, _kernel_stack: GuardedStack) -> Arc<Self> {
         todo!();
         /*
         let rsp = kernel_stack.top().as_u64();

@@ -1,10 +1,8 @@
 use crate::memory::MEMORY;
-use crate::memory::virtual_memory_allocator::VirtualMemoryAllocator;
 use acpi::aml::AmlError;
-use acpi::{AcpiTable, AcpiTables, Handle, PciAddress, PhysicalMapping};
+use acpi::{AcpiTables, Handle, PciAddress, PhysicalMapping};
 use core::marker::PhantomData;
 use core::num::NonZero;
-use core::ops::Div;
 use core::ptr::NonNull;
 use ez_paging::{ConfigurableFlags, Frame, Page, max_page_size};
 use limine::response::RsdpResponse;
@@ -87,83 +85,83 @@ impl acpi::Handler for KernelAcpiHandler {
         }
     }
 
-    fn read_u8(&self, address: usize) -> u8 {
+    fn read_u8(&self, _address: usize) -> u8 {
         todo!()
     }
 
-    fn read_u16(&self, address: usize) -> u16 {
+    fn read_u16(&self, _address: usize) -> u16 {
         todo!()
     }
 
-    fn read_u32(&self, address: usize) -> u32 {
+    fn read_u32(&self, _address: usize) -> u32 {
         todo!()
     }
 
-    fn read_u64(&self, address: usize) -> u64 {
+    fn read_u64(&self, _address: usize) -> u64 {
         todo!()
     }
 
-    fn write_u8(&self, address: usize, value: u8) {
+    fn write_u8(&self, _address: usize, _value: u8) {
         todo!()
     }
 
-    fn write_u16(&self, address: usize, value: u16) {
+    fn write_u16(&self, _address: usize, _value: u16) {
         todo!()
     }
 
-    fn write_u32(&self, address: usize, value: u32) {
+    fn write_u32(&self, _address: usize, _value: u32) {
         todo!()
     }
 
-    fn write_u64(&self, address: usize, value: u64) {
+    fn write_u64(&self, _address: usize, _value: u64) {
         todo!()
     }
 
-    fn read_io_u8(&self, port: u16) -> u8 {
+    fn read_io_u8(&self, _port: u16) -> u8 {
         todo!()
     }
 
-    fn read_io_u16(&self, port: u16) -> u16 {
+    fn read_io_u16(&self, _port: u16) -> u16 {
         todo!()
     }
 
-    fn read_io_u32(&self, port: u16) -> u32 {
+    fn read_io_u32(&self, _port: u16) -> u32 {
         todo!()
     }
 
-    fn write_io_u8(&self, port: u16, value: u8) {
+    fn write_io_u8(&self, _port: u16, _value: u8) {
         todo!()
     }
 
-    fn write_io_u16(&self, port: u16, value: u16) {
+    fn write_io_u16(&self, _port: u16, _value: u16) {
         todo!()
     }
 
-    fn write_io_u32(&self, port: u16, value: u32) {
+    fn write_io_u32(&self, _port: u16, _value: u32) {
         todo!()
     }
 
-    fn read_pci_u8(&self, address: PciAddress, offset: u16) -> u8 {
+    fn read_pci_u8(&self, _address: PciAddress, _offset: u16) -> u8 {
         todo!()
     }
 
-    fn read_pci_u16(&self, address: PciAddress, offset: u16) -> u16 {
+    fn read_pci_u16(&self, _address: PciAddress, _offset: u16) -> u16 {
         todo!()
     }
 
-    fn read_pci_u32(&self, address: PciAddress, offset: u16) -> u32 {
+    fn read_pci_u32(&self, _address: PciAddress, _offset: u16) -> u32 {
         todo!()
     }
 
-    fn write_pci_u8(&self, address: PciAddress, offset: u16, value: u8) {
+    fn write_pci_u8(&self, _address: PciAddress, _offset: u16, _value: u8) {
         todo!()
     }
 
-    fn write_pci_u16(&self, address: PciAddress, offset: u16, value: u16) {
+    fn write_pci_u16(&self, _address: PciAddress, _offset: u16, _value: u16) {
         todo!()
     }
 
-    fn write_pci_u32(&self, address: PciAddress, offset: u16, value: u32) {
+    fn write_pci_u32(&self, _address: PciAddress, _offset: u16, _value: u32) {
         todo!()
     }
 
@@ -171,11 +169,11 @@ impl acpi::Handler for KernelAcpiHandler {
         todo!()
     }
 
-    fn stall(&self, microseconds: u64) {
+    fn stall(&self, _microseconds: u64) {
         todo!()
     }
 
-    fn sleep(&self, milliseconds: u64) {
+    fn sleep(&self, _milliseconds: u64) {
         todo!()
     }
 
@@ -183,11 +181,11 @@ impl acpi::Handler for KernelAcpiHandler {
         todo!()
     }
 
-    fn acquire(&self, mutex: Handle, timeout: u16) -> Result<(), AmlError> {
+    fn acquire(&self, _mutex: Handle, _timeout: u16) -> Result<(), AmlError> {
         todo!()
     }
 
-    fn release(&self, mutex: Handle) {
+    fn release(&self, _mutex: Handle) {
         todo!()
     }
 }

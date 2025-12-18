@@ -5,7 +5,6 @@ use core::arch::{asm, naked_asm};
 use core::mem::offset_of;
 use core::sync::atomic::Ordering;
 use kernel_api_types::SysCallNumber;
-use kernel_api_types::graphics::{GraphicsResult, PixelData, Rect};
 use x86_64::VirtAddr;
 use x86_64::registers::control::{Efer, EferFlags};
 use x86_64::registers::model_specific::LStar;
@@ -86,10 +85,12 @@ type SyscallFn = fn(u64, u64, u64, u64, u64, u64) -> u64;
 static mut SYS_CALL_TABLE: [Option<SyscallFn>; 256] = [None; 256];
 
 unsafe fn dispatch_syscall(syscall_number: u64, args: &[u64; 6]) -> u64 {
-    if let Some(f) = SYS_CALL_TABLE[syscall_number as usize] {
-        f(args[0], args[1], args[2], args[3], args[4], args[5])
-    } else {
-        0xFFFF_FFFF_FFFF_FFFF
+    unsafe {
+        if let Some(f) = SYS_CALL_TABLE[syscall_number as usize] {
+            f(args[0], args[1], args[2], args[3], args[4], args[5])
+        } else {
+            0xFFFF_FFFF_FFFF_FFFF
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 use crate::graphics::frame_buffer_embedded_graphics::FrameBufferEmbeddedGraphics;
 use core::convert::Infallible;
 use embedded_graphics::Pixel;
-use embedded_graphics::geometry::{Dimensions, Point};
+use embedded_graphics::geometry::Dimensions;
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::DrawTarget;
 use embedded_graphics::primitives::Rectangle;

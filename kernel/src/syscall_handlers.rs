@@ -4,7 +4,6 @@ use embedded_graphics::geometry::Point;
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::primitives::Rectangle;
 use kernel_api_types::graphics::{GraphicsResult, PixelData, Rect, Rgb888Raw};
-use owo_colors::OwoColorize;
 
 /// Syscall: draw multiple pixels from user-space
 pub fn sys_draw_iter(pixels_ptr: u64, len: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
@@ -17,7 +16,7 @@ pub fn sys_draw_iter(pixels_ptr: u64, len: u64, _: u64, _: u64, _: u64, _: u64) 
     });
 
     // Draw the pixels
-    if let Err(_) = DISPLAY.draw_iter(pixels_iter) {
+    if DISPLAY.draw_iter(pixels_iter).is_err() {
         return GraphicsResult::InvalidInput as u64;
     }
 
