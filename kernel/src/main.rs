@@ -34,7 +34,7 @@ unsafe extern "C" fn kernel_main() -> ! {
 
     // Enable logger
     logger::init().unwrap();
-    log::info!("Welcome to BogOS! V:0.3.0");
+    log::info!("Welcome to Bos! V:0.3.0");
 
     let memory_map = MEMORY_MAP_REQUEST.get_response().unwrap();
     unsafe { kernel::memory::init_bsp(memory_map) };

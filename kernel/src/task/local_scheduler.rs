@@ -92,7 +92,7 @@ pub unsafe extern "C" fn context_switch(old: *mut CpuContext, new: *const CpuCon
         "mov [rdi + 0x30], rsp",
         "pushfq",
         "pop [rdi + 0x38]",
-        "lea rax, [rip + 0f]",
+        "lea rax, [rip + 2f]",
         "mov [rdi + 0x40], rax",
         // Load new task registers
         "mov r15, [rsi + 0x00]",
@@ -106,7 +106,7 @@ pub unsafe extern "C" fn context_switch(old: *mut CpuContext, new: *const CpuCon
         "popfq",
         "jmp [rsi + 0x40]", // rip
         // label for next instruction after returning
-        "0:"
+        "2:"
     );
 }
 

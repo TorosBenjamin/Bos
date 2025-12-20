@@ -26,9 +26,6 @@ elf = {version = "0.8.0", default-features = false}
 bitflags = "2.10.0"
 kernel_api_types = {path = "../kernel_api_types"}
 
-[patch.crates-io]
-x86_64 = "=0.15.4"
-
 
 [[bin]]
 name = "kernel"
