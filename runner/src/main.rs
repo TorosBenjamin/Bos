@@ -26,7 +26,15 @@ fn main() {
     qemu.arg("--no-reboot");
     // qemu.arg("-d").arg("int");
 
-    // Pass any arguments
+    // Testing
+    let is_test = std::env::var("CARGO_CFG_TEST").is_ok();
+    if is_test {
+        qemu.arg("-device")
+            .arg("isa-debug-exit,iobase=0xf4,iosize=0x04");
+
+        qemu.arg("-serial").arg("stdio");
+    }
+
     env::args().skip(1).for_each(|arg| {
         qemu.arg(arg);
     });
