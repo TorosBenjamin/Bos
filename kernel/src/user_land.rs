@@ -1,7 +1,7 @@
 use crate::limine_requests::{MODULE_REQUEST, USER_LAND_PATH};
 use crate::memory::MEMORY;
 use crate::memory::physical_memory::{MemoryType, OffsetMappedPhysAddr, OffsetMappedPhysFrame};
-use crate::memory::virtual_memory_allocator::OffsetMappedVirtAddr;
+use crate::memory::vaddr_allocator::OffsetMappedVirtAddr;
 use crate::{LOWER_HALF_END, raw_syscall_handler};
 use bitflags::bitflags;
 use core::arch::asm;

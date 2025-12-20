@@ -41,12 +41,12 @@ pub unsafe fn init(memory_map: &'static MemoryMapResponse) -> PhysAddr {
             GLOBAL_ALLOCATOR_SIZE as usize,
         ))
         .unwrap();
-        // Safety: We've reserved the physical memory and it is already offset mapped
+        // Safety: Physical memory must be reserved and offset mapped
         unsafe { ptr.as_mut() }
     };
     let mut talc = GLOBAL_ALLOCATOR.lock();
     let span = global_allocator_mem.into();
-    // Safety: We got the span from valid memory
+    // Safety: Span must be from valid memory
     unsafe { talc.claim(span) }.unwrap();
 
     global_allocator_physical_start

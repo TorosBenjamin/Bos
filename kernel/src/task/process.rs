@@ -1,21 +1,24 @@
-use crate::memory::guarded_stack::GuardedStack;
+use crate::memory::guarded_stack::{GuardedStack, StackId, StackType, NORMAL_STACK_SIZE};
 use alloc::sync::Arc;
 use atomic_enum::atomic_enum;
 use core::sync::atomic::{AtomicU64, Ordering};
 use ez_paging::ManagedL4PageTable;
+use x86_64::registers::segmentation::CS;
+use crate::memory::cpu_local_data::get_local;
+use crate::memory::vaddr_allocator::VirtualMemoryAllocator;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct TaskId(u64);
+pub struct ThreadId(u64);
 
-impl TaskId {
+impl ThreadId {
     fn new() -> Self {
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-        TaskId(NEXT_ID.fetch_add(1, Ordering::Relaxed))
+        ThreadId(NEXT_ID.fetch_add(1, Ordering::Relaxed))
     }
 }
 
 #[atomic_enum]
-pub enum TaskState {
+pub enum ThreadState {
     Running,
     Ready,
     Blocked,
@@ -34,35 +37,33 @@ pub struct CpuContext {
     pub rbp: u64,
 
     // return frame
-    pub rip: u64,
     pub rsp: u64,
     pub rflags: u64,
-
-    pub cs: u64,
-    pub ss: u64,
+    pub rip: u64,
 }
 
-pub type TaskFn = fn() -> !;
+pub type ThreadFn = fn() -> !;
 
-pub struct Task {
-    pub id: TaskId,
-    pub state: AtomicTaskState,
+pub struct KernelThread {
+    pub id: ThreadId,
+    pub state: AtomicThreadState,
 
     // CPU context saved during preemption
     pub context: CpuContext,
 
     // Stacks
     pub kernel_stack: GuardedStack,
-    pub user_stack: GuardedStack,
-
-    // Memory
-    pub address_space: Arc<ManagedL4PageTable>,
 }
 
-impl Task {
-    pub fn new(_func: TaskFn, _kernel_stack: GuardedStack) -> Arc<Self> {
-        todo!();
-        /*
+impl KernelThread {
+    pub fn new(func: ThreadFn) -> Arc<Self> {
+        let kernel_stack = GuardedStack::new_kernel(
+            NORMAL_STACK_SIZE,
+            StackId {
+                _type: StackType::Normal,
+                cpu_id: get_local().kernel_id,
+            }
+        );
         let rsp = kernel_stack.top().as_u64();
         let context = CpuContext {
             r15: 0,
@@ -71,20 +72,19 @@ impl Task {
             r12: 0,
             rbx: 0,
             rbp: 0,
-            rip: func as u64,     // start executing the function
             rsp,                  // top of kernel stack
             rflags: 0x202,        // interrupt enable
-            cs: ,
-            ss: ,
+            rip: func as u64,     // start executing the function
+
         };
 
-        Arc::new(Task {
-            id: TaskId::new(),
-            state: AtomicTaskState::new(TaskState::Ready),
-            context,
-            kernel_stack,
-            user_stack: GuardedStack::new_kernel()
-        })
-        */
+        Arc::new(
+            KernelThread {
+                id: ThreadId::new(),
+                state: AtomicThreadState::new(ThreadState::Ready),
+                context,
+                kernel_stack,
+            }
+        )
     }
 }

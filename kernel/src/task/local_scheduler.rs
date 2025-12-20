@@ -1,14 +1,14 @@
 use crate::hlt_loop;
 use crate::memory::cpu_local_data::{CpuLocalData, get_local};
 use crate::task::global_scheduler::TASK_TABLE;
-use crate::task::process::{CpuContext, TaskId, TaskState};
+use crate::task::process::{CpuContext, ThreadId, ThreadState};
 use alloc::collections::VecDeque;
 use core::arch::naked_asm;
 use core::sync::atomic::Ordering;
 
 pub struct RunQueue {
-    pub current: Option<TaskId>,
-    pub ready: VecDeque<TaskId>,
+    pub current: Option<ThreadId>,
+    pub ready: VecDeque<ThreadId>,
 }
 
 pub fn schedule(cpu: &CpuLocalData) {
@@ -18,7 +18,7 @@ pub fn schedule(cpu: &CpuLocalData) {
         let tasks = TASK_TABLE.lock();
         if let Some(current) = tasks.get(&current_id) {
             // set state to READY
-            current.state.store(TaskState::Ready, Ordering::Relaxed);
+            current.state.store(ThreadState::Ready, Ordering::Relaxed);
 
             // push back into ready queue
             rq.ready.push_back(current_id);
@@ -30,7 +30,7 @@ pub fn schedule(cpu: &CpuLocalData) {
         let tasks = TASK_TABLE.lock();
         if let Some(next) = tasks.get(&next_id) {
             // set state to RUNNING
-            next.state.store(TaskState::Running, Ordering::Relaxed);
+            next.state.store(ThreadState::Running, Ordering::Relaxed);
 
             // set as current
             rq.current = Some(next_id);
@@ -48,12 +48,12 @@ pub fn schedule(cpu: &CpuLocalData) {
     }
 }
 
-pub fn add(cpu: &CpuLocalData, task_id: TaskId) {
+pub fn add(cpu: &CpuLocalData, task_id: ThreadId) {
     let mut rq = cpu.run_queue.get().unwrap().lock();
 
     let tasks = TASK_TABLE.lock();
     if let Some(task) = tasks.get(&task_id) {
-        task.state.store(TaskState::Ready, Ordering::Relaxed);
+        task.state.store(ThreadState::Ready, Ordering::Relaxed);
 
         rq.ready.push_back(task_id);
     } else {
@@ -120,4 +120,16 @@ pub unsafe extern "sysv64" fn switch_to(new_rsp: u64, f: extern "sysv64" fn() ->
         call rsi
         "
     );
+}
+
+/// Safety: cpu_init must be called before
+pub fn init_run_queue() {
+    let cpu = get_local();
+
+    cpu.run_queue.call_once(|| {
+        spin::Mutex::new(RunQueue {
+            current: None,
+            ready: VecDeque::new(),
+        })
+    });
 }

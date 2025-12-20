@@ -1,9 +1,15 @@
 #![no_std]
-#![cfg_attr(test, no_main)]
+#![no_main]
 #![feature(abi_x86_interrupt)]
+
+// Enable custom test framework
+#![feature(custom_test_frameworks)]
+#![test_runner(crate::test_runner)]
+#![reexport_test_harness_main = "test_main"]
+
 extern crate alloc;
 
-use num_enum::IntoPrimitive;
+use core::panic::PanicInfo;
 
 pub const HIGHER_HALF_START: u64 = 0xFFFF800000000000;
 pub const LOWER_HALF_END: u64 = 0x800000000000;
@@ -24,16 +30,65 @@ pub mod syscall_handlers;
 pub mod task;
 pub mod user_land;
 
-#[derive(Debug, IntoPrimitive)]
-#[repr(u8)]
-pub enum InterruptVector {
-    LocalApicSpurious = 0x20,
-    LocalApicTimer,
-    LocalApicError,
-}
-
 pub fn hlt_loop() -> ! {
     loop {
         x86_64::instructions::hlt();
     }
+}
+
+// -- Testing --
+
+pub trait Testable {
+    fn run(&self) -> ();
+}
+
+impl<T> Testable for T
+where
+    T: Fn(),
+{
+    fn run(&self) {
+        log::info!("{}...\t", core::any::type_name::<T>());
+        self();
+        log::info!("[ok]");
+    }
+}
+
+pub fn test_runner(tests: &[&dyn Fn()]) {
+    log::info!("Running {} tests", tests.len());
+    for test in tests {
+        test();
+    }
+    exit_qemu(QemuExitCode::Success);
+
+    hlt_loop();
+}
+
+pub fn test_panic_handler(info: &PanicInfo) -> ! {
+    log::error!("[failed]");
+    log::error!("Error: {}\n", info);
+    exit_qemu(QemuExitCode::Failed);
+
+    hlt_loop();
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum QemuExitCode {
+    Success = 0x10,
+    Failed  = 0x11,
+}
+
+pub fn exit_qemu(exit_code: QemuExitCode) {
+    use x86_64::instructions::port::Port;
+
+    unsafe {
+        let mut port = Port::new(0xf4);
+        port.write(exit_code as u32);
+    }
+}
+
+#[cfg(test)]
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    test_panic_handler(info)
 }

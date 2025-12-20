@@ -1,6 +1,6 @@
 use crate::memory::hhdm_offset::hhdm_offset;
 use crate::memory::physical_memory::{OffsetMappedPhysAddr, OffsetMappedPhysFrame, PhysicalMemory};
-use crate::memory::virtual_memory_allocator::VirtualMemoryAllocator;
+use crate::memory::vaddr_allocator::VirtualMemoryAllocator;
 use core::ops::Deref;
 use core::ptr::NonNull;
 use ez_paging::{ConfigurableFlags, Frame, ManagedPat, PagingConfig, max_page_size};
@@ -80,8 +80,8 @@ pub fn create_page_tables(
         }
     }
 
-    // We must map the kernel, which lies in the top 2 GiB of virtual memory
-    // We can just reuse Limine's mappings for the top 512 GiB
+    // Map the kernel to the top 2 GiB of virtual memory
+    // Reuse Limine's mappings for the top 512 GiB
     let (current_l4_frame, cr3_flags) = Cr3::read();
     let current_l4_page_table = {
         let ptr = NonNull::new(

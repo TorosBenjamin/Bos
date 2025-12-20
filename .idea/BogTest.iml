@@ -6,6 +6,8 @@
       <sourceFolder url="file://$MODULE_DIR$/kernel/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/user_land/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/kernel_api_types/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/kernel/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/runner/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

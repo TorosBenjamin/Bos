@@ -1,4 +1,3 @@
-use crate::InterruptVector;
 use crate::memory::MEMORY;
 use crate::memory::cpu_local_data::get_local;
 use acpi::AcpiTables;
@@ -8,9 +7,10 @@ use ez_paging::{ConfigurableFlags, Frame, PageSize};
 use force_send_sync::SendSync;
 use raw_cpuid::CpuId;
 use spin::Once;
-use x2apic::lapic::LocalApicBuilder;
-use x86_64::registers::model_specific::PatMemoryType;
+use x2apic::lapic::{LocalApicBuilder, TimerDivide, TimerMode};
+use x86_64::registers::model_specific::{Msr, PatMemoryType};
 use x86_64::{PhysAddr, VirtAddr};
+use crate::interrupt::InterruptVector;
 
 pub enum LocalApicAccess {
     RegisterBased,
@@ -28,8 +28,10 @@ pub fn init_bsp(acpi_tables: &AcpiTables<impl acpi::Handler>) {
     };
     LOCAL_APIC_ACCESS.call_once(|| {
         if cpu_has_x2apic() {
+            log::info!("x2apic support enabled");
             LocalApicAccess::RegisterBased
         } else {
+            log::info!("x2apic support disabled");
             // Local apic is always exactly 4KiB, aligned to 4KiB
             let page_size = PageSize::_4KiB;
             let frame = Frame::new(PhysAddr::new(apic.local_apic_address), page_size).unwrap();
@@ -76,9 +78,7 @@ pub fn init_local_apic() {
                 builder.timer_vector(u8::from(InterruptVector::LocalApicTimer).into());
 
                 let mut local_apic = builder.build().unwrap();
-
                 unsafe { local_apic.enable() }
-                unsafe { local_apic.disable() }
                 local_apic
             };
             unsafe { SendSync::new(local_apic) }
@@ -93,4 +93,22 @@ fn cpu_has_x2apic() -> bool {
         Some(info) => info.has_x2apic(),
         None => false,
     }
+}
+
+const IA32_X2APIC_SVR: u32 = 0x80F;
+
+pub fn is_enabled() -> bool {
+    let svr = unsafe { Msr::new(IA32_X2APIC_SVR).read() };
+    svr & (1 << 8) != 0
+}
+
+pub fn init_timer() {
+    let mut local_apic = get_local().local_apic.get().unwrap().try_lock().unwrap();
+    // Set up timer and enable it
+    unsafe {
+        local_apic.set_timer_mode(TimerMode::Periodic);
+        local_apic.set_timer_divide(TimerDivide::Div1);
+        local_apic.set_timer_initial(100_000);
+        local_apic.enable_timer()
+    };
 }

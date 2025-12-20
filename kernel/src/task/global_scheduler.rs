@@ -1,17 +1,17 @@
 use crate::memory::cpu_local_data::get_local;
-use crate::task::process::{Task, TaskId, TaskState};
+use crate::task::process::{KernelThread, ThreadId, ThreadState};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 use spin::Mutex;
 
-pub static TASK_TABLE: Mutex<BTreeMap<TaskId, Arc<Task>>> = Mutex::new(BTreeMap::new());
+pub static TASK_TABLE: Mutex<BTreeMap<ThreadId, Arc<KernelThread>>> = Mutex::new(BTreeMap::new());
 
-pub fn spawn_task(task: Arc<Task>) {
+pub fn spawn_task(task: Arc<KernelThread>) {
     // Insert into the global TASK_TABLE
-    let task_id = task.id;
-    let mut tasks = TASK_TABLE.lock();
-    if tasks.insert(task_id, task.clone()).is_some() {
+    let thread_id = task.id;
+    let mut threads = TASK_TABLE.lock();
+    if threads.insert(thread_id, task.clone()).is_some() {
         panic!("Task with the same ID already exists");
     }
 
@@ -19,6 +19,12 @@ pub fn spawn_task(task: Arc<Task>) {
     // TODO: Add load balancing
     let cpu = get_local();
     let mut rq = cpu.run_queue.get().unwrap().lock();
-    task.state.store(TaskState::Ready, Ordering::Relaxed);
-    rq.ready.push_back(task_id);
+    task.state.store(ThreadState::Ready, Ordering::Relaxed);
+    rq.ready.push_back(thread_id);
+
+    log::info!(
+        "Task {:?} scheduled on CPU {} and pushed to ready queue",
+        thread_id,
+        cpu.kernel_id
+    );
 }

@@ -10,6 +10,6 @@ user_land = {path = "../user_land", artifact = "bin", target = "x86_64-unknown-n
 
 [[bin]]
 name = "runner"
-path = "main.rs"
+path = "src/main.rs"
 test = false
 bench = false

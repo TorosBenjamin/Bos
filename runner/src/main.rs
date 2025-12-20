@@ -19,10 +19,12 @@ fn main() {
     qemu.arg("-drive")
         .arg(format!("if=pflash,format=raw,unit=1,file={ovmf_vars}"));
 
+    // SMP
     qemu.arg("--smp").arg(number_of_cpus.to_string());
 
+    // Debugging
     qemu.arg("--no-reboot");
-    qemu.arg("-d").arg("int");
+    // qemu.arg("-d").arg("int");
 
     // Pass any arguments
     env::args().skip(1).for_each(|arg| {

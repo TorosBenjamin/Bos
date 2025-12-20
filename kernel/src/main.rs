@@ -1,17 +1,26 @@
 #![no_std]
 #![no_main]
+#![feature(custom_test_frameworks)]
+#![test_runner(kernel::test_runner)]
 
 extern crate alloc;
 extern crate kernel;
 
 use crate::kernel::limine_requests::{FRAME_BUFFER_REQUEST, MEMORY_MAP_REQUEST, MP_REQUEST};
 use core::sync::atomic::{AtomicBool, Ordering};
+use log::log;
+use x86_64::instructions::interrupts;
+use x86_64::registers::model_specific::Msr;
 use kernel::graphics::display;
 use kernel::limine_requests::{BASE_REVISION, RSDP_REQUEST};
 use kernel::memory::cpu_local_data::get_local;
 use kernel::memory::guarded_stack::{GuardedStack, NORMAL_STACK_SIZE, StackId, StackType};
 use kernel::user_land::run_user_land;
 use kernel::{acpi, apic, gdt, hlt_loop, interrupt, nmi_handler_state};
+use kernel::apic::{init_timer, LocalApicAccess, LOCAL_APIC_ACCESS};
+use kernel::task::global_scheduler::spawn_task;
+use kernel::task::local_scheduler::init_run_queue;
+use kernel::task::process::KernelThread;
 
 mod logger;
 
@@ -53,16 +62,19 @@ extern "sysv64" fn init_bsp() -> ! {
     log::info!("BSP NMI handler initialized.");
 
     gdt::init();
-    log::info!("BSP GDT initialized.");
     interrupt::init();
-    log::info!("BSP IDT initialized.");
 
     let rsdp = RSDP_REQUEST.get_response().unwrap();
     let acpi_tables = acpi::parse(rsdp);
     apic::init_bsp(&acpi_tables);
-    log::info!("BSP APIC initialized.");
     apic::init_local_apic();
-    log::info!("Local APIC initialized.");
+
+    init_timer();
+
+    #[cfg(test)]
+    test_main();
+
+    init_run_queue();
 
     let mp_response = MP_REQUEST.get_response().unwrap();
     for cpu in mp_response.cpus() {
@@ -71,7 +83,6 @@ extern "sysv64" fn init_bsp() -> ! {
 
     run_user_land();
 
-    // Shouldn't run
     hlt_loop();
 }
 
@@ -81,7 +92,6 @@ unsafe extern "C" fn ap_entry(_cpu: &limine::mp::Cpu) -> ! {
 
     unsafe { kernel::memory::init_ap() };
     unsafe { kernel::memory::cpu_local_data::init_ap(_cpu) };
-    log::info!("Memory initialized.");
 
     GuardedStack::new_kernel(
         NORMAL_STACK_SIZE,
@@ -98,12 +108,16 @@ unsafe extern "C" fn ap_entry(_cpu: &limine::mp::Cpu) -> ! {
 
 extern "sysv64" fn init_ap() -> ! {
     gdt::init();
-    //log::info!("GDT initialized.");
     interrupt::init();
-    //log::info!("IDT initialized.");
     apic::init_local_apic();
-    //log::info!("Local APIC initialized.");
+    init_run_queue();
+    init_timer();
 
+    hlt_loop()
+}
+
+fn example_log() -> ! {
+    log::info!("Hello I'm under the water!");
     hlt_loop()
 }
 
