@@ -13,7 +13,7 @@ use kernel::limine_requests::{BASE_REVISION, RSDP_REQUEST};
 use kernel::memory::cpu_local_data::get_local;
 use kernel::memory::guarded_stack::{GuardedStack, NORMAL_STACK_SIZE, StackId, StackType};
 use kernel::user_land::run_user_land;
-use kernel::{acpi, apic, gdt, hlt_loop, interrupt, logger, nmi_handler_state};
+use kernel::{acpi, apic, gdt, hlt_loop, interrupt, logger, nmi_handler_state, project_version};
 use kernel::apic::{init_timer};
 use kernel::task::local_scheduler::init_run_queue;
 
@@ -28,7 +28,7 @@ unsafe extern "C" fn kernel_main() -> ! {
 
     // Enable logger
     logger::init().unwrap();
-    log::info!("Welcome to Bos! V:0.3.0");
+    log::info!("Welcome to Bos! V:{}", project_version());
 
     let memory_map = MEMORY_MAP_REQUEST.get_response().unwrap();
     unsafe { kernel::memory::init_bsp(memory_map) };

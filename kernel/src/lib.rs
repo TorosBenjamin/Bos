@@ -34,6 +34,10 @@ pub fn hlt_loop() -> ! {
     }
 }
 
+pub fn project_version() -> &'static str {
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../VERSION")).trim()
+}
+
 // -- Testing --
 pub fn test_runner(tests: &[&dyn Fn()]) {
     log::info!("Running {} tests", tests.len());
