@@ -81,9 +81,7 @@ pub fn init() {
         };
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         idt.non_maskable_interrupt.set_handler_fn(nmi_handler);
-        unsafe {
-            idt[u8::from(InterruptVector::LocalApicTimer)].set_handler_fn(timer_interrupt_handler);
-        };
+        idt[u8::from(InterruptVector::LocalApicTimer)].set_handler_fn(timer_interrupt_handler);
         idt
     });
     idt.load();

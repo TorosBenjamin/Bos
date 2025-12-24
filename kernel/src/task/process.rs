@@ -2,10 +2,7 @@ use crate::memory::guarded_stack::{GuardedStack, StackId, StackType, NORMAL_STAC
 use alloc::sync::Arc;
 use atomic_enum::atomic_enum;
 use core::sync::atomic::{AtomicU64, Ordering};
-use ez_paging::ManagedL4PageTable;
-use x86_64::registers::segmentation::CS;
 use crate::memory::cpu_local_data::get_local;
-use crate::memory::vaddr_allocator::VirtualMemoryAllocator;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ThreadId(u64);

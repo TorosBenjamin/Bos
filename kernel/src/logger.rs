@@ -2,12 +2,13 @@ use core::fmt::Display;
 use core::fmt::Write;
 use embedded_graphics::geometry::Point;
 use embedded_graphics::pixelcolor::{Rgb888, RgbColor};
-use kernel::graphics::DisplayData;
-use kernel::graphics::writer::Writer;
 use log::{Level, LevelFilter, Log};
 use owo_colors::OwoColorize;
 use uart_16550::SerialPort;
 use unicode_segmentation::UnicodeSegmentation;
+use crate::graphics::DisplayData;
+use crate::graphics::writer::Writer;
+use crate::memory;
 
 struct Inner {
     serial_port: SerialPort,
@@ -31,9 +32,6 @@ impl Inner {
             let mut writer = WriterWithCr::new(&mut self.serial_port);
             write!(writer, "{string}").unwrap();
         }
-
-        let mut writer = WriterWithCr::new(&mut self.serial_port);
-        write!(writer, "{string}").unwrap();
 
         // Write to screen
         if let Some(display_data) = &mut self.display {
@@ -68,8 +66,8 @@ static LOGGER: KernelLogger = KernelLogger {
 };
 
 impl Log for KernelLogger {
-    fn enabled(&self, _metadata: &log::Metadata) -> bool {
-        todo!()
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::max_level()
     }
 
     fn log(&self, record: &log::Record) {
@@ -86,8 +84,8 @@ impl Log for KernelLogger {
             format_args!("{level:5} "),
         );
         let cpu_id =
-            kernel::memory::cpu_local_data::try_get_local().map_or(0, |data| data.kernel_id);
-        let width = match kernel::memory::cpu_local_data::cpus_count() {
+            memory::cpu_local_data::try_get_local().map_or(0, |data| data.kernel_id);
+        let width = match memory::cpu_local_data::cpus_count() {
             1 => 1,
             n => (n - 1).ilog(16) as usize + 1,
         };
@@ -103,7 +101,7 @@ impl Log for KernelLogger {
 
 pub fn init() -> Result<(), log::SetLoggerError> {
     let mut inner = LOGGER.inner.try_lock().unwrap();
-    &mut inner.serial_port.init();
+    inner.serial_port.init();
     inner.display = Some(DisplayData {
         position: Point::zero(),
     });

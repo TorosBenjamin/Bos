@@ -1,26 +1,24 @@
 #![no_std]
 #![no_main]
-#![feature(custom_test_frameworks)]
-#![test_runner(kernel::test_runner)]
-#![reexport_test_harness_main = "test_main"]
+
+extern crate kernel;
 
 use core::panic::PanicInfo;
+use kernel::graphics::display;
+use kernel::limine_requests::FRAME_BUFFER_REQUEST;
+use kernel::logger;
 
-#[unsafe(no_mangle)] // don't mangle the name of this function
-pub extern "C" fn kernel_main() -> ! {
-    test_main();
+#[cfg(feature = "kernel_test")]
+#[unsafe(no_mangle)]
+unsafe extern "C" fn kernel_main() -> ! {
+    // Enable display
+    let frame_buffer = FRAME_BUFFER_REQUEST.get_response().unwrap();
+    display::init(&frame_buffer);
 
-    loop {}
-}
+    // Enable logger
+    logger::init().unwrap();
+    log::info!("Welcome to Bos! V:0.3.0");
 
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    kernel::test_panic_handler(info)
-}
-
-#[test_case]
-fn test_log() {
-    log::info!("test_log... ");
-    log::info!("test_log output");
-    log::info!("[ok]");
+    // Call the generated test harness
+    kernel::run_tests();
 }

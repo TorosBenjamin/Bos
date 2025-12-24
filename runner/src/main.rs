@@ -19,21 +19,13 @@ fn main() {
     qemu.arg("-drive")
         .arg(format!("if=pflash,format=raw,unit=1,file={ovmf_vars}"));
 
-    // SMP
+    // SMP + Serial
     qemu.arg("--smp").arg(number_of_cpus.to_string());
-
-    // Debugging
     qemu.arg("--no-reboot");
+    qemu.arg("-serial").arg("stdio");
     // qemu.arg("-d").arg("int");
 
-    // Testing
-    let is_test = std::env::var("CARGO_CFG_TEST").is_ok();
-    if is_test {
-        qemu.arg("-device")
-            .arg("isa-debug-exit,iobase=0xf4,iosize=0x04");
 
-        qemu.arg("-serial").arg("stdio");
-    }
 
     env::args().skip(1).for_each(|arg| {
         qemu.arg(arg);

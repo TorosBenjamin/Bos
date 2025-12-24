@@ -2,11 +2,6 @@
 #![no_main]
 #![feature(abi_x86_interrupt)]
 
-// Enable custom test framework
-#![feature(custom_test_frameworks)]
-#![test_runner(crate::test_runner)]
-#![reexport_test_harness_main = "test_main"]
-
 extern crate alloc;
 
 use core::panic::PanicInfo;
@@ -20,6 +15,7 @@ pub const USER_MAX: u64 = LOWER_HALF_END - 1;
 pub mod acpi;
 pub mod apic;
 pub mod gdt;
+
 pub mod graphics;
 pub mod interrupt;
 pub mod limine_requests;
@@ -30,6 +26,8 @@ pub mod syscall_handlers;
 pub mod task;
 pub mod user_land;
 
+pub mod logger;
+
 pub fn hlt_loop() -> ! {
     loop {
         x86_64::instructions::hlt();
@@ -37,22 +35,6 @@ pub fn hlt_loop() -> ! {
 }
 
 // -- Testing --
-
-pub trait Testable {
-    fn run(&self) -> ();
-}
-
-impl<T> Testable for T
-where
-    T: Fn(),
-{
-    fn run(&self) {
-        log::info!("{}...\t", core::any::type_name::<T>());
-        self();
-        log::info!("[ok]");
-    }
-}
-
 pub fn test_runner(tests: &[&dyn Fn()]) {
     log::info!("Running {} tests", tests.len());
     for test in tests {
@@ -71,6 +53,57 @@ pub fn test_panic_handler(info: &PanicInfo) -> ! {
     hlt_loop();
 }
 
+// Custom test harness
+pub trait KernelTest {
+    fn name(&self) -> &'static str;
+    fn run(&self);
+}
+
+impl<F> KernelTest for F
+where
+    F: Fn(),
+{
+    fn name(&self) -> &'static str {
+        core::any::type_name::<F>()
+    }
+
+    fn run(&self) {
+        log::info!("{}:\t", core::any::type_name::<F>());
+
+        self();
+
+        log::info!("\x1b[32m[ok]\x1b[0m");
+    }
+}
+
+#[cfg(feature = "kernel_test")]
+pub fn tests() -> &'static [&'static dyn KernelTest] {
+    &[
+        &trivial_assertion,
+        // add more here
+    ]
+}
+
+#[cfg(feature = "kernel_test")]
+pub fn run_tests() -> ! {
+    let tests = tests();
+
+    log::info!("Running {} kernel tests", tests.len());
+
+    for test in tests {
+        test.run();
+    }
+
+    exit_qemu(QemuExitCode::Success);
+    hlt_loop();
+}
+
+#[cfg(feature = "kernel_test")]
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    test_panic_handler(info)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum QemuExitCode {
@@ -87,8 +120,7 @@ pub fn exit_qemu(exit_code: QemuExitCode) {
     }
 }
 
-#[cfg(test)]
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    test_panic_handler(info)
+#[cfg(feature = "kernel_test")]
+fn trivial_assertion() {
+    assert_eq!(1, 1);
 }

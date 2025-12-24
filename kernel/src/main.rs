@@ -8,22 +8,16 @@ extern crate kernel;
 
 use crate::kernel::limine_requests::{FRAME_BUFFER_REQUEST, MEMORY_MAP_REQUEST, MP_REQUEST};
 use core::sync::atomic::{AtomicBool, Ordering};
-use log::log;
-use x86_64::instructions::interrupts;
-use x86_64::registers::model_specific::Msr;
 use kernel::graphics::display;
 use kernel::limine_requests::{BASE_REVISION, RSDP_REQUEST};
 use kernel::memory::cpu_local_data::get_local;
 use kernel::memory::guarded_stack::{GuardedStack, NORMAL_STACK_SIZE, StackId, StackType};
 use kernel::user_land::run_user_land;
-use kernel::{acpi, apic, gdt, hlt_loop, interrupt, nmi_handler_state};
-use kernel::apic::{init_timer, LocalApicAccess, LOCAL_APIC_ACCESS};
-use kernel::task::global_scheduler::spawn_task;
+use kernel::{acpi, apic, gdt, hlt_loop, interrupt, logger, nmi_handler_state};
+use kernel::apic::{init_timer};
 use kernel::task::local_scheduler::init_run_queue;
-use kernel::task::process::KernelThread;
 
-mod logger;
-
+#[cfg(not(feature = "kernel_test"))]
 #[unsafe(no_mangle)]
 unsafe extern "C" fn kernel_main() -> ! {
     assert!(BASE_REVISION.is_supported());
@@ -71,8 +65,11 @@ extern "sysv64" fn init_bsp() -> ! {
 
     init_timer();
 
-    #[cfg(test)]
-    test_main();
+    // Run tests if 'kernel_test' feature is enabled
+    #[cfg(feature = "kernel_test")]
+    {
+        kernel::run_tests();
+    }
 
     init_run_queue();
 
@@ -122,6 +119,8 @@ fn example_log() -> ! {
 }
 
 static DID_PANIC: AtomicBool = AtomicBool::new(false);
+
+#[cfg(not(feature = "kernel_test"))]
 #[panic_handler]
 fn rust_panic(_info: &core::panic::PanicInfo) -> ! {
     if !DID_PANIC.swap(true, Ordering::Relaxed) {
