@@ -1,14 +1,11 @@
 #![no_std]
 #![no_main]
 
-extern crate kernel;
-
 use core::panic::PanicInfo;
 use kernel::graphics::display;
 use kernel::limine_requests::FRAME_BUFFER_REQUEST;
 use kernel::logger;
 
-#[cfg(feature = "kernel_test")]
 #[unsafe(no_mangle)]
 unsafe extern "C" fn kernel_main() -> ! {
     // Enable display
@@ -20,5 +17,10 @@ unsafe extern "C" fn kernel_main() -> ! {
     log::info!("Welcome to Bos! V:0.3.0");
 
     // Call the generated test harness
-    kernel::run_tests();
+    tests::run_tests();
+}
+
+#[panic_handler]
+fn panic(_info: &PanicInfo) -> ! {
+    tests::test_panic_handler(_info);
 }

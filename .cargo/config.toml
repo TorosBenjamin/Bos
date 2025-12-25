@@ -7,4 +7,4 @@ bindeps = true
 rustflags = ["-C", "relocation-model=static"]
 
 [alias]
-ktest = "run -p runner --features kernel/kernel_test --"
+ktest = "run -p runner --features kernel_test --"

@@ -342,6 +342,7 @@ name = "runner"
 version = "0.1.0"
 dependencies = [
  "kernel",
+ "tests",
  "user_land",
 ]
 
@@ -405,6 +406,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a3ae828aa394de34c7de08f522d1b86bd1c182c668d27da69caadda00590f26d"
 dependencies = [
  "lock_api",
+]
+
+[[package]]
+name = "tests"
+version = "0.1.0"
+dependencies = [
+ "kernel",
+ "log",
+ "x86_64 0.15.4",
 ]
 
 [[package]]

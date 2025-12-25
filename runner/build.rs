@@ -33,8 +33,16 @@ fn main() {
     let boot_dir = iso_dir.join("boot");
     create_dir_all(&boot_dir).unwrap();
 
-    // Cargo passes us the path the to kernel executable because it is an artifact dep
-    let kernel_executable_file = env::var("CARGO_BIN_FILE_KERNEL").unwrap();
+    // If the 'kernel_test' feature is enabled run the tests project bin.
+    let kernel_executable_file = if env::var("CARGO_FEATURE_KERNEL_TEST").is_ok() {
+        env::var("CARGO_BIN_FILE_TESTS")
+            .expect("tests bin not built")
+    } else {
+        env::var("CARGO_BIN_FILE_KERNEL")
+            .expect("kernel bin not built")
+    };
+
+
     // Symlink the kernel binary to `kernel`
     let kernel_dest = iso_dir.join("kernel");
     ensure_symlink(&kernel_executable_file, &kernel_dest).unwrap();

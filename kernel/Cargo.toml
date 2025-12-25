@@ -26,16 +26,7 @@ elf = {version = "0.8.0", default-features = false}
 bitflags = "2.10.0"
 kernel_api_types = {path = "../kernel_api_types"}
 
-[features]
-kernel_test = []
-
 [[bin]]
 name = "kernel"
 test = false
 bench = false
-
-[[bin]]
-test = false
-bench = false
-name = "kernel_test_bin"
-path = "tests/basic_boot.rs"

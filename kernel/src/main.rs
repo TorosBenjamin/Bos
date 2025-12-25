@@ -17,7 +17,6 @@ use kernel::{acpi, apic, gdt, hlt_loop, interrupt, logger, nmi_handler_state, pr
 use kernel::apic::{init_timer};
 use kernel::task::local_scheduler::init_run_queue;
 
-#[cfg(not(feature = "kernel_test"))]
 #[unsafe(no_mangle)]
 unsafe extern "C" fn kernel_main() -> ! {
     assert!(BASE_REVISION.is_supported());
@@ -64,12 +63,6 @@ extern "sysv64" fn init_bsp() -> ! {
     apic::init_local_apic();
 
     init_timer();
-
-    // Run tests if 'kernel_test' feature is enabled
-    #[cfg(feature = "kernel_test")]
-    {
-        kernel::run_tests();
-    }
 
     init_run_queue();
 
@@ -120,7 +113,6 @@ fn example_log() -> ! {
 
 static DID_PANIC: AtomicBool = AtomicBool::new(false);
 
-#[cfg(not(feature = "kernel_test"))]
 #[panic_handler]
 fn rust_panic(_info: &core::panic::PanicInfo) -> ! {
     if !DID_PANIC.swap(true, Ordering::Relaxed) {
