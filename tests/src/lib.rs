@@ -4,6 +4,9 @@
 use core::panic::PanicInfo;
 use kernel::hlt_loop;
 
+pub mod panic_handler;
+pub mod memory;
+
 pub fn test_runner(tests: &[&dyn Fn()]) {
     log::info!("Running {} tests", tests.len());
     for test in tests {
@@ -18,38 +21,47 @@ pub fn test_panic_handler(info: &PanicInfo) -> ! {
     log::error!("[failed]");
     log::error!("Error: {}\n", info);
     exit_qemu(QemuExitCode::Failed);
-
     hlt_loop();
 }
 
 // Custom test harness
 pub trait KernelTest {
     fn name(&self) -> &'static str;
-    fn run(&self);
+    fn run(&self) -> TestResult;
 }
 
 impl<F> KernelTest for F
 where
-    F: Fn(),
+    F: Fn() -> TestResult,
 {
     fn name(&self) -> &'static str {
         core::any::type_name::<F>()
     }
 
-    fn run(&self) {
-        log::info!("{}:\t", core::any::type_name::<F>());
-
-        self();
-
-        log::info!("\x1b[32m[ok]\x1b[0m");
+    fn run(&self) -> TestResult {
+        self()
     }
+}
+
+
+#[derive(Debug)]
+pub enum TestResult {
+    Ok,
+    Failed(&'static str),
 }
 
 
 pub fn tests() -> &'static [&'static dyn KernelTest] {
     &[
         &trivial_assertion,
-        // add more here
+
+        // Tests with expected panic can't be really be caught right now
+        // so they should be commented out so others can run
+        &memory::alloc_one_frame,
+        &memory::frame_alignment,
+        &memory::kernel_type,
+        &memory::user_type,
+        &memory::exhaustion,
     ]
 }
 
@@ -57,12 +69,26 @@ pub fn run_tests() -> ! {
     let tests = tests();
 
     log::info!("Running {} kernel tests", tests.len());
+    let mut failed = 0;
 
     for test in tests {
-        test.run();
+        let result = test.run();
+        match result {
+            TestResult::Ok => log::info!("{} [ok]", test.name()),
+            TestResult::Failed(msg) => {
+                log::error!("{} [failed] - {}", test.name(), msg);
+                failed += 1;
+            }
+        }
     }
 
-    exit_qemu(QemuExitCode::Success);
+    if failed == 0 {
+        exit_qemu(QemuExitCode::Success);
+    } else {
+        log::info!("{} kernel tests failed", failed);
+        exit_qemu(QemuExitCode::Failed);
+    }
+
     hlt_loop();
 }
 
@@ -82,6 +108,10 @@ pub fn exit_qemu(exit_code: QemuExitCode) {
     }
 }
 
-fn trivial_assertion() {
-    assert_eq!(1, 1);
+fn trivial_assertion() -> TestResult {
+    if 1 == 1 {
+        TestResult::Ok
+    } else {
+        TestResult::Failed("1 != 1")
+    }
 }

@@ -24,6 +24,8 @@ fn main() {
     qemu.arg("--no-reboot");
     qemu.arg("-serial").arg("stdio");
     // qemu.arg("-d").arg("int");
+    qemu.arg("-device")
+        .arg("isa-debug-exit,iobase=0xf4,iosize=0x04");
 
 
 
