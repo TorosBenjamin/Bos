@@ -1,11 +1,14 @@
 #![no_std]
 #![no_main]
+extern crate alloc;
 
+use alloc::format;
+use alloc::string::String;
 use core::panic::PanicInfo;
 use kernel::hlt_loop;
 
 pub mod panic_handler;
-pub mod memory;
+pub mod physical_memory;
 
 pub fn test_runner(tests: &[&dyn Fn()]) {
     log::info!("Running {} tests", tests.len());
@@ -47,7 +50,7 @@ where
 #[derive(Debug)]
 pub enum TestResult {
     Ok,
-    Failed(&'static str),
+    Failed(String),
 }
 
 
@@ -57,11 +60,13 @@ pub fn tests() -> &'static [&'static dyn KernelTest] {
 
         // Tests with expected panic can't be really be caught right now
         // so they should be commented out so others can run
-        &memory::alloc_one_frame,
-        &memory::frame_alignment,
-        &memory::kernel_type,
-        &memory::user_type,
-        &memory::exhaustion,
+        &physical_memory::alloc_one_frame,
+        &physical_memory::free_and_reuse_kernel_frame,
+        &physical_memory::frame_alignment,
+        &physical_memory::kernel_type,
+        &physical_memory::user_type,
+        &physical_memory::exhaustion,
+        &physical_memory::duplicate_allocation,
     ]
 }
 
@@ -109,9 +114,11 @@ pub fn exit_qemu(exit_code: QemuExitCode) {
 }
 
 fn trivial_assertion() -> TestResult {
-    if 1 == 1 {
+    let a = 1;
+    let b = 1;
+    if a == b {
         TestResult::Ok
     } else {
-        TestResult::Failed("1 != 1")
+        TestResult::Failed(format!("{} != {}", a, b))
     }
 }

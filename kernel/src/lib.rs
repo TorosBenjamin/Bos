@@ -26,6 +26,8 @@ pub mod syscall_handlers;
 pub mod task;
 pub mod user_land;
 
+pub mod exceptions;
+
 pub mod logger;
 
 pub fn hlt_loop() -> ! {

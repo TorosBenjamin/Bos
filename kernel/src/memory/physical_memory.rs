@@ -6,6 +6,8 @@ use limine::response::MemoryMapResponse;
 use nodit::{Interval, NoditMap};
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
 use x86_64::{PhysAddr, VirtAddr};
+use crate::acpi::parse;
+use crate::exceptions::FreeError;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum KernelMemoryUsageType {
@@ -111,6 +113,55 @@ impl PhysicalMemory {
             .unwrap();
         Some(Frame::new(PhysAddr::new(aligned_start), page_size).unwrap())
     }
+
+    pub fn free_frame(
+        &mut self,
+        frame: Owned4KibFrame,
+        expected: MemoryType,
+    ) -> Result<(), FreeError> {
+        let start = frame.start_address().as_u64();
+        let end = start + frame.size() - 1;
+
+        let (interval, found_type) = self
+            .map
+            .iter()
+            .find(|(i, ty)| {
+                *i.start() <= start && *i.end() >= end
+            })
+            .ok_or(FreeError::FrameNotAllocated)?;
+
+        if *found_type != expected {
+            return Err(FreeError::WrongMemoryType {
+                expected,
+                found: *found_type,
+            });
+        }
+
+        // Cut out the frame's range
+        let _ = self.map.cut(&Interval::from(start..end));
+
+        // Insert it back as usable
+        self.map
+            .insert_merge_touching_if_values_equal(
+                Interval::from(start..end),
+                MemoryType::Usable,
+            )
+            .unwrap();
+
+        Ok(())
+    }
+
+    pub fn is_frame_allocated(&self, frame: &Owned4KibFrame) -> bool {
+        let start = frame.start_address().as_u64();
+        let end = start + frame.size() - 1;
+        self
+            .map
+            .iter()
+            .any(|(i, ty)| {
+                *i.start() <= start && *i.end() >= end
+            })
+    }
+
 
     pub fn map_mut(&mut self) -> &mut NoditMap<u64, Interval<u64>, MemoryType> {
         &mut self.map

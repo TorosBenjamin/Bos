@@ -412,6 +412,8 @@ dependencies = [
 name = "tests"
 version = "0.1.0"
 dependencies = [
+ "ez_paging",
+ "heapless",
  "kernel",
  "log",
  "x86_64 0.15.4",
