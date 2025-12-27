@@ -11,10 +11,11 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use kernel::graphics::display;
 use kernel::limine_requests::{BASE_REVISION, RSDP_REQUEST};
 use kernel::memory::cpu_local_data::get_local;
-use kernel::memory::guarded_stack::{GuardedStack, NORMAL_STACK_SIZE, StackId, StackType};
+use kernel::memory::guarded_stack::{GuardedStack, StackId, StackType, NORMAL_STACK_SIZE};
 use kernel::user_land::run_user_land;
-use kernel::{acpi, apic, gdt, hlt_loop, interrupt, logger, nmi_handler_state, project_version};
-use kernel::apic::{init_timer};
+use kernel::{acpi, apic, gdt, hlt_loop, interrupt, logger, project_version, time};
+use kernel::interrupt::nmi_handler_state;
+use kernel::task::global_scheduler::spawn_task;
 use kernel::task::local_scheduler::init_run_queue;
 
 #[unsafe(no_mangle)]
@@ -55,14 +56,14 @@ extern "sysv64" fn init_bsp() -> ! {
     log::info!("BSP NMI handler initialized.");
 
     gdt::init();
-    interrupt::init();
+    interrupt::idt::init();
 
     let rsdp = RSDP_REQUEST.get_response().unwrap();
     let acpi_tables = acpi::parse(rsdp);
     apic::init_bsp(&acpi_tables);
     apic::init_local_apic();
 
-    init_timer();
+    time::lapic::init();
 
     init_run_queue();
 
@@ -70,6 +71,8 @@ extern "sysv64" fn init_bsp() -> ! {
     for cpu in mp_response.cpus() {
         cpu.goto_address.write(ap_entry);
     }
+
+    x86_64::instructions::interrupts::enable();
 
     run_user_land();
 
@@ -98,10 +101,14 @@ unsafe extern "C" fn ap_entry(_cpu: &limine::mp::Cpu) -> ! {
 
 extern "sysv64" fn init_ap() -> ! {
     gdt::init();
-    interrupt::init();
+    interrupt::idt::init();
     apic::init_local_apic();
     init_run_queue();
-    init_timer();
+    time::lapic::init();
+
+    x86_64::instructions::interrupts::enable();
+
+    spawn_task(example_log());
 
     hlt_loop()
 }

@@ -2,7 +2,7 @@ use crate::limine_requests::{MODULE_REQUEST, USER_LAND_PATH};
 use crate::memory::MEMORY;
 use crate::memory::physical_memory::{MemoryType, OffsetMappedPhysAddr, OffsetMappedPhysFrame};
 use crate::memory::vaddr_allocator::OffsetMappedVirtAddr;
-use crate::{LOWER_HALF_END, raw_syscall_handler};
+use crate::{raw_syscall_handler};
 use bitflags::bitflags;
 use core::arch::asm;
 use core::num::NonZero;
@@ -18,6 +18,7 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 use x86_64::registers::model_specific::PatMemoryType;
 use x86_64::registers::rflags::RFlags;
 use x86_64::{PhysAddr, VirtAddr};
+use crate::consts::LOWER_HALF_END;
 
 static CONSUMED_USER_LAND: AtomicBool = AtomicBool::new(false);
 

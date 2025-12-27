@@ -101,14 +101,3 @@ pub fn is_enabled() -> bool {
     let svr = unsafe { Msr::new(IA32_X2APIC_SVR).read() };
     svr & (1 << 8) != 0
 }
-
-pub fn init_timer() {
-    let mut local_apic = get_local().local_apic.get().unwrap().try_lock().unwrap();
-    // Set up timer and enable it
-    unsafe {
-        local_apic.set_timer_mode(TimerMode::Periodic);
-        local_apic.set_timer_divide(TimerDivide::Div1);
-        local_apic.set_timer_initial(100_000);
-        local_apic.enable_timer()
-    };
-}

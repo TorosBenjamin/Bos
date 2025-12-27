@@ -1,13 +1,13 @@
 use core::num::NonZero;
 
 use crate::memory::hhdm_offset::hhdm_offset;
-use crate::{HIGHER_HALF_START, USER_MAX, USER_MIN};
 use ez_paging::{ManagedL4PageTable, Page, PageSize};
 use nodit::{
     InclusiveInterval, Interval, NoditSet,
     interval::{ii, iu},
 };
 use x86_64::{PhysAddr, VirtAddr};
+use crate::consts::{HIGHER_HALF_START, USER_MAX, USER_MIN};
 
 #[derive(Debug)]
 pub struct VirtualMemoryAllocator {
