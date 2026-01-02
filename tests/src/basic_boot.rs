@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
 
-use core::panic::PanicInfo;
 use kernel::graphics::display;
 use kernel::limine_requests::{FRAME_BUFFER_REQUEST, MEMORY_MAP_REQUEST};
 use kernel::{hlt_loop, logger};

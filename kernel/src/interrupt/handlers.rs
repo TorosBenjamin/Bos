@@ -48,11 +48,13 @@ pub extern "x86-interrupt" fn nmi_handler(_stack_frame: InterruptStackFrame) {
 }
 
 pub extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-
     let cpu = get_local();
-    let mut local_apic = cpu.local_apic.get().unwrap().try_lock().unwrap();
-    // Safety: The interrupt finished, send eoi
-    unsafe { local_apic.end_of_interrupt() };
+
+    // Send eoi
+    unsafe {
+        let local_apic = &mut *cpu.local_apic.get().unwrap().get();
+        local_apic.end_of_interrupt()
+    };
 
     on_timer_tick();
     schedule(cpu);
@@ -61,25 +63,32 @@ pub extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptSta
 // -- NMI ---
 pub fn handle_panic_from_other_cpu() -> ! {
     if let Some(local) = try_get_local()
-        && let Some(mut local_apic) = local
-        .local_apic
-        .get()
-        .and_then(|local_apic| local_apic.try_lock())
         && let Some(nmi_handler_states) = NMI_HANDLER_STATES.get()
     {
+        let local_apic = unsafe {
+            &mut *local
+                .local_apic
+                .get()
+                .expect("local APIC not initialized")
+                .get()
+        };
+
         for (cpu_id, nmi_handler_state) in nmi_handler_states
             .iter()
             .enumerate()
-            // Send NMI except this cpu
             .filter(|(cpu_id, _)| *cpu_id as u32 != local.kernel_id)
         {
-            if let NmiHandlerState::NmiHandlerSet =
-                nmi_handler_state.swap(NmiHandlerState::KernelPanicked, Ordering::Release)
+            if nmi_handler_state.swap(
+                NmiHandlerState::KernelPanicked,
+                Ordering::Release,
+            ) == NmiHandlerState::NmiHandlerSet
             {
-                // Hlt other cpus
-                unsafe { local_apic.send_nmi(local_apic_id_of(cpu_id as u32)) };
+                unsafe {
+                    local_apic.send_nmi(local_apic_id_of(cpu_id as u32));
+                }
             }
         }
     }
+
     hlt_loop()
 }

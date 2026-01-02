@@ -6,7 +6,6 @@ use limine::response::MemoryMapResponse;
 use nodit::{Interval, NoditMap};
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
 use x86_64::{PhysAddr, VirtAddr};
-use crate::acpi::parse;
 use crate::exceptions::FreeError;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]

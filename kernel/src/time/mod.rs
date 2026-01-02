@@ -1,16 +1,31 @@
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use crate::memory::cpu_local_data::get_local;
+use crate::time::tsc::TSC_TPQS;
 
 mod pit;
 pub mod lapic;
-
-static MONOTONIC_TIME_MS: AtomicU64 = AtomicU64::new(0);
-pub static TIMEKEEPER_CPU: AtomicU32 = AtomicU32::new(0);
+pub mod tsc;
+mod rtc;
 
 pub fn on_timer_tick() {
-    let cpu = get_local();
+    lapic::set_deadline(10_000_000); // 1 ms
+}
 
-    if cpu.kernel_id == TIMEKEEPER_CPU.load(Ordering::Relaxed) {
-        MONOTONIC_TIME_MS.fetch_add(1, Ordering::Relaxed);
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct Period(u64);
+
+impl Period {
+    const MAX: Self = Self(u64::MAX);
+
+    /// Creates a new period with the specified microseconds.
+    pub fn new(period: u64) -> Self {
+        Self(period)
+    }
+}
+
+impl From<Period> for u64 {
+    /// Returns the period in microseconds.
+    fn from(f: Period) -> Self {
+        f.0
     }
 }

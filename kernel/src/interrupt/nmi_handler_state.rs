@@ -4,6 +4,7 @@ use atomic_enum::atomic_enum;
 use spin::once::Once;
 
 #[atomic_enum]
+#[derive(PartialEq)]
 pub enum NmiHandlerState {
     NmiHandlerNotSet,
     NmiHandlerSet,

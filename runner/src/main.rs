@@ -4,9 +4,11 @@ use std::{env, process};
 fn main() {
     let ovmf_code = "/usr/share/edk2/x64/OVMF_CODE.4m.fd";
     let ovmf_vars = "/usr/share/edk2/x64/OVMF_VARS.4m.fd";
-    let number_of_cpus = 10;
+    let number_of_cpus = 5;
 
     let mut qemu = Command::new("qemu-system-x86_64");
+
+    qemu.arg("-enable-kvm");
 
     // ISO
     qemu.arg("-cdrom").arg(env!("ISO"));
@@ -26,6 +28,9 @@ fn main() {
     // qemu.arg("-d").arg("int");
     qemu.arg("-device")
         .arg("isa-debug-exit,iobase=0xf4,iosize=0x04");
+
+    // CPU
+    qemu.arg("-cpu").arg("host");
 
 
 

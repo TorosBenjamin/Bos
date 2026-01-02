@@ -201,6 +201,7 @@ dependencies = [
  "uart_16550",
  "unicode-segmentation",
  "x2apic",
+ "x86",
  "x86_64 0.15.2",
 ]
 

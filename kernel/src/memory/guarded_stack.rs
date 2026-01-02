@@ -1,7 +1,7 @@
 use crate::memory::MEMORY;
 use crate::memory::physical_memory::{KernelMemoryUsageType, MemoryType};
-use crate::task::local_scheduler::switch_to;
 use alloc::collections::BTreeMap;
+use core::arch::naked_asm;
 use core::num::NonZero;
 use ez_paging::{ConfigurableFlags, ManagedL4PageTable, Page, PageSize};
 use x86_64::VirtAddr;
@@ -112,4 +112,14 @@ impl GuardedStack {
         let new_rsp = self.top.as_u64();
         unsafe { switch_to(new_rsp, f) }
     }
+}
+
+#[unsafe(naked)]
+unsafe extern "sysv64" fn switch_to(new_rsp: u64, f: extern "sysv64" fn() -> !) {
+    naked_asm!(
+        "
+        mov rsp, rdi
+        call rsi
+        "
+    );
 }

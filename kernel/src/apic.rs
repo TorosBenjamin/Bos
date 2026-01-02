@@ -1,3 +1,4 @@
+use core::cell::UnsafeCell;
 use crate::memory::MEMORY;
 use crate::memory::cpu_local_data::get_local;
 use acpi::AcpiTables;
@@ -7,10 +8,15 @@ use ez_paging::{ConfigurableFlags, Frame, PageSize};
 use force_send_sync::SendSync;
 use raw_cpuid::CpuId;
 use spin::Once;
-use x2apic::lapic::{LocalApicBuilder, TimerDivide, TimerMode};
+use x2apic::lapic::LocalApicBuilder;
 use x86_64::registers::model_specific::{Msr, PatMemoryType};
 use x86_64::{PhysAddr, VirtAddr};
 use crate::interrupt::InterruptVector;
+
+const IA32_X2APIC_SVR: u32 = 0x80F;
+const IA32_X2APIC_LVT_TIMER: u32 = 0x832;
+const LVT_TIMER_MODE_TSC_DEADLINE: u64 = 0b10 << 16;
+const LVT_TIMER_MASK: u64 = 1 << 18;
 
 pub enum LocalApicAccess {
     RegisterBased,
@@ -65,7 +71,7 @@ pub fn init_bsp(acpi_tables: &AcpiTables<impl acpi::Handler>) {
 /// [`init_bsp`] must be called first.
 pub fn init_local_apic() {
     get_local().local_apic.call_once(|| {
-        spin::Mutex::new({
+        UnsafeCell::new({
             let local_apic = {
                 let mut builder = LocalApicBuilder::new();
                 // Only `set_xapic_base` if x2APIC is not supported
@@ -77,6 +83,10 @@ pub fn init_local_apic() {
                 builder.error_vector(u8::from(InterruptVector::LocalApicError).into());
                 builder.timer_vector(u8::from(InterruptVector::LocalApicTimer).into());
 
+                enable_tsc_deadline_timer(
+                    u8::from(InterruptVector::LocalApicTimer).into(),
+                );
+
                 let mut local_apic = builder.build().unwrap();
                 unsafe { local_apic.enable() }
                 local_apic
@@ -84,6 +94,21 @@ pub fn init_local_apic() {
             unsafe { SendSync::new(local_apic) }
         })
     });
+}
+
+/// Set lapic timer into tsc deadline timer mode
+pub fn enable_tsc_deadline_timer(vector: u8) {
+    unsafe {
+        let mut lvt = Msr::new(IA32_X2APIC_LVT_TIMER).read();
+
+        // Clear vector, mode mask
+        const LVT_TIMER_MODE_MASK: u64 = 0b11 << 16;
+
+        lvt &= !(0xFF | LVT_TIMER_MASK | LVT_TIMER_MODE_MASK);
+        lvt |= (vector as u64) | LVT_TIMER_MODE_TSC_DEADLINE;
+
+        Msr::new(IA32_X2APIC_LVT_TIMER).write(lvt);
+    }
 }
 
 fn cpu_has_x2apic() -> bool {
@@ -95,7 +120,6 @@ fn cpu_has_x2apic() -> bool {
     }
 }
 
-const IA32_X2APIC_SVR: u32 = 0x80F;
 
 pub fn is_enabled() -> bool {
     let svr = unsafe { Msr::new(IA32_X2APIC_SVR).read() };

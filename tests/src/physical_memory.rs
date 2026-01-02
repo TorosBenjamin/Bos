@@ -1,8 +1,6 @@
 use alloc::format;
 use alloc::string::String;
-use core::ptr::from_mut;
 use ez_paging::Owned4KibFrame;
-use x86_64::structures::paging::{PhysFrame, Size4KiB};
 use kernel::memory::MEMORY;
 use kernel::memory::physical_memory::{KernelMemoryUsageType, MemoryType, PhysicalMemory};
 use crate::TestResult;

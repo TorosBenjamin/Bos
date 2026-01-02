@@ -8,6 +8,7 @@ extern crate kernel;
 
 use crate::kernel::limine_requests::{FRAME_BUFFER_REQUEST, MEMORY_MAP_REQUEST, MP_REQUEST};
 use core::sync::atomic::{AtomicBool, Ordering};
+use x86::task::tr;
 use kernel::graphics::display;
 use kernel::limine_requests::{BASE_REVISION, RSDP_REQUEST};
 use kernel::memory::cpu_local_data::get_local;
@@ -17,6 +18,7 @@ use kernel::{acpi, apic, gdt, hlt_loop, interrupt, logger, project_version, time
 use kernel::interrupt::nmi_handler_state;
 use kernel::task::global_scheduler::spawn_task;
 use kernel::task::local_scheduler::init_run_queue;
+use kernel::task::task::Task;
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn kernel_main() -> ! {
@@ -63,26 +65,31 @@ extern "sysv64" fn init_bsp() -> ! {
     apic::init_bsp(&acpi_tables);
     apic::init_local_apic();
 
-    time::lapic::init();
+    time::tsc::calibrate();
 
     init_run_queue();
 
+
+    spawn_task(Task::new(example_log));
+
+    /*
     let mp_response = MP_REQUEST.get_response().unwrap();
     for cpu in mp_response.cpus() {
         cpu.goto_address.write(ap_entry);
     }
+    */
+
 
     x86_64::instructions::interrupts::enable();
+    time::lapic::set_deadline(10_000);
 
-    run_user_land();
+    // run_user_land();
 
     hlt_loop();
 }
 
 /// AP - Application processor
 unsafe extern "C" fn ap_entry(_cpu: &limine::mp::Cpu) -> ! {
-    log::info!("New CPU initialized.");
-
     unsafe { kernel::memory::init_ap() };
     unsafe { kernel::memory::cpu_local_data::init_ap(_cpu) };
 
@@ -95,7 +102,6 @@ unsafe extern "C" fn ap_entry(_cpu: &limine::mp::Cpu) -> ! {
     )
     .switch(init_ap);
 
-    // Shouldn't run
     hlt_loop();
 }
 
@@ -103,18 +109,21 @@ extern "sysv64" fn init_ap() -> ! {
     gdt::init();
     interrupt::idt::init();
     apic::init_local_apic();
+
     init_run_queue();
-    time::lapic::init();
 
     x86_64::instructions::interrupts::enable();
+    time::lapic::set_deadline(10_000);
 
-    spawn_task(example_log());
+    log::info!("Initialized AP");
 
     hlt_loop()
 }
 
 fn example_log() -> ! {
-    log::info!("Hello I'm under the water!");
+    while true {
+        log::info!("Hello I'm under the water!");
+    }
     hlt_loop()
 }
 

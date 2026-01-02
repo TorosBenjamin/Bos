@@ -6,7 +6,6 @@ mod syscalls;
 
 use crate::display::{Display, draw_fun};
 use core::arch::asm;
-use core::{hint::black_box, sync::atomic::AtomicU8};
 
 #[panic_handler]
 fn rust_panic(_info: &core::panic::PanicInfo) -> ! {

@@ -2,6 +2,7 @@ use crate::gdt::Gdt;
 use crate::limine_requests::MP_REQUEST;
 use crate::task::local_scheduler::RunQueue;
 use alloc::boxed::Box;
+use core::cell::UnsafeCell;
 use core::default::Default;
 use core::ptr::NonNull;
 use core::sync::atomic::AtomicU64;
@@ -17,16 +18,24 @@ use x86_64::structures::tss::TaskStateSegment;
 
 pub struct CpuLocalData {
     pub kernel_id: u32,
-    #[allow(unused)]
     pub local_apic_id: u32,
+
     pub tss: Once<TaskStateSegment>,
     pub gdt: Once<Gdt>,
     pub idt: Once<InterruptDescriptorTable>,
-    pub local_apic: Once<Mutex<SendSync<LocalApic>>>,
+
+    pub local_apic: Once<UnsafeCell<SendSync<LocalApic>>>,
+    pub run_queue: Once<Mutex<RunQueue>>,
+
     pub syscall_handler_stack_pointer: AtomicU64,
     pub syscall_handler_scratch: AtomicU64,
-    pub run_queue: Once<Mutex<RunQueue>>,
 }
+
+// Safety:
+// - Per-CPU data
+// - Accessed only via GS base
+// - No cross-CPU access
+unsafe impl Sync for CpuLocalData {}
 
 fn mp_response() -> &'static MpResponse {
     MP_REQUEST.get_response().expect("expected MP response")
