@@ -14,9 +14,6 @@ use x86_64::{PhysAddr, VirtAddr};
 use crate::interrupt::InterruptVector;
 
 const IA32_X2APIC_SVR: u32 = 0x80F;
-const IA32_X2APIC_LVT_TIMER: u32 = 0x832;
-const LVT_TIMER_MODE_TSC_DEADLINE: u64 = 0b10 << 16;
-const LVT_TIMER_MASK: u64 = 1 << 18;
 
 pub enum LocalApicAccess {
     RegisterBased,

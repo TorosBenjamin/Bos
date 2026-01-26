@@ -5,8 +5,7 @@ use core::sync::atomic::Ordering;
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
 use crate::interrupt::nmi_handler_state::{NmiHandlerState, NMI_HANDLER_STATES};
-use crate::task::local_scheduler::schedule;
-use crate::time::{on_timer_tick, tsc};
+use crate::time::tsc;
 
 pub extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,

@@ -1,5 +1,4 @@
 use crate::memory::guarded_stack::{GuardedStack, StackId, StackType, NORMAL_STACK_SIZE};
-use alloc::sync::Arc;
 use atomic_enum::atomic_enum;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::mutex::Mutex;
@@ -86,12 +85,10 @@ impl Task {
 #[unsafe(no_mangle)]
 #[unsafe(naked)]
 extern "C" fn task_trampoline() -> ! {
-    unsafe {
-        core::arch::naked_asm!(
-        "mov rax, r15",  // load function pointer
-        "jmp rax",        // jump to it
-        )
-    }
+    core::arch::naked_asm!(
+    "mov rax, r15",  // load function pointer
+    "jmp rax",        // jump to it
+    )
 }
 
 

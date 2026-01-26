@@ -139,5 +139,6 @@ enum Color {
     BrightBlue,
     BrightCyan,
     BrightMagenta,
+    #[allow(dead_code)]
     BrightGreen,
 }

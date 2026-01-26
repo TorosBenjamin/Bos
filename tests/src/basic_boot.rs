@@ -3,7 +3,7 @@
 
 use kernel::graphics::display;
 use kernel::limine_requests::{FRAME_BUFFER_REQUEST, MEMORY_MAP_REQUEST};
-use kernel::{hlt_loop, logger};
+use kernel::logger;
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn kernel_main() -> ! {
@@ -24,6 +24,4 @@ unsafe extern "C" fn kernel_main() -> ! {
 
     // Call the generated test harness
     tests::run_tests();
-
-    hlt_loop()
 }

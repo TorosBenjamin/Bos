@@ -62,7 +62,7 @@ pub fn add(cpu: &CpuLocalData, task_id: TaskId) {
     let mut rq = cpu.run_queue.get().unwrap().lock();
     let tasks = TASK_TABLE.lock();
 
-    if let Some(task) = tasks.get(&task_id) {
+    if let Some(_) = tasks.get(&task_id) {
         rq.ready.push_back(task_id);
     } else {
         panic!("Task ID {:?} not found in TASK_TABLE", task_id);

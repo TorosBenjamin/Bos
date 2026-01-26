@@ -121,10 +121,10 @@ impl PhysicalMemory {
         let start = frame.start_address().as_u64();
         let end = start + frame.size() - 1;
 
-        let (interval, found_type) = self
+        let (_, found_type) = self
             .map
             .iter()
-            .find(|(i, ty)| {
+            .find(|(i, _)| {
                 *i.start() <= start && *i.end() >= end
             })
             .ok_or(FreeError::FrameNotAllocated)?;
@@ -156,7 +156,7 @@ impl PhysicalMemory {
         self
             .map
             .iter()
-            .any(|(i, ty)| {
+            .any(|(i, _)| {
                 *i.start() <= start && *i.end() >= end
             })
     }

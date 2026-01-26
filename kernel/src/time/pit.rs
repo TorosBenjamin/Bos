@@ -4,8 +4,6 @@ use log::error;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
-/// Port for Channel 0; used for PIT interrupts.
-pub const CHANNEL0: u16 = 0x40;
 /// Port for Channel 1, which does not exist and should NOT be used.
 const _CHANNEL1: u16 = 0x41;
 /// Port for Channel 2; technically the speaker for beeps,
@@ -19,7 +17,6 @@ pub const PIT_DEFAULT_DIVIDEND_HZ: u32 = 1193182;
 pub const PIT_MINIMUM_FREQ:        u32 = 19;
 
 pub static PIT_COMMAND:   Mutex<Port<u8>> = Mutex::new( Port::new(COMMAND_REGISTER) );
-pub static PIT_CHANNEL_0: Mutex<Port<u8>> = Mutex::new( Port::new(CHANNEL0) );
 static PIT_CHANNEL_2: Mutex<Port<u8>> = Mutex::new( Port::new(CHANNEL2) );
 
 

@@ -6,14 +6,12 @@
 extern crate alloc;
 extern crate kernel;
 
-use crate::kernel::limine_requests::{FRAME_BUFFER_REQUEST, MEMORY_MAP_REQUEST, MP_REQUEST};
+use crate::kernel::limine_requests::{FRAME_BUFFER_REQUEST, MEMORY_MAP_REQUEST};
 use core::sync::atomic::{AtomicBool, Ordering};
-use x86::task::tr;
 use kernel::graphics::display;
 use kernel::limine_requests::{BASE_REVISION, RSDP_REQUEST};
 use kernel::memory::cpu_local_data::get_local;
 use kernel::memory::guarded_stack::{GuardedStack, StackId, StackType, NORMAL_STACK_SIZE};
-use kernel::user_land::run_user_land;
 use kernel::{acpi, apic, gdt, hlt_loop, interrupt, logger, project_version, time};
 use kernel::interrupt::nmi_handler_state;
 use kernel::task::global_scheduler::spawn_task;
@@ -66,6 +64,7 @@ extern "sysv64" fn init_bsp() -> ! {
     apic::init_local_apic();
 
     time::tsc::calibrate();
+    time::lapic_timer::init();
 
     init_run_queue();
 
@@ -88,6 +87,7 @@ extern "sysv64" fn init_bsp() -> ! {
     hlt_loop();
 }
 
+#[allow(dead_code)]
 /// AP - Application processor
 unsafe extern "C" fn ap_entry(_cpu: &limine::mp::Cpu) -> ! {
     unsafe { kernel::memory::init_ap() };
@@ -105,6 +105,7 @@ unsafe extern "C" fn ap_entry(_cpu: &limine::mp::Cpu) -> ! {
     hlt_loop();
 }
 
+#[allow(dead_code)]
 extern "sysv64" fn init_ap() -> ! {
     gdt::init();
     interrupt::idt::init();
@@ -113,7 +114,7 @@ extern "sysv64" fn init_ap() -> ! {
     init_run_queue();
 
     x86_64::instructions::interrupts::enable();
-    time::lapic_timer::set_deadline(10_000);
+    time::lapic_timer::set_deadline(1_000_000);
 
     log::info!("Initialized AP");
 
@@ -121,17 +122,15 @@ extern "sysv64" fn init_ap() -> ! {
 }
 
 fn example_log() -> ! {
-    while true {
+    loop {
         log::info!("Hello I'm under the water!");
     }
-    hlt_loop()
 }
 
 fn example_log2() -> ! {
-    while true {
+    loop {
         log::info!("Apa gagyi!");
     }
-    hlt_loop()
 }
 
 static DID_PANIC: AtomicBool = AtomicBool::new(false);

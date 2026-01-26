@@ -1,5 +1,6 @@
 use x86_64::instructions::port::Port;
 
+#[allow(dead_code)]
 fn read_rtc_register(register: u8) -> u8 {
     unsafe {
         Port::new(0x70).write(register);
@@ -7,6 +8,7 @@ fn read_rtc_register(register: u8) -> u8 {
     }
 }
 
+#[allow(dead_code)]
 pub fn read_time() -> (u8, u8, u8) {
     let seconds_bcd = read_rtc_register(0x00);
     let minutes_bcd = read_rtc_register(0x02);

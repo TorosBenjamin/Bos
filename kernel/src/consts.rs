@@ -6,5 +6,6 @@ pub const USER_MAX: u64 = LOWER_HALF_END - 1;
 
 // Apic timer
 pub const APIC_TIMER_DISABLE: u32 = 1 << 16;
+pub const APIC_TIMER_MODE_ONESHOT: u32 = 0b00 << 17;
 pub const APIC_TIMER_MODE_PERIODIC: u32 = 0b01 << 17;
-const APIC_TIMER_MODE_ONESHOT: u32 = 0b00 << 17;
+pub const APIC_TIMER_MODE_TSC_DEADLINE: u32 = 0b10 << 17;

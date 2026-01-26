@@ -1,11 +1,8 @@
 use core::sync::atomic::Ordering;
-use x86::msr::{rdmsr, wrmsr, IA32_TSC_DEADLINE, IA32_X2APIC_CUR_COUNT, IA32_X2APIC_DIV_CONF, IA32_X2APIC_ESR, IA32_X2APIC_INIT_COUNT, IA32_X2APIC_LVT_THERMAL, IA32_X2APIC_LVT_TIMER};
-use x86_64::registers::model_specific::Msr;
-use crate::consts::{APIC_TIMER_DISABLE, APIC_TIMER_MODE_PERIODIC};
+use x86::msr::{wrmsr, IA32_TSC_DEADLINE, IA32_X2APIC_DIV_CONF, IA32_X2APIC_ESR, IA32_X2APIC_LVT_THERMAL, IA32_X2APIC_LVT_TIMER};
+use crate::consts::{APIC_TIMER_MODE_TSC_DEADLINE};
 use crate::interrupt::InterruptVector;
-use crate::memory::cpu_local_data::get_local;
-use crate::time::{pit, tsc};
-use crate::time::tsc::{TSC_HZ};
+use crate::time::tsc::{value, TSC_HZ};
 
 #[derive(Clone, Copy, Debug)]
 #[repr(u32)]
@@ -38,52 +35,31 @@ impl LapicTimerDivide {
 
 
 
-/// Returns the number of apic ticks in the given microseconds
-fn calibrate_with_pit(qs: u32) -> u32 {
-    // Start with the max counter value, since we're counting down
-    const INITIAL_COUNT: u32 = 0xFFFF_FFFF;
-
-    unsafe {
-        wrmsr(IA32_X2APIC_DIV_CONF, LapicTimerDivide::By16.as_register_value() as u64);
-        wrmsr(IA32_X2APIC_INIT_COUNT, INITIAL_COUNT as u64);
-    }
-
-    // wait for the given period using the PIT clock
-    pit::sleep_qs(qs).unwrap();
-
-    let end_count = unsafe {
-        // stop apic timer
-        wrmsr(IA32_X2APIC_LVT_TIMER, APIC_TIMER_DISABLE as u64);
-        rdmsr(IA32_X2APIC_CUR_COUNT) as u32
-    };
-
-    INITIAL_COUNT - end_count
-}
-
 pub fn enable() {
-    let timer_enable = LOCAL_APIC_LVT_IRQ as u32 | APIC_TIMER_MODE_PERIODIC;
+    let timer_enable = u8::from(InterruptVector::LocalApicTimer) as u32 | APIC_TIMER_MODE_TSC_DEADLINE;
     unsafe {
         wrmsr(IA32_X2APIC_LVT_TIMER, timer_enable as u64);
-        wrmsr(IA32_X2APIC_INIT_COUNT, self.initial_timer_count as u64);
+    }
+}
+
+pub fn set_deadline(nanoseconds: u64) {
+    let tsc_hz = TSC_HZ.load(Ordering::SeqCst);
+    let ticks = (nanoseconds / 1000) * tsc_hz;
+    unsafe {
+        wrmsr(IA32_TSC_DEADLINE, value() + ticks);
     }
 }
 
 /// Set lapic timer into tsc deadline timer mode
 pub fn init() {
-    let apic_period = calibrate_with_pit(10000);
-
     // For now only hande X2Apic
     unsafe {
         wrmsr(IA32_X2APIC_DIV_CONF, LapicTimerDivide::By16.as_register_value() as u64);
 
-        // map X2APIC timer to the `LOCAL_APIC_LVT_IRQ` interrupt handler in the IDT
-        wrmsr(IA32_X2APIC_LVT_TIMER, InterruptVector::LocalApicTimer as u64 | APIC_TIMER_MODE_PERIODIC as u64);
-        wrmsr(IA32_X2APIC_INIT_COUNT, apic_period as u64);
+        // map X2APIC timer to the `LocalApicTimer` interrupt handler in the IDT
+        wrmsr(IA32_X2APIC_LVT_TIMER, u8::from(InterruptVector::LocalApicTimer) as u64 | APIC_TIMER_MODE_TSC_DEADLINE as u64);
 
         wrmsr(IA32_X2APIC_LVT_THERMAL, 0);
         wrmsr(IA32_X2APIC_ESR, 0);
-
-
-        wrmsr(IA32_X2APIC_DIV_CONF, LapicTimerDivide::By16.as_register_value() as u64);
     }
 }

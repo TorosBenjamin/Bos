@@ -1,6 +1,6 @@
 use core::arch::x86_64::{__cpuid, __rdtscp, _mm_lfence, _rdtsc};
 use core::sync::atomic::{AtomicU64, Ordering};
-use crate::time::{pit, rtc, Period};
+use crate::time::pit;
 
 pub static TSC_HZ: AtomicU64 = AtomicU64::new(0);
 
@@ -43,8 +43,7 @@ fn calibrate_with_pit() -> u64 {
 pub fn calibrate() {
     //TODO: Check if cpu has invariant tsc
 
-    // let tms = calibrate_with_pit();
-    let tms = 1000;
+    let tms = calibrate_with_pit();
 
     log::info!("Tsc {} ticks per qs", tms);
     TSC_HZ.store(tms, Ordering::SeqCst);

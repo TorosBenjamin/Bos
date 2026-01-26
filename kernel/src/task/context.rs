@@ -31,17 +31,6 @@ impl Context {
     }
 }
 
-/// Reads the current cpu's first register value
-pub fn read_first_register() -> usize {
-    unsafe {
-        core::arch::asm!(
-            "mov rax, r15",
-            "ret",
-            options(noreturn)
-        )
-    }
-}
-
 /// Assembly
 /// Save context registers by pushing them on the stack
 #[macro_export]
@@ -106,7 +95,7 @@ pub unsafe extern "C" fn switch(prev_stack_pointer: *mut usize, next_stack_point
 
 /// Switch to a new task
 /// Safety: stack must be valid and 'entry' must not return
-pub unsafe fn switch_to_new(stack_pointer: *mut usize ) {
+pub unsafe fn switch_to_new(_stack_pointer: *mut usize ) {
     unsafe {
         core::arch::asm!(
             "mov rsp, [rdi]",
