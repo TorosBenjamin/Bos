@@ -83,10 +83,6 @@ pub fn init_local_apic() {
                 builder.error_vector(u8::from(InterruptVector::LocalApicError).into());
                 builder.timer_vector(u8::from(InterruptVector::LocalApicTimer).into());
 
-                enable_tsc_deadline_timer(
-                    u8::from(InterruptVector::LocalApicTimer).into(),
-                );
-
                 let mut local_apic = builder.build().unwrap();
                 unsafe { local_apic.enable() }
                 local_apic
@@ -94,21 +90,6 @@ pub fn init_local_apic() {
             unsafe { SendSync::new(local_apic) }
         })
     });
-}
-
-/// Set lapic timer into tsc deadline timer mode
-pub fn enable_tsc_deadline_timer(vector: u8) {
-    unsafe {
-        let mut lvt = Msr::new(IA32_X2APIC_LVT_TIMER).read();
-
-        // Clear vector, mode mask
-        const LVT_TIMER_MODE_MASK: u64 = 0b11 << 16;
-
-        lvt &= !(0xFF | LVT_TIMER_MASK | LVT_TIMER_MODE_MASK);
-        lvt |= (vector as u64) | LVT_TIMER_MODE_TSC_DEADLINE;
-
-        Msr::new(IA32_X2APIC_LVT_TIMER).write(lvt);
-    }
 }
 
 fn cpu_has_x2apic() -> bool {

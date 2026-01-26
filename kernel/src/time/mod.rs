@@ -1,14 +1,14 @@
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use crate::memory::cpu_local_data::get_local;
-use crate::time::tsc::TSC_TPQS;
+use crate::time::tsc::TSC_HZ;
 
 mod pit;
-pub mod lapic;
+pub mod lapic_timer;
 pub mod tsc;
 mod rtc;
 
 pub fn on_timer_tick() {
-    lapic::set_deadline(10_000_000); // 1 ms
+    lapic_timer::set_deadline(100_000_000_000); // 1 ms
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

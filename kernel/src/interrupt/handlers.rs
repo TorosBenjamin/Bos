@@ -6,7 +6,7 @@ use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
 use crate::interrupt::nmi_handler_state::{NmiHandlerState, NMI_HANDLER_STATES};
 use crate::task::local_scheduler::schedule;
-use crate::time::on_timer_tick;
+use crate::time::{on_timer_tick, tsc};
 
 pub extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
@@ -56,8 +56,10 @@ pub extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptSta
         local_apic.end_of_interrupt()
     };
 
-    on_timer_tick();
-    schedule(cpu);
+    log::info!("{}", tsc::value());
+
+    // on_timer_tick();
+    // schedule(cpu);
 }
 
 // -- NMI ---

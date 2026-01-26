@@ -71,6 +71,7 @@ extern "sysv64" fn init_bsp() -> ! {
 
 
     spawn_task(Task::new(example_log));
+    spawn_task(Task::new(example_log2));
 
     /*
     let mp_response = MP_REQUEST.get_response().unwrap();
@@ -81,7 +82,6 @@ extern "sysv64" fn init_bsp() -> ! {
 
 
     x86_64::instructions::interrupts::enable();
-    time::lapic::set_deadline(10_000);
 
     // run_user_land();
 
@@ -113,7 +113,7 @@ extern "sysv64" fn init_ap() -> ! {
     init_run_queue();
 
     x86_64::instructions::interrupts::enable();
-    time::lapic::set_deadline(10_000);
+    time::lapic_timer::set_deadline(10_000);
 
     log::info!("Initialized AP");
 
@@ -123,6 +123,13 @@ extern "sysv64" fn init_ap() -> ! {
 fn example_log() -> ! {
     while true {
         log::info!("Hello I'm under the water!");
+    }
+    hlt_loop()
+}
+
+fn example_log2() -> ! {
+    while true {
+        log::info!("Apa gagyi!");
     }
     hlt_loop()
 }

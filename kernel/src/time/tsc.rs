@@ -2,7 +2,7 @@ use core::arch::x86_64::{__cpuid, __rdtscp, _mm_lfence, _rdtsc};
 use core::sync::atomic::{AtomicU64, Ordering};
 use crate::time::{pit, rtc, Period};
 
-pub static TSC_TPQS: AtomicU64 = AtomicU64::new(0);
+pub static TSC_HZ: AtomicU64 = AtomicU64::new(0);
 
 pub fn value() -> u64 {
     if has_rdtscp() {
@@ -47,5 +47,5 @@ pub fn calibrate() {
     let tms = 1000;
 
     log::info!("Tsc {} ticks per qs", tms);
-    TSC_TPQS.store(tms, Ordering::SeqCst);
+    TSC_HZ.store(tms, Ordering::SeqCst);
 }

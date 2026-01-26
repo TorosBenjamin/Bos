@@ -1,11 +1,9 @@
-use crate::hlt_loop;
 use crate::memory::cpu_local_data::{CpuLocalData, get_local};
 use crate::task::global_scheduler::TASK_TABLE;
-use crate::task::task::{Task, TaskId, TaskState};
+use crate::task::task::{TaskId, TaskState};
 use alloc::collections::VecDeque;
-use core::arch::naked_asm;
 use core::sync::atomic::Ordering;
-use crate::task::{context, task};
+use crate::task::{task};
 
 pub struct RunQueue {
     pub current_task_id: Option<TaskId>,
@@ -14,6 +12,10 @@ pub struct RunQueue {
 
 pub fn schedule(cpu: &CpuLocalData) {
     let mut rq = cpu.run_queue.get().unwrap().lock();
+
+    for task_id in rq.ready.iter() {
+        log::info!("{}", task_id.to_usize());
+    }
 
     let next_id = match rq.ready.pop_front() {
         Some(id) => id,
@@ -58,11 +60,9 @@ pub fn init_run_queue() {
 /// Add process to the local run queue for schedueling
 pub fn add(cpu: &CpuLocalData, task_id: TaskId) {
     let mut rq = cpu.run_queue.get().unwrap().lock();
-
     let tasks = TASK_TABLE.lock();
-    if let Some(task) = tasks.get(&task_id) {
-        task.state.store(TaskState::Ready, Ordering::Relaxed);
 
+    if let Some(task) = tasks.get(&task_id) {
         rq.ready.push_back(task_id);
     } else {
         panic!("Task ID {:?} not found in TASK_TABLE", task_id);

@@ -15,6 +15,10 @@ impl TaskId {
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
         TaskId(NEXT_ID.fetch_add(1, Ordering::Relaxed))
     }
+
+    pub fn to_usize(self) -> usize {
+        self.0 as usize
+    }
 }
 
 #[atomic_enum]
