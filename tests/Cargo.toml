@@ -9,6 +9,7 @@ x86_64 = "0.15.4"
 log = "0.4.29"
 heapless = "0.9.2"
 ez_paging = { git = "https://github.com/ChocolateLoverRaj/ez_paging", version = "0.1.0", default-features = false }
+embedded-graphics = "0.8.1"
 kernel = {path = "../kernel"}
 
 [build-dependencies]

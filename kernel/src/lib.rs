@@ -23,6 +23,10 @@ pub mod time;
 pub mod logger;
 pub mod consts;
 
+pub mod reexports {
+    pub use x86_64;
+}
+
 pub fn hlt_loop() -> ! {
     loop {
         x86_64::instructions::hlt();

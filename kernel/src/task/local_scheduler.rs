@@ -4,6 +4,7 @@ use crate::task::task::{TaskId, TaskState};
 use alloc::collections::VecDeque;
 use core::sync::atomic::Ordering;
 use crate::task::{task};
+use x86_64::instructions::interrupts;
 
 pub struct RunQueue {
     pub current_task_id: Option<TaskId>,
@@ -11,38 +12,8 @@ pub struct RunQueue {
 }
 
 pub fn schedule(cpu: &CpuLocalData) {
-    let mut rq = cpu.run_queue.get().unwrap().lock();
-
-    for task_id in rq.ready.iter() {
-        log::info!("{}", task_id.to_usize());
-    }
-
-    let next_id = match rq.ready.pop_front() {
-        Some(id) => id,
-        None => return, // nothing to run
-    };
-
-    let tasks = TASK_TABLE.lock();
-
-    let next_task = tasks.get(&next_id).expect("task disappeared").clone();
-
-    // Get previous task if exists
-    let prev_task_opt = rq.current_task_id.and_then(|id| tasks.get(&id).cloned());
-
-    // Update current task
-    rq.current_task_id = Some(next_id);
-
-    // Update states
-    next_task.state.store(TaskState::Running, Ordering::Relaxed);
-
-    // If there was a previous task, mark it ready and push back
-    if let Some(prev_task) = prev_task_opt {
-        prev_task.state.store(TaskState::Ready, Ordering::Relaxed);
-        rq.ready.push_back(prev_task.id);
-        task::switch(&prev_task, &next_task);
-    } else {
-        task::switch_to_new(&next_task);
-    }
+    let _ = cpu;
+    unreachable!("schedule is not safe from interrupt context; use schedule_from_interrupt");
 }
 
 /// Safety: cpu_init must be called before
@@ -57,14 +28,48 @@ pub fn init_run_queue() {
     });
 }
 
+pub fn get_run_queue() -> &'static spin::Mutex<RunQueue> {
+    get_local().run_queue.get().expect("Run queue not initialized")
+}
+
 /// Add process to the local run queue for schedueling
 pub fn add(cpu: &CpuLocalData, task_id: TaskId) {
-    let mut rq = cpu.run_queue.get().unwrap().lock();
-    let tasks = TASK_TABLE.lock();
+    interrupts::without_interrupts(|| {
+        let mut rq = cpu.run_queue.get().unwrap().lock();
+        let tasks = TASK_TABLE.lock();
 
-    if let Some(_) = tasks.get(&task_id) {
-        rq.ready.push_back(task_id);
-    } else {
-        panic!("Task ID {:?} not found in TASK_TABLE", task_id);
+        if let Some(_) = tasks.get(&task_id) {
+            rq.ready.push_back(task_id);
+        } else {
+            panic!("Task ID {:?} not found in TASK_TABLE", task_id);
+        }
+    });
+}
+
+/// Interrupt-safe scheduling: returns the next task stack pointer to load.
+pub fn schedule_from_interrupt(cpu: &CpuLocalData, current_rsp: usize) -> usize {
+    let mut rq = cpu.run_queue.get().unwrap().lock();
+
+    let next_id = match rq.ready.pop_front() {
+        Some(id) => id,
+        None => return current_rsp, // nothing to run
+    };
+
+    let prev_id = rq.current_task_id;
+    let tasks = TASK_TABLE.lock();
+    let next_task = tasks.get(&next_id).expect("task disappeared").clone();
+
+    // If there was a previous task, save its state and push it back to the ready queue
+    if let Some(id) = prev_id {
+        if let Some(prev_task) = tasks.get(&id) {
+            prev_task.state.store(TaskState::Ready, Ordering::Relaxed);
+            rq.ready.push_back(id);
+            prev_task.inner.lock().rsp = current_rsp;
+        }
     }
+
+    rq.current_task_id = Some(next_id);
+    next_task.state.store(TaskState::Running, Ordering::Relaxed);
+
+    next_task.inner.lock().rsp
 }

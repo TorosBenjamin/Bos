@@ -76,7 +76,6 @@ macro_rules! restore_context {
             pop r12
             pop rbp
             pop rbx
-            ret
         "#
     );
 }
@@ -87,9 +86,12 @@ macro_rules! restore_context {
 pub unsafe extern "C" fn switch(prev_stack_pointer: *mut usize, next_stack_pointer_value: usize) {
     // Logs are not allowed here
     core::arch::naked_asm!(
+        "push [rsp]", // fake rip for Context struct alignment
         save_context!(),
         switch_stacks!(),
-        restore_context!()
+        restore_context!(),
+        "add rsp, 8", // pop fake rip
+        "ret",
     );
 }
 
@@ -99,13 +101,7 @@ pub unsafe fn switch_to_new(_stack_pointer: *mut usize ) {
     unsafe {
         core::arch::asm!(
             "mov rsp, [rdi]",
-            "popfq",
-            "pop r15",
-            "pop r14",
-            "pop r13",
-            "pop r12",
-            "pop rbp",
-            "pop rbx",
+            restore_context!(),
             "ret",
             options(noreturn)
         )

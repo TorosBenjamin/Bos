@@ -119,7 +119,8 @@ impl PhysicalMemory {
         expected: MemoryType,
     ) -> Result<(), FreeError> {
         let start = frame.start_address().as_u64();
-        let end = start + frame.size() - 1;
+        let size = frame.size();
+        let end = start + size - 1;
 
         let (_, found_type) = self
             .map
@@ -137,12 +138,12 @@ impl PhysicalMemory {
         }
 
         // Cut out the frame's range
-        let _ = self.map.cut(&Interval::from(start..end));
+        let _ = self.map.cut(&Interval::from(start..start + size));
 
         // Insert it back as usable
         self.map
             .insert_merge_touching_if_values_equal(
-                Interval::from(start..end),
+                Interval::from(start..start + size),
                 MemoryType::Usable,
             )
             .unwrap();

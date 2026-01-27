@@ -4,7 +4,7 @@
 bindeps = true
 
 [target.x86_64-unknown-none]
-rustflags = ["-C", "relocation-model=static"]
+rustflags = ["-C", "relocation-model=static", "-C", "no-redzone"]
 
 [alias]
 ktest = "run -p runner --features kernel_test --"

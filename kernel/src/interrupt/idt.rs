@@ -1,5 +1,6 @@
 use core::sync::atomic::Ordering;
 use x86_64::structures::idt::InterruptDescriptorTable;
+use x86_64::VirtAddr;
 use crate::gdt::IstStackIndexes;
 use crate::interrupt::handlers::{breakpoint_handler, double_fault_handler, handle_panic_from_other_cpu, nmi_handler, page_fault_handler, timer_interrupt_handler};
 use crate::interrupt::InterruptVector;
@@ -21,7 +22,11 @@ pub fn init() {
         };
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         idt.non_maskable_interrupt.set_handler_fn(nmi_handler);
-        idt[u8::from(InterruptVector::LocalApicTimer)].set_handler_fn(timer_interrupt_handler);
+        unsafe {
+            idt[u8::from(InterruptVector::LocalApicTimer)]
+                .set_handler_addr(VirtAddr::new(timer_interrupt_handler as u64))
+                .set_stack_index(u8::from(IstStackIndexes::Exception).into());
+        }
         idt
     });
     idt.load();

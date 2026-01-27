@@ -44,7 +44,7 @@ pub fn enable() {
 
 pub fn set_deadline(nanoseconds: u64) {
     let tsc_hz = TSC_HZ.load(Ordering::SeqCst);
-    let ticks = (nanoseconds / 1000) * tsc_hz;
+    let ticks = (nanoseconds * tsc_hz) / 1_000_000;
     unsafe {
         wrmsr(IA32_TSC_DEADLINE, value() + ticks);
     }

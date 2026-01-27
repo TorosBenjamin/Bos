@@ -36,7 +36,7 @@ fn calibrate_with_pit() -> u64 {
     log::info!("{}, {}", start, end);
 
     let elapsed = end.checked_sub(start).unwrap();
-    elapsed / PIT_WAIT_QS as u64
+    elapsed * 1000 / PIT_WAIT_QS as u64
 }
 
 /// Safety: must be called once during early boot
@@ -45,6 +45,6 @@ pub fn calibrate() {
 
     let tms = calibrate_with_pit();
 
-    log::info!("Tsc {} ticks per qs", tms);
+    log::info!("Tsc {} ticks per ms", tms);
     TSC_HZ.store(tms, Ordering::SeqCst);
 }

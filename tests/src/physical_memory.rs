@@ -3,6 +3,8 @@ use alloc::string::String;
 use ez_paging::Owned4KibFrame;
 use kernel::memory::MEMORY;
 use kernel::memory::physical_memory::{KernelMemoryUsageType, MemoryType, PhysicalMemory};
+use kernel::reexports::x86_64::structures::paging::PhysFrame;
+use kernel::reexports::x86_64::PhysAddr;
 use crate::TestResult;
 
 /// Clean up allocated kernel frames
@@ -130,7 +132,8 @@ pub fn duplicate_allocation() -> TestResult {
     let mut pm = MEMORY.get().unwrap().physical_memory.lock();
     let mut seen_addrs = heapless::Vec::<u64, 1024>::new();
 
-    loop {
+    // Limit to 100 iterations to avoid taking too long or hitting other limits
+    for _ in 0..100 {
         // Borrow allocator only inside this scope
         let frame = {
             let mut allocator = pm.get_kernel_frame_allocator();
@@ -146,7 +149,7 @@ pub fn duplicate_allocation() -> TestResult {
 
         if seen_addrs.iter().any(|&x| x == addr) {
             let _ = pm.free_frame(frame, MemoryType::UsedByKernel(KernelMemoryUsageType::PageTables));
-            return TestResult::Failed(String::from("Duplicate frame allocated"));
+            return TestResult::Failed(format!("Duplicate frame allocated at 0x{:X}", addr));
         }
 
         if seen_addrs.push(addr).is_err() {
@@ -154,7 +157,14 @@ pub fn duplicate_allocation() -> TestResult {
             break;
         }
 
-        // free immediately
+        // NO FREE HERE - we want to see if NEXT allocation is duplicate
+    }
+
+    // Clean up
+    for addr in seen_addrs {
+        // We need an Owned4KibFrame to free. This is a bit hacky in the test.
+        let frame = PhysFrame::from_start_address(PhysAddr::new(addr)).unwrap();
+        let frame = unsafe { Owned4KibFrame::new(frame) };
         let _ = pm.free_frame(frame, MemoryType::UsedByKernel(KernelMemoryUsageType::PageTables));
     }
 

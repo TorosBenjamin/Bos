@@ -7,7 +7,7 @@ use ez_paging::{ConfigurableFlags, ManagedL4PageTable, Page, PageSize};
 use x86_64::VirtAddr;
 use x86_64::registers::model_specific::PatMemoryType;
 
-pub const NORMAL_STACK_SIZE: u64 = 64 * 0x400;
+pub const NORMAL_STACK_SIZE: u64 = 256 * 0x400;
 pub const EXCEPTION_HANDLER_STACK_SIZE: u64 = 64 * 0x400;
 
 pub const STACK_PAGE_SIZE: PageSize = PageSize::_4KiB;

@@ -413,6 +413,7 @@ dependencies = [
 name = "tests"
 version = "0.1.0"
 dependencies = [
+ "embedded-graphics",
  "ez_paging",
  "heapless",
  "kernel",

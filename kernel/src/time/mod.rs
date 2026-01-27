@@ -1,4 +1,4 @@
-mod pit;
+pub mod pit;
 pub mod lapic_timer;
 pub mod tsc;
 mod rtc;

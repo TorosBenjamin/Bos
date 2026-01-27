@@ -7,7 +7,7 @@ extern crate alloc;
 extern crate kernel;
 
 use crate::kernel::limine_requests::{FRAME_BUFFER_REQUEST, MEMORY_MAP_REQUEST};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use kernel::graphics::display;
 use kernel::limine_requests::{BASE_REVISION, RSDP_REQUEST};
 use kernel::memory::cpu_local_data::get_local;
@@ -65,9 +65,9 @@ extern "sysv64" fn init_bsp() -> ! {
 
     time::tsc::calibrate();
     time::lapic_timer::init();
+    time::lapic_timer::set_deadline(1_000_000);
 
     init_run_queue();
-
 
     spawn_task(Task::new(example_log));
     spawn_task(Task::new(example_log2));
@@ -120,16 +120,17 @@ extern "sysv64" fn init_ap() -> ! {
 
     hlt_loop()
 }
-
+pub static number: AtomicU64 = AtomicU64::new(0);
 fn example_log() -> ! {
     loop {
-        log::info!("Hello I'm under the water!");
+        log::info!("A: {:?}", number.load(Ordering::Relaxed));
     }
 }
 
 fn example_log2() -> ! {
     loop {
-        log::info!("Apa gagyi!");
+        number.fetch_add(1, Ordering::Relaxed);
+        log::info!("B: {:?}", number.load(Ordering::Relaxed));
     }
 }
 

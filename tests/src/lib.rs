@@ -9,6 +9,12 @@ use kernel::hlt_loop;
 
 pub mod panic_handler;
 pub mod physical_memory;
+pub mod time;
+pub mod vaddr_allocator;
+pub mod interrupts;
+pub mod graphics;
+pub mod scheduler;
+pub mod timer_interrupt;
 
 pub fn test_runner(tests: &[&dyn Fn()]) {
     log::info!("Running {} tests", tests.len());
@@ -58,6 +64,31 @@ pub fn tests() -> &'static [&'static dyn KernelTest] {
     &[
         &trivial_assertion,
 
+        // Time tests
+        &time::tsc_calibration,
+        &time::pit_sleep,
+
+        // Virtual Memory tests
+        &vaddr_allocator::allocate_kernel_page,
+        &vaddr_allocator::allocate_user_page,
+        &vaddr_allocator::allocate_multiple_pages,
+
+        // Interrupts tests
+        &interrupts::gdt_loaded,
+        &interrupts::idt_loaded,
+        &interrupts::breakpoint_exception,
+
+        // Timer interrupt test
+        &timer_interrupt::timer_interrupt_fires,
+
+        // Graphics tests
+        &graphics::basic_draw,
+        &graphics::bounding_box_valid,
+
+        // Scheduler tests
+        &scheduler::simple_task_creation,
+        &scheduler::task_spawn_and_run,
+
         // Tests with expected panic can't be really be caught right now
         // so they should be commented out so others can run
         &physical_memory::alloc_one_frame,
@@ -88,6 +119,7 @@ pub fn run_tests() -> ! {
     }
 
     if failed == 0 {
+        log::info!("All tests passed!");
         exit_qemu(QemuExitCode::Success);
     } else {
         log::info!("{} kernel tests failed", failed);
