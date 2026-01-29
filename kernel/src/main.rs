@@ -69,6 +69,7 @@ extern "sysv64" fn init_bsp() -> ! {
 
     init_run_queue();
 
+    spawn_task(Task::new(idle_task));
     spawn_task(Task::new(example_log));
     spawn_task(Task::new(example_log2));
 
@@ -113,6 +114,8 @@ extern "sysv64" fn init_ap() -> ! {
 
     init_run_queue();
 
+    spawn_task(Task::new(idle_task));
+
     x86_64::instructions::interrupts::enable();
     time::lapic_timer::set_deadline(1_000_000);
 
@@ -120,17 +123,32 @@ extern "sysv64" fn init_ap() -> ! {
 
     hlt_loop()
 }
-pub static number: AtomicU64 = AtomicU64::new(0);
+
+fn idle_task() -> ! {
+    loop {
+        x86_64::instructions::hlt();
+    }
+}
+
+pub static COUNTER: AtomicU64 = AtomicU64::new(0);
+
 fn example_log() -> ! {
     loop {
-        log::info!("A: {:?}", number.load(Ordering::Relaxed));
+        let val = COUNTER.load(Ordering::Relaxed);
+        log::info!("A: {:?}", val);
+        for _ in 0..100_000 {
+            core::hint::spin_loop();
+        }
     }
 }
 
 fn example_log2() -> ! {
     loop {
-        number.fetch_add(1, Ordering::Relaxed);
-        log::info!("B: {:?}", number.load(Ordering::Relaxed));
+        let val = COUNTER.fetch_add(1, Ordering::Relaxed);
+        log::info!("B: {:?}", val);
+        for _ in 0..100_000 {
+            core::hint::spin_loop();
+        }
     }
 }
 

@@ -1,5 +1,12 @@
+//! This crate contains structures and routines for context switching
+//! when SSE/SIMD extensions are not active.
+
+/// The registers saved before a context switch and restored after a context switch.
+///
+/// Note: the order of the registers here MUST MATCH the order of
+/// registers popped in the [`restore_registers_regular!`] macro.
 #[repr(C, packed)]
-pub struct Context {
+pub struct ContextRegular {
     rflags: usize,
     r15: usize,
     r14: usize,
@@ -7,13 +14,23 @@ pub struct Context {
     r12: usize,
     rbp: usize,
     rbx: usize,
+    /// The instruction pointer.
+    ///
+    /// `rip` is implicitly pushed onto the stack when a function is called, and
+    /// popped off when returning. When a task's stack is set to an instance of
+    /// [`ContextRegular`], [`context_switch_regular`] will execute `ret` when
+    /// the stack pointer is pointing to the value of `rip`. Hence, the program
+    /// will "return" to that address and continue executing.
     rip: usize,
 }
 
-impl Context {
-    pub fn new(rip: usize) -> Context {
-        Context {
-            // Interrupts enabled
+impl ContextRegular {
+    /// Creates a new [`ContextRegular`] struct that will cause the
+    /// Task containing it to begin its execution at the given `rip`.
+    pub fn new(rip: usize) -> ContextRegular {
+        ContextRegular {
+            // The ninth bit is the interrupt enable flag. When a task is first
+            // run, interrupts should already be enabled.
             rflags: 1 << 9,
             r15: 0,
             r14: 0,
@@ -25,17 +42,36 @@ impl Context {
         }
     }
 
-    /// Store 'value' in first register (r15)
+    /// Sets the value of the first register to the given `value`.
+    ///
+    /// This is useful for storing a value (e.g., task ID) in that register
+    /// and then recovering it later with [`read_first_register()`].
+    ///
+    /// On x86_64, this sets the `r15` register.
     pub fn set_first_register(&mut self, value: usize) {
         self.r15 = value;
     }
 }
 
-/// Assembly
-/// Save context registers by pushing them on the stack
+/// Reads the value of the first register from the actual CPU register hardware.
+///
+/// Returns the current value held in the specified CPU register.
+/// On x86_64, this reads the `r15` register.
+#[unsafe(naked)]
+pub extern "C" fn read_first_register() -> usize {
+    core::arch::naked_asm!(
+        "mov rax, r15",
+        "ret",
+    )
+}
+
+
+/// An assembly block for saving regular x86_64 registers
+/// by pushing them onto the stack.
 #[macro_export]
-macro_rules! save_context {
+macro_rules! save_registers_regular {
     () => (
+        // Save all general purpose registers into the previous task.
         r#"
             push rbx
             push rbp
@@ -45,13 +81,15 @@ macro_rules! save_context {
             push r15
             pushfq
         "#
-    )
+    );
 }
 
-/// Assembly
-/// Switch stacks
-/// * The 'rdi' register must contain the previous process stack pointer
-/// * The 'rsi' register must contain the next process stack pointer
+
+/// An assembly block for switching stacks,
+/// which is the integral part of the actual context switching routine.
+///
+/// * The `rdi` register must contain a pointer to the previous task's stack pointer.
+/// * The `rsi` register must contain the value of the next task's stack pointer.
 #[macro_export]
 macro_rules! switch_stacks {
     () => (
@@ -63,11 +101,16 @@ macro_rules! switch_stacks {
     );
 }
 
-/// Assembly
-/// Restore context by popping them of the stack
+
+/// An assembly block for restoring regular x86_64 registers
+/// by popping them off of the stack.
+///
+/// This assembly statement ends with an explicit `ret` instruction at the end,
+/// which is the final component of a context switch operation.
 #[macro_export]
-macro_rules! restore_context {
+macro_rules! restore_registers_regular {
     () => (
+        // Restore the next task's general purpose registers.
         r#"
             popfq
             pop r15
@@ -76,34 +119,28 @@ macro_rules! restore_context {
             pop r12
             pop rbp
             pop rbx
+            ret
         "#
     );
 }
 
-/// Switch context between two tasks
-/// Safety: Unsafe because it modifies the stack
-#[unsafe(naked)]
-pub unsafe extern "C" fn switch(prev_stack_pointer: *mut usize, next_stack_pointer_value: usize) {
-    // Logs are not allowed here
-    core::arch::naked_asm!(
-        "push [rsp]", // fake rip for Context struct alignment
-        save_context!(),
-        switch_stacks!(),
-        restore_context!(),
-        "add rsp, 8", // pop fake rip
-        "ret",
-    );
-}
 
-/// Switch to a new task
-/// Safety: stack must be valid and 'entry' must not return
-pub unsafe fn switch_to_new(_stack_pointer: *mut usize ) {
-    unsafe {
-        core::arch::asm!(
-            "mov rsp, [rdi]",
-            restore_context!(),
-            "ret",
-            options(noreturn)
-        )
-    }
+/// Switches context from a regular Task to another regular Task.
+///
+/// # Arguments
+/// * First argument  (in `RDI`): mutable pointer to the previous task's stack pointer
+/// * Second argument (in `RSI`): the value of the next task's stack pointer
+///
+/// # Safety
+/// This function is unsafe because it changes the content on both task's stacks.
+#[unsafe(naked)]
+pub unsafe extern "C" fn context_switch_regular(_prev_stack_pointer: *mut usize, _next_stack_pointer_value: usize) {
+    // Since this is a naked function that expects its arguments in two registers,
+    // you CANNOT place any log statements or other instructions here
+    // before, in between, or after anything below.
+    core::arch::naked_asm!(
+        save_registers_regular!(),
+        switch_stacks!(),
+        restore_registers_regular!(),
+    );
 }

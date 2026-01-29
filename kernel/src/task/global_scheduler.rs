@@ -10,19 +10,21 @@ pub static TASK_TABLE: Mutex<BTreeMap<TaskId, Arc<Task>>> = Mutex::new(BTreeMap:
 
 pub fn spawn_task(task: Task) {
     interrupts::without_interrupts(|| {
-        // Insert into the global TASK_TABLE
         let task_id = task.id;
         task.state.store(TaskState::Ready, Ordering::Relaxed);
+        let arc_task = Arc::new(task);
+
+        // Insert into the global TASK_TABLE (for future lookups/kill/waitpid)
         let mut tasks = TASK_TABLE.lock();
-        if tasks.insert(task_id, Arc::new(task)).is_some() {
+        if tasks.insert(task_id, arc_task.clone()).is_some() {
             panic!("Task with the same ID already exists");
         }
+        drop(tasks);
 
-        // For now only adds it to the callers tasks
-        // TODO: Add load balancing
+        // Push Arc<Task> clone to the local run queue
         let cpu = get_local();
         let mut rq = cpu.run_queue.get().unwrap().lock();
-        rq.ready.push_back(task_id);
+        rq.ready.push_back(arc_task);
 
         log::info!(
             "Task {:?} scheduled on CPU {} and pushed to ready queue",

@@ -22,10 +22,12 @@ pub fn init() {
         };
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         idt.non_maskable_interrupt.set_handler_fn(nmi_handler);
+        // Timer interrupt must NOT use IST: each task's interrupt frame must be
+        // saved on its own stack so it persists across context switches. IST would
+        // put all frames on a single shared stack that gets overwritten each tick.
         unsafe {
             idt[u8::from(InterruptVector::LocalApicTimer)]
-                .set_handler_addr(VirtAddr::new(timer_interrupt_handler as u64))
-                .set_stack_index(u8::from(IstStackIndexes::Exception).into());
+                .set_handler_addr(VirtAddr::new(timer_interrupt_handler as u64));
         }
         idt
     });
