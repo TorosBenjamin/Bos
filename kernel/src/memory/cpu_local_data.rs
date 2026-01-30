@@ -20,7 +20,7 @@ pub struct CpuLocalData {
     pub kernel_id: u32,
     pub local_apic_id: u32,
 
-    pub tss: Once<TaskStateSegment>,
+    pub tss: Once<UnsafeCell<TaskStateSegment>>,
     pub gdt: Once<Gdt>,
     pub idt: Once<InterruptDescriptorTable>,
 
@@ -29,6 +29,17 @@ pub struct CpuLocalData {
 
     pub syscall_handler_stack_pointer: AtomicU64,
     pub syscall_handler_scratch: AtomicU64,
+}
+
+impl CpuLocalData {
+    /// Update TSS.RSP0 so that interrupts from ring 3 use the correct kernel stack.
+    ///
+    /// # Safety
+    /// Must only be called with interrupts disabled (e.g., from within the scheduler).
+    pub unsafe fn set_tss_rsp0(&self, rsp0: u64) {
+        let tss = unsafe { &mut *self.tss.get().unwrap().get() };
+        tss.privilege_stack_table[0] = VirtAddr::new(rsp0);
+    }
 }
 
 // Safety:

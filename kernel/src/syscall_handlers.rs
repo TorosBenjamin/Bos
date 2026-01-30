@@ -1,4 +1,7 @@
 use crate::graphics::display::DISPLAY;
+use crate::memory::cpu_local_data::get_local;
+use crate::task::task::TaskState;
+use core::sync::atomic::Ordering;
 use embedded_graphics::Pixel;
 use embedded_graphics::geometry::Point;
 use embedded_graphics::pixelcolor::Rgb888;
@@ -56,6 +59,24 @@ pub fn sys_get_bounding_box(rect_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _
     rect_out.height = bb.size.height;
 
     GraphicsResult::Ok as u64
+}
+
+/// Exit the current task. Marks it as a zombie, enables interrupts, and halts.
+/// The timer will fire and the scheduler will drop the zombie from the queue.
+pub fn sys_exit() -> ! {
+    let cpu = get_local();
+    {
+        let rq = cpu.run_queue.get().unwrap().lock();
+        if let Some(current) = &rq.current_task {
+            current.state.store(TaskState::Zombie, Ordering::Relaxed);
+        }
+    }
+    // Enable interrupts and halt — timer will schedule another task.
+    // The zombie won't be re-queued by the scheduler.
+    x86_64::instructions::interrupts::enable();
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
 
 pub fn raw_to_rgb888(raw: Rgb888Raw) -> Rgb888 {

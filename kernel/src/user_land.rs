@@ -1,14 +1,13 @@
 use crate::limine_requests::{MODULE_REQUEST, USER_LAND_PATH};
 use crate::memory::MEMORY;
+use crate::memory::cpu_local_data::get_local;
 use crate::memory::physical_memory::{MemoryType, OffsetMappedPhysAddr, OffsetMappedPhysFrame};
 use crate::memory::vaddr_allocator::OffsetMappedVirtAddr;
-use crate::{raw_syscall_handler};
+use crate::task::task::Task;
 use bitflags::bitflags;
-use core::arch::asm;
 use core::num::NonZero;
 use core::ops::Range;
 use core::ptr::{NonNull, slice_from_raw_parts_mut};
-use core::sync::atomic::{AtomicBool, Ordering};
 use elf::ElfBytes;
 use elf::endian::AnyEndian;
 use elf::segment::ProgramHeader;
@@ -16,41 +15,14 @@ use ez_paging::{ConfigurableFlags, Frame, Page, PageSize};
 use nodit::interval::ie;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use x86_64::registers::model_specific::PatMemoryType;
-use x86_64::registers::rflags::RFlags;
 use x86_64::{PhysAddr, VirtAddr};
 use crate::consts::LOWER_HALF_END;
 
-static CONSUMED_USER_LAND: AtomicBool = AtomicBool::new(false);
-
-pub struct EnterUserModeInput {
-    pub rip: u64,
-    pub rsp: u64,
-    pub rflags: RFlags,
-}
-
-/// # Safety
-/// Does 'sysretq'
-/// Enable system call extension first
-pub unsafe fn enter_user_mode(EnterUserModeInput { rip, rsp, rflags }: EnterUserModeInput) -> ! {
-    let rflags = rflags.bits();
-    unsafe {
-        asm!("\
-            mov rsp, {}
-            sysretq",
-            in(reg) rsp,
-            in("rcx") rip,
-            in("r11") rflags,
-            // The user space program can only "return" with a `syscall`, which will jump to the syscall handler
-            options(noreturn)
-        )
-    }
-}
-
-pub fn run_user_land() {
-    // User land must only run once
-    let previously_consumed = CONSUMED_USER_LAND.swap(false, Ordering::Relaxed);
-    assert!(!previously_consumed);
-
+/// Create a user-mode task from the first Limine module matching USER_LAND_PATH.
+///
+/// This parses the ELF, creates a new address space, maps ELF segments and a
+/// user stack, then returns a `Task` ready to be scheduled.
+pub fn create_user_task_from_elf() -> Task {
     let module = MODULE_REQUEST
         .get_response()
         .unwrap()
@@ -80,8 +52,10 @@ pub fn run_user_land() {
             .unwrap(),
     );
 
+    // Capture CR3 physical address from the allocated L4 frame
+    let cr3 = user_l4.frame().start_address().as_u64();
+
     // Remove the module from physical memory map
-    // We will only be using 4 KiB pages because most ELFs will have segments only aligned to 4 KiB, and Limine only aligns the ELF to 4 KiB
     let page_size = PageSize::_4KiB;
     let module_physical_interval = {
         let start = VirtAddr::from_ptr(module.addr()).offset_mapped().as_u64();
@@ -183,8 +157,6 @@ pub fn run_user_land() {
     }
 
     // Map all non-referenced frames in the ELF as usable
-    // Currently all non-referenced frames are gaps in the map
-    // We just need to "fill the gaps" with usable
     loop {
         let gap = physical_memory
             .map_mut()
@@ -212,22 +184,19 @@ pub fn run_user_land() {
     }
 
     // Zero the unused bytes of the last frame of the ELF module, if it's used
-    // For simplicity we will just uncoditionally zero it
     {
         let start = module.addr().addr() + module.size() as usize;
         let ptr = NonNull::new(start as *mut u8).unwrap();
         let end = start.next_multiple_of(page_size.byte_len());
         let count = end - start;
-        // Safety: we have exclusive accces to this memory
+        // Safety: we have exclusive access to this memory
         unsafe { ptr.write_bytes(0, count) };
     }
 
-    // Allocate a stack
-    // Technically this stack placement could overlap with our ELF, but we will assume it won't
+    // Allocate a user stack
     let rsp = LOWER_HALF_END;
     {
         let stack_size: u64 = 64 * 0x400;
-        // We are using 4 KiB pages because we need <2 MiB, but we could use any page size for the stack, as long as the stack size is a multiple of it
         let page_size = PageSize::_4KiB;
         let pages_len = stack_size.div_ceil(page_size.byte_len_u64());
         let start_page = Page::new(
@@ -253,18 +222,13 @@ pub fn run_user_land() {
     // Release memory lock
     drop(physical_memory);
 
-    // Switch to the user address space
-    // Safety: we can still reference kernel memory
-    unsafe { user_l4.switch_to(memory.new_kernel_cr3_flags) };
+    // Get user segment selectors from the GDT
+    let local = get_local();
+    let gdt = local.gdt.get().unwrap();
+    let user_cs = gdt.user_code_selector().0;
+    let user_ss = gdt.user_data_selector().0;
 
-    raw_syscall_handler::init();
-
-    let input = EnterUserModeInput {
-        rflags: RFlags::empty(),
-        rip: entry_point.get(),
-        rsp,
-    };
-    unsafe { enter_user_mode(input) };
+    Task::new_user(entry_point.get(), rsp, user_l4, cr3, user_cs, user_ss)
 }
 
 bitflags! {

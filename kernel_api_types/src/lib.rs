@@ -8,4 +8,6 @@ pub enum SysCallNumber {
     GetBoundingBox = 0,
     DrawIter = 1,
     FillSolid = 2,
+    Exit = 3,
+    Spawn = 4,
 }

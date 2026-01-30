@@ -12,7 +12,13 @@ pub extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
-    let accessed_address = Cr2::read().unwrap();
+    let accessed_address = Cr2::read_raw();
+    log::error!(
+        "Page fault at {:#x}, error: {error_code:#?}, ip: {:#x}",
+        accessed_address,
+        stack_frame.instruction_pointer.as_u64()
+    );
+    let accessed_address = x86_64::VirtAddr::new(accessed_address);
     if let Some(stack) = STACK_GUARD_PAGES
         .lock()
         .iter()
@@ -30,6 +36,13 @@ pub extern "x86-interrupt" fn page_fault_handler(
             "Page fault! Stack frame: {stack_frame:#?}. Error code: {error_code:#?}. Accessed address: {accessed_address:?}."
         );
     }
+}
+
+pub extern "x86-interrupt" fn general_protection_fault_handler(
+    stack_frame: InterruptStackFrame,
+    error_code: u64,
+) {
+    panic!("General Protection Fault! Stack frame: {stack_frame:#?}. Error code: {error_code}.")
 }
 
 pub extern "x86-interrupt" fn double_fault_handler(

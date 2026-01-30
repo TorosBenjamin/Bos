@@ -1,13 +1,14 @@
 use crate::memory::cpu_local_data::{CpuLocalData, get_local};
 use crate::memory::guarded_stack::{GuardedStack, StackId, StackType};
-use crate::syscall_handlers::{sys_draw_iter, sys_fill_solid, sys_get_bounding_box};
+use crate::syscall_handlers::{sys_draw_iter, sys_exit, sys_fill_solid, sys_get_bounding_box};
 use core::arch::{asm, naked_asm};
 use core::mem::offset_of;
 use core::sync::atomic::Ordering;
 use kernel_api_types::SysCallNumber;
 use x86_64::VirtAddr;
 use x86_64::registers::control::{Efer, EferFlags};
-use x86_64::registers::model_specific::LStar;
+use x86_64::registers::model_specific::{LStar, SFMask, Star};
+use x86_64::registers::rflags::RFlags;
 
 #[unsafe(naked)]
 unsafe extern "sysv64" fn raw_syscall_handler() -> ! {
@@ -54,6 +55,11 @@ unsafe extern "sysv64" fn syscall_handler(
     return_instruction_pointer: u64,
     return_stack_pointer: u64,
 ) -> ! {
+    // Handle Exit specially since it diverges (never returns to sysretq)
+    if input6 == SysCallNumber::Exit as u64 {
+        sys_exit(); // -> !, never returns
+    }
+
     let inputs = [input1, input2, input3, input4, input5, input6];
     let ret = unsafe { dispatch_syscall(input0, &inputs) };
 
@@ -116,6 +122,15 @@ pub fn init() {
 
     // This tells the CPU the address of our syscall handler
     LStar::write(VirtAddr::from_ptr(raw_syscall_handler as *const ()));
+
+    // STAR MSR: sysret_base=0x10, syscall_base=0x08
+    // SYSCALL: CS = 0x08, SS = 0x08+8 = 0x10 (kernel code/data)
+    // SYSRET:  SS = (0x10+8)|3 = 0x1B, CS = (0x10+16)|3 = 0x23 (user data/code)
+    unsafe { Star::write_raw(0x10, 0x08) };
+
+    // Mask IF during SYSCALL to prevent timer from firing on the per-CPU
+    // syscall handler stack (which has no iretq frame and would corrupt state)
+    SFMask::write(RFlags::INTERRUPT_FLAG);
 
     unsafe {
         SYS_CALL_TABLE[SysCallNumber::DrawIter as usize] = Some(sys_draw_iter);

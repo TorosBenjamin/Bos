@@ -7,12 +7,12 @@ extern crate alloc;
 extern crate kernel;
 
 use crate::kernel::limine_requests::{FRAME_BUFFER_REQUEST, MEMORY_MAP_REQUEST};
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 use kernel::graphics::display;
 use kernel::limine_requests::{BASE_REVISION, RSDP_REQUEST};
 use kernel::memory::cpu_local_data::get_local;
 use kernel::memory::guarded_stack::{GuardedStack, StackId, StackType, NORMAL_STACK_SIZE};
-use kernel::{acpi, apic, gdt, hlt_loop, interrupt, logger, project_version, time};
+use kernel::{acpi, apic, gdt, hlt_loop, interrupt, logger, project_version, raw_syscall_handler, time, user_land};
 use kernel::interrupt::nmi_handler_state;
 use kernel::task::global_scheduler::spawn_task;
 use kernel::task::local_scheduler::init_run_queue;
@@ -67,11 +67,14 @@ extern "sysv64" fn init_bsp() -> ! {
     time::lapic_timer::init();
     time::lapic_timer::set_deadline(1_000_000);
 
+    raw_syscall_handler::init();
     init_run_queue();
 
     spawn_task(Task::new(idle_task));
-    spawn_task(Task::new(example_log));
-    spawn_task(Task::new(example_log2));
+
+    // Spawn user task from Limine module
+    let user_task = user_land::create_user_task_from_elf();
+    spawn_task(user_task);
 
     /*
     let mp_response = MP_REQUEST.get_response().unwrap();
@@ -80,10 +83,7 @@ extern "sysv64" fn init_bsp() -> ! {
     }
     */
 
-
     x86_64::instructions::interrupts::enable();
-
-    // run_user_land();
 
     hlt_loop();
 }
@@ -112,6 +112,7 @@ extern "sysv64" fn init_ap() -> ! {
     interrupt::idt::init();
     apic::init_local_apic();
 
+    raw_syscall_handler::init();
     init_run_queue();
 
     spawn_task(Task::new(idle_task));
@@ -127,28 +128,6 @@ extern "sysv64" fn init_ap() -> ! {
 fn idle_task() -> ! {
     loop {
         x86_64::instructions::hlt();
-    }
-}
-
-pub static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn example_log() -> ! {
-    loop {
-        let val = COUNTER.load(Ordering::Relaxed);
-        log::info!("A: {:?}", val);
-        for _ in 0..100_000 {
-            core::hint::spin_loop();
-        }
-    }
-}
-
-fn example_log2() -> ! {
-    loop {
-        let val = COUNTER.fetch_add(1, Ordering::Relaxed);
-        log::info!("B: {:?}", val);
-        for _ in 0..100_000 {
-            core::hint::spin_loop();
-        }
     }
 }
 

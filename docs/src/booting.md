@@ -11,13 +11,14 @@ Bos uses the [Limine](https://limine-bootloader.org/) bootloader and the Limine 
     - Initialize the logger.
     - Initialize the memory map and physical memory allocator for the BSP (Bootstrap Processor).
 4. **BSP Initialization**:
-    - Initialize GDT and IDT.
+    - Initialize GDT (with kernel and user segments) and IDT.
     - Parse ACPI tables.
     - Initialize APIC and local APIC.
     - Calibrate timers (TSC, LAPIC).
-    - Initialize the run queue and spawn initial tasks.
+    - Initialize syscall MSRs (LSTAR, STAR, SFMASK) for this CPU.
+    - Initialize the run queue and spawn initial tasks (idle task, user task from ELF module).
 5. **Interrupts**: Enable interrupts and start the scheduler.
 
 ## Multi-Processor (MP) Support
 
-The kernel supports multi-processor systems. APs (Application Processors) are started by the BSP and follow a similar initialization path as the BSP but skip global initializations.
+The kernel supports multi-processor systems. APs (Application Processors) are started by the BSP and follow a similar initialization path as the BSP but skip global initializations. Each AP initializes its own GDT, IDT, APIC, syscall MSRs, and run queue.
