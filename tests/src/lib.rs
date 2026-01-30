@@ -15,6 +15,7 @@ pub mod interrupts;
 pub mod graphics;
 pub mod scheduler;
 pub mod timer_interrupt;
+pub mod user_mode;
 
 pub fn test_runner(tests: &[&dyn Fn()]) {
     log::info!("Running {} tests", tests.len());
@@ -85,12 +86,14 @@ pub fn tests() -> &'static [&'static dyn KernelTest] {
         &graphics::basic_draw,
         &graphics::bounding_box_valid,
 
-        // Scheduler tests
-        &scheduler::simple_task_creation,
-        &scheduler::task_spawn_and_run,
+        // User mode diagnostic tests (run before scheduler handoff)
+        &user_mode::test_user_selector_rpl,
+        &user_mode::test_lower_half_end_canonical,
+        &user_mode::test_user_task_creation,
+        &user_mode::test_user_page_table_kernel_mapped,
+        &user_mode::test_user_task_iretq_frame,
 
-        // Tests with expected panic can't be really be caught right now
-        // so they should be commented out so others can run
+        // Physical memory tests
         &physical_memory::alloc_one_frame,
         &physical_memory::free_and_reuse_kernel_frame,
         &physical_memory::frame_alignment,
@@ -98,6 +101,14 @@ pub fn tests() -> &'static [&'static dyn KernelTest] {
         &physical_memory::user_type,
         &physical_memory::exhaustion,
         &physical_memory::duplicate_allocation,
+
+
+        // Scheduler tests
+        &scheduler::simple_task_creation,
+
+        // Scheduler handoff test — enables interrupts and never returns.
+        // MUST be the very last test. Exits QEMU with the result.
+        &user_mode::test_user_task_runs,
     ]
 }
 

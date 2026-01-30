@@ -114,6 +114,22 @@ extern "C" fn timer_interrupt_handler_inner(current_rsp: usize) -> usize {
 
     TIMER_INTERRUPT_COUNT.fetch_add(1, Ordering::Relaxed);
     let next_rsp = crate::task::local_scheduler::schedule_from_interrupt(cpu, current_rsp);
+
+    // Fix SS RPL: when returning to ring 3, SS must have RPL=3.
+    // The CPU clears SS to a NULL-like selector on privilege-level-changing
+    // interrupts in 64-bit mode; the pushed value may lack RPL bits.
+    {
+        let iretq_base = (next_rsp + 15 * 8) as *const u64;
+        let cs = unsafe { *iretq_base.add(1) };
+        if cs & 3 == 3 {
+            let ss_ptr = unsafe { iretq_base.add(4) } as *mut u64;
+            let ss = unsafe { *ss_ptr };
+            if ss & 3 != 3 {
+                unsafe { *ss_ptr = ss | 3 };
+            }
+        }
+    }
+
     next_rsp
 }
 

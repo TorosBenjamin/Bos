@@ -3,5 +3,5 @@
 /runner/out_dir
 /.vscode/
 /.idea/
-CLAUDE.md
+/.claude/
 /docs/combined_docs.md
