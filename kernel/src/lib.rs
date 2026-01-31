@@ -12,6 +12,7 @@ pub mod drivers;
 pub mod ioapic;
 pub mod limine_requests;
 pub mod memory;
+pub mod ipc;
 pub mod raw_syscall_handler;
 pub mod syscall_handlers;
 pub mod task;

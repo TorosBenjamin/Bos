@@ -4,9 +4,9 @@ Bos supports running userland applications in ring 3 with their own address spac
 
 ## User Task Creation
 
-User tasks are created from ELF binaries loaded as Limine modules. The function `create_user_task_from_elf()` in `kernel/src/user_land.rs` handles the full setup:
+User tasks are created from ELF binaries loaded as Limine modules. The function `create_user_task_from_elf()` in `kernel/src/user_task_from_elf.rs` handles the full setup:
 
-1. **Parse ELF**: The ELF binary is read from the Limine module matching `USER_LAND_PATH`.
+1. **Parse ELF**: The ELF binary is read from the Limine module matching `INIT_TASK_PATH`.
 2. **Create address space**: A new user L4 page table is allocated. The kernel's higher-half entries (L4[256..511]) are cloned into it, ensuring kernel code and data remain accessible during interrupts and syscalls.
 3. **Map ELF segments**: LOAD segments are mapped into the user address space at their specified virtual addresses. BSS regions are allocated and zeroed.
 4. **Allocate user stack**: A 64 KiB stack is mapped at the top of the user address space (just below `LOWER_HALF_END`).

@@ -18,7 +18,10 @@ pub mod mmap;
 pub mod scheduler;
 pub mod spawn;
 pub mod timer_interrupt;
+pub mod ipc;
 pub mod user_mode;
+pub mod display_owner;
+pub mod get_module;
 
 pub fn test_runner(tests: &[&dyn Fn()]) {
     log::info!("Running {} tests", tests.len());
@@ -121,6 +124,30 @@ pub fn tests() -> &'static [&'static dyn KernelTest] {
         &physical_memory::exhaustion,
         &physical_memory::duplicate_allocation,
 
+
+        // IPC tests
+        &ipc::test_channel_create,
+        &ipc::test_send_recv,
+        &ipc::test_send_on_recv_fails,
+        &ipc::test_recv_on_send_fails,
+        &ipc::test_close_then_fail,
+        &ipc::test_channel_full,
+        &ipc::test_recv_closed_then_send_fails,
+        &ipc::test_fifo_order,
+
+        // Display owner tests
+        &display_owner::test_no_current_task_is_not_owner,
+        &display_owner::test_no_owner_is_not_owner,
+        &display_owner::test_non_owner_present_display_rejected,
+        &display_owner::test_transfer_display_not_owner,
+        &display_owner::test_transfer_display_no_current_task,
+        &display_owner::test_display_owner_atomic,
+
+        // GetModule tests
+        &get_module::test_init_task_module_exists,
+        &get_module::test_display_server_module_exists,
+        &get_module::test_nonexistent_module_missing,
+        &get_module::test_module_has_nonzero_size,
 
         // Spawn tests
         &spawn::test_spawn_error_invalid_elf,

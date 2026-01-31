@@ -82,8 +82,8 @@ fn get_user_elf_bytes() -> &'static [u8] {
         .unwrap()
         .modules()
         .iter()
-        .find(|m| m.path() == kernel::limine_requests::USER_LAND_PATH)
-        .expect("user_land module not found");
+        .find(|m| m.path() == kernel::limine_requests::INIT_TASK_PATH)
+        .expect("init_task module not found");
 
     let ptr = NonNull::new(slice_from_raw_parts_mut(
         module.addr(),

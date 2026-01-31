@@ -1,0 +1,9 @@
+[package]
+name = "ulib"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+kernel_api_types = { path = "../kernel_api_types" }
+embedded-graphics = "0.8.1"

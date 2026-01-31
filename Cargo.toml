@@ -1,5 +1,5 @@
 [workspace]
 resolver = "3"
-members = ["runner", "kernel", "tests", "user_land", "kernel_api_types"]
+members = ["runner", "kernel", "tests", "init_task", "kernel_api_types", "ulib", "display_server"]
 default-members = ["runner"]
 

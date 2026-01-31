@@ -1,0 +1,15 @@
+[package]
+name = "display_server"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ulib = { path = "../ulib" }
+kernel_api_types = { path = "../kernel_api_types" }
+embedded-graphics = "0.8.1"
+
+[[bin]]
+name = "display_server"
+test = false
+bench = false

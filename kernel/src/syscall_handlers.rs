@@ -1,61 +1,25 @@
 use crate::graphics::display::DISPLAY;
+use crate::limine_requests::MODULE_REQUEST;
 use crate::memory::MEMORY;
 use crate::memory::cpu_local_data::get_local;
 use crate::memory::physical_memory::MemoryType;
 use crate::memory::user_vaddr;
+use crate::memory::page_tables::get_kernel_vaddr_from_user_vaddr;
 use crate::task::task::{TaskKind, TaskState};
 use core::sync::atomic::Ordering;
-use embedded_graphics::Pixel;
-use embedded_graphics::geometry::Point;
-use embedded_graphics::pixelcolor::Rgb888;
-use embedded_graphics::primitives::Rectangle;
 use ez_paging::{ConfigurableFlags, Owned4KibFrame, Page, PageSize};
-use kernel_api_types::graphics::{GraphicsResult, PixelData, Rect, Rgb888Raw};
+use kernel_api_types::graphics::{DisplayInfo, GraphicsResult, Rect};
 use kernel_api_types::{MMAP_EXEC, MMAP_WRITE};
 use x86_64::registers::model_specific::PatMemoryType;
 use x86_64::structures::paging::PhysFrame;
 use x86_64::{PhysAddr, VirtAddr};
 
-/// Syscall: draw multiple pixels from user-space
-pub fn sys_draw_iter(pixels_ptr: u64, len: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
-    let pixels: &[PixelData] =
-        unsafe { core::slice::from_raw_parts(pixels_ptr as *const PixelData, len as usize) };
-
-    let pixels_iter = pixels.iter().map(|p| {
-        let color = raw_to_rgb888(p.rgb_raw);
-        Pixel(Point::new(p.x as i32, p.y as i32), color)
-    });
-
-    // Draw the pixels
-    if DISPLAY.draw_iter(pixels_iter).is_err() {
-        return GraphicsResult::InvalidInput as u64;
-    }
-
-    GraphicsResult::Ok as u64
-}
-
-/// Syscall: fill a solid rectangle
-pub fn sys_fill_solid(rect_ptr: u64, rgb_raw: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
-    // SAFETY: rect_ptr comes from userspace, must be validated in real kernel
-    // TODO: Pointer validation
-    let rect = unsafe { &*(rect_ptr as *const Rect) };
-
-    let color = raw_to_rgb888(rgb_raw as u32);
-
-    let eg_rect = Rectangle::new(
-        Point::new(rect.x as i32, rect.y as i32),
-        embedded_graphics::geometry::Size::new(rect.width, rect.height),
-    );
-
-    if DISPLAY.fill_solid(&eg_rect, color).is_err() {
-        return GraphicsResult::InvalidInput as u64;
-    }
-
-    GraphicsResult::Ok as u64
-}
-
 /// Syscall: return the bounding box of the framebuffer
 pub fn sys_get_bounding_box(rect_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    if !crate::graphics::display::is_display_owner() {
+        return GraphicsResult::PermissionDenied as u64;
+    }
+
     // TODO: Pointer validation
     let rect_out = unsafe { &mut *(rect_out_ptr as *mut Rect) };
 
@@ -151,13 +115,6 @@ pub fn sys_spawn(elf_ptr: u64, elf_len: u64, child_arg: u64, _: u64, _: u64, _: 
         }
         Err(_) => 0,
     }
-}
-
-pub fn raw_to_rgb888(raw: Rgb888Raw) -> Rgb888 {
-    let r = ((raw >> 16) & 0xFF) as u8;
-    let g = ((raw >> 8) & 0xFF) as u8;
-    let b = (raw & 0xFF) as u8;
-    Rgb888::new(r, g, b)
 }
 
 /// Syscall: allocate virtual memory for the calling user task.
@@ -263,6 +220,200 @@ pub fn sys_mmap(size: u64, flags: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
     start_vaddr
 }
 
+/// Syscall: create a new IPC channel.
+///
+/// Arguments: send_ep_out_ptr, recv_ep_out_ptr, capacity
+/// Writes the two endpoint IDs to the output pointers.
+/// Returns: IPC status code.
+pub fn sys_channel_create(send_ep_out_ptr: u64, recv_ep_out_ptr: u64, capacity: u64, _: u64, _: u64, _: u64) -> u64 {
+    if send_ep_out_ptr == 0 || recv_ep_out_ptr == 0 {
+        return kernel_api_types::IPC_ERR_INVALID_ARGS;
+    }
+
+    let cap = if capacity == 0 {
+        crate::ipc::DEFAULT_CHANNEL_CAPACITY
+    } else {
+        (capacity as usize).clamp(1, crate::ipc::MAX_CHANNEL_CAPACITY)
+    };
+
+    let (send_id, recv_id) = crate::ipc::create_channel(cap);
+
+    unsafe {
+        core::ptr::write(send_ep_out_ptr as *mut u64, send_id);
+        core::ptr::write(recv_ep_out_ptr as *mut u64, recv_id);
+    }
+
+    kernel_api_types::IPC_OK
+}
+
+/// Syscall: send a message on a channel endpoint.
+///
+/// Arguments: endpoint_id, msg_ptr, msg_len
+/// Returns: IPC status code.
+pub fn sys_channel_send(endpoint_id: u64, msg_ptr: u64, msg_len: u64, _: u64, _: u64, _: u64) -> u64 {
+    if msg_len > crate::ipc::MAX_MESSAGE_SIZE as u64 {
+        return kernel_api_types::IPC_ERR_MSG_TOO_LARGE;
+    }
+    if msg_len > 0 && msg_ptr == 0 {
+        return kernel_api_types::IPC_ERR_INVALID_ARGS;
+    }
+
+    let data = if msg_len > 0 {
+        unsafe { core::slice::from_raw_parts(msg_ptr as *const u8, msg_len as usize) }
+    } else {
+        &[]
+    };
+
+    loop {
+        match crate::ipc::try_send(endpoint_id, data) {
+            Ok(()) => return kernel_api_types::IPC_OK,
+            Err(crate::ipc::IpcError::ChannelFull) => {
+                // Spin-yield: let other tasks run
+                x86_64::instructions::interrupts::enable();
+                x86_64::instructions::hlt();
+                x86_64::instructions::interrupts::disable();
+            }
+            Err(e) => return ipc_error_to_code(e),
+        }
+    }
+}
+
+/// Syscall: receive a message from a channel endpoint.
+///
+/// Arguments: endpoint_id, buf_ptr, buf_cap, bytes_read_out_ptr
+/// Returns: IPC status code.
+pub fn sys_channel_recv(endpoint_id: u64, buf_ptr: u64, buf_cap: u64, bytes_read_out_ptr: u64, _: u64, _: u64) -> u64 {
+    if buf_ptr == 0 || bytes_read_out_ptr == 0 {
+        return kernel_api_types::IPC_ERR_INVALID_ARGS;
+    }
+
+    loop {
+        match crate::ipc::try_recv(endpoint_id) {
+            Ok(msg) => {
+                let copy_len = msg.len().min(buf_cap as usize);
+                unsafe {
+                    core::ptr::copy_nonoverlapping(msg.as_ptr(), buf_ptr as *mut u8, copy_len);
+                    core::ptr::write(bytes_read_out_ptr as *mut u64, copy_len as u64);
+                }
+                return kernel_api_types::IPC_OK;
+            }
+            Err(crate::ipc::IpcError::WouldBlock) => {
+                // Spin-yield: let other tasks run
+                x86_64::instructions::interrupts::enable();
+                x86_64::instructions::hlt();
+                x86_64::instructions::interrupts::disable();
+            }
+            Err(e) => return ipc_error_to_code(e),
+        }
+    }
+}
+
+/// Syscall: close a channel endpoint.
+///
+/// Arguments: endpoint_id
+/// Returns: IPC status code.
+pub fn sys_channel_close(endpoint_id: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    match crate::ipc::close_endpoint(endpoint_id) {
+        Ok(()) => kernel_api_types::IPC_OK,
+        Err(e) => ipc_error_to_code(e),
+    }
+}
+
+fn ipc_error_to_code(e: crate::ipc::IpcError) -> u64 {
+    match e {
+        crate::ipc::IpcError::InvalidEndpoint => kernel_api_types::IPC_ERR_INVALID_ENDPOINT,
+        crate::ipc::IpcError::WrongDirection => kernel_api_types::IPC_ERR_WRONG_DIRECTION,
+        crate::ipc::IpcError::PeerClosed => kernel_api_types::IPC_ERR_PEER_CLOSED,
+        crate::ipc::IpcError::ChannelFull => kernel_api_types::IPC_ERR_CHANNEL_FULL,
+        crate::ipc::IpcError::WouldBlock => kernel_api_types::IPC_ERR_CHANNEL_FULL, // shouldn't surface
+        crate::ipc::IpcError::MessageTooLarge => kernel_api_types::IPC_ERR_MSG_TOO_LARGE,
+        crate::ipc::IpcError::InvalidArgs => kernel_api_types::IPC_ERR_INVALID_ARGS,
+    }
+}
+
+/// Syscall: transfer display ownership to another task.
+///
+/// Arguments: new_owner_task_id
+/// Returns: 0 on success, 1 if caller is not the current owner,
+///          2 if target task not found.
+pub fn sys_transfer_display(new_owner_id: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    use crate::graphics::display::DISPLAY_OWNER;
+    use crate::task::global_scheduler::TASK_TABLE;
+    use crate::task::task::TaskId;
+    use core::sync::atomic::Ordering;
+
+    if !crate::graphics::display::is_display_owner() {
+        return 1;
+    }
+
+    {
+        let table = TASK_TABLE.lock();
+        if !table.contains_key(&TaskId::from_u64(new_owner_id)) {
+            return 2;
+        }
+    }
+
+    DISPLAY_OWNER.store(new_owner_id, Ordering::Relaxed);
+    0
+}
+
+/// Syscall: load a Limine boot module by name.
+///
+/// Arguments: name_ptr, name_len, buf_ptr, buf_cap
+///
+/// Size query: if buf_ptr == 0 && buf_cap == 0, returns the module size (or 0 if not found).
+/// Copy: copies module bytes to buf, returns bytes written (or 0 on failure).
+pub fn sys_get_module(name_ptr: u64, name_len: u64, buf_ptr: u64, buf_cap: u64, _: u64, _: u64) -> u64 {
+    if name_ptr == 0 || name_len == 0 || name_len > 256 {
+        return 0;
+    }
+
+    let name_bytes = unsafe { core::slice::from_raw_parts(name_ptr as *const u8, name_len as usize) };
+    let name = match core::str::from_utf8(name_bytes) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+
+    // Build path by prepending "/" to name
+    let mut path_buf = [0u8; 258];
+    path_buf[0] = b'/';
+    path_buf[1..1 + name.len()].copy_from_slice(name.as_bytes());
+    let path = &path_buf[..1 + name.len()];
+
+    let response = match MODULE_REQUEST.get_response() {
+        Some(r) => r,
+        None => return 0,
+    };
+
+    let module = match response.modules().iter().find(|m| m.path().to_bytes() == path) {
+        Some(m) => m,
+        None => return 0,
+    };
+
+    let module_size = module.size();
+
+    // Size query mode
+    if buf_ptr == 0 && buf_cap == 0 {
+        return module_size;
+    }
+
+    // Buffer too small
+    if buf_cap < module_size {
+        return 0;
+    }
+
+    // Copy module bytes to user buffer
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            module.addr() as *const u8,
+            buf_ptr as *mut u8,
+            module_size as usize,
+        );
+    }
+
+    module_size
+}
+
 /// Syscall: unmap virtual memory from the calling user task.
 ///
 /// Arguments: addr (page-aligned), size (bytes)
@@ -314,4 +465,99 @@ pub fn sys_munmap(addr: u64, size: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
     }
 
     0
+}
+
+/// Syscall: present a dirty rectangle from a user-space pixel buffer to the framebuffer.
+///
+/// Arguments: buf_ptr, buf_width, dirty_x, dirty_y, dirty_w, dirty_h
+/// Returns: GraphicsResult code.
+pub fn sys_present_display(buf_ptr: u64, buf_width: u64, dirty_x: u64, dirty_y: u64, dirty_w: u64, dirty_h: u64) -> u64 {
+    if !crate::graphics::display::is_display_owner() {
+        return GraphicsResult::PermissionDenied as u64;
+    }
+
+    if buf_ptr == 0 || buf_width == 0 || dirty_w == 0 || dirty_h == 0 {
+        return GraphicsResult::Ok as u64;
+    }
+
+    // Get framebuffer dimensions for bounds checking
+    let bb = DISPLAY.bounding_box();
+    let fb_w = bb.size.width as u64;
+    let fb_h = bb.size.height as u64;
+
+    // Clamp dirty rect to framebuffer bounds
+    if dirty_x >= fb_w || dirty_y >= fb_h {
+        return GraphicsResult::Ok as u64;
+    }
+    let clamped_w = dirty_w.min(fb_w - dirty_x) as usize;
+    let clamped_h = dirty_h.min(fb_h - dirty_y) as usize;
+
+    let cpu = get_local();
+    let task = {
+        let rq = cpu.run_queue.get().unwrap().lock();
+        match &rq.current_task {
+            Some(t) if t.kind == TaskKind::User => t.clone(),
+            _ => return GraphicsResult::PermissionDenied as u64,
+        }
+    };
+
+    let mut task_inner = task.inner.lock();
+    let user_vaddr_set = &task_inner.user_vaddr_set;
+
+    let start_vaddr = VirtAddr::new(buf_ptr);
+
+    let end_vaddr_val = if clamped_h > 0 && clamped_w > 0 {
+        let max_row_offset = (dirty_y + clamped_h as u64 - 1) * buf_width;
+        let max_col_offset = dirty_x + clamped_w as u64;
+        buf_ptr + (max_row_offset + max_col_offset) * core::mem::size_of::<u32>() as u64
+    } else {
+        buf_ptr + core::mem::size_of::<u32>() as u64
+    };
+    let end_vaddr = VirtAddr::new(end_vaddr_val);
+
+    if !user_vaddr::is_user_vaddr_valid_range(user_vaddr_set, start_vaddr, end_vaddr) {
+        return GraphicsResult::InvalidInput as u64;
+    }
+
+    let user_l4 = match &mut task_inner.user_page_table {
+        Some(pt) => pt,
+        None => return GraphicsResult::PermissionDenied as u64,
+    };
+
+    let kernel_buf_ptr = match get_kernel_vaddr_from_user_vaddr(user_l4, start_vaddr) {
+        Some(vaddr) => vaddr.as_u64() as *const u32,
+        None => return GraphicsResult::InvalidInput as u64,
+    };
+
+    unsafe {
+        DISPLAY.copy_rect_from_user(
+            kernel_buf_ptr,
+            buf_width as usize,
+            dirty_x as usize,
+            dirty_y as usize,
+            clamped_w,
+            clamped_h,
+        );
+    }
+
+    GraphicsResult::Ok as u64
+}
+
+/// Syscall: get display info (dimensions and pixel format).
+///
+/// Arguments: info_out_ptr
+/// Returns: GraphicsResult code.
+pub fn sys_get_display_info(info_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    if info_out_ptr == 0 {
+        return GraphicsResult::InvalidInput as u64;
+    }
+
+    let info = DISPLAY.get_display_info();
+
+    // TODO: Pointer validation
+    unsafe {
+        core::ptr::write(info_out_ptr as *mut DisplayInfo, info);
+    }
+
+    GraphicsResult::Ok as u64
 }

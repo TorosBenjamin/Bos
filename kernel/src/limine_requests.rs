@@ -7,7 +7,8 @@ use limine::request::{
     RequestsStartMarker, RsdpRequest,
 };
 
-pub const USER_LAND_PATH: &CStr = c"/user_land";
+pub const INIT_TASK_PATH: &CStr = c"/init_task";
+pub const DISPLAY_SERVER_PATH: &CStr = c"/display_server";
 
 #[used]
 #[unsafe(link_section = ".requests")]
@@ -36,7 +37,10 @@ pub static RSDP_REQUEST: RsdpRequest = RsdpRequest::new();
 #[used]
 #[unsafe(link_section = ".requests")]
 pub static MODULE_REQUEST: ModuleRequest =
-    ModuleRequest::new().with_internal_modules(&[&InternalModule::new().with_path(USER_LAND_PATH)]);
+    ModuleRequest::new().with_internal_modules(&[
+        &InternalModule::new().with_path(INIT_TASK_PATH),
+        &InternalModule::new().with_path(DISPLAY_SERVER_PATH),
+    ]);
 
 #[used]
 #[unsafe(link_section = ".requests_start_marker")]

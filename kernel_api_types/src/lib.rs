@@ -6,15 +6,30 @@ pub mod graphics;
 #[derive(Clone, Copy, Debug)]
 pub enum SysCallNumber {
     GetBoundingBox = 0,
-    DrawIter = 1,
-    FillSolid = 2,
     Exit = 3,
     Spawn = 4,
     ReadKey = 5,
     Yield = 6,
     Mmap = 7,
     Munmap = 8,
+    ChannelCreate = 9,
+    ChannelSend = 10,
+    ChannelRecv = 11,
+    ChannelClose = 12,
+    TransferDisplay = 13,
+    GetModule = 14,
+    PresentDisplay = 15,
+    GetDisplayInfo = 16,
 }
+
+// IPC error codes
+pub const IPC_OK: u64 = 0;
+pub const IPC_ERR_INVALID_ENDPOINT: u64 = 1;
+pub const IPC_ERR_WRONG_DIRECTION: u64 = 2;
+pub const IPC_ERR_PEER_CLOSED: u64 = 3;
+pub const IPC_ERR_CHANNEL_FULL: u64 = 4;
+pub const IPC_ERR_INVALID_ARGS: u64 = 5;
+pub const IPC_ERR_MSG_TOO_LARGE: u64 = 6;
 
 pub const MMAP_WRITE: u64 = 1 << 0;
 pub const MMAP_EXEC: u64 = 1 << 1;

@@ -92,6 +92,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f8a2ca5ac02d09563609681103aada9e1777d54fc57a5acd7a41404f9c93b6e"
 
 [[package]]
+name = "display_server"
+version = "0.1.0"
+dependencies = [
+ "embedded-graphics",
+ "kernel_api_types",
+ "ulib",
+]
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -167,6 +176,14 @@ checksum = "2af2455f757db2b292a9b1768c4b70186d443bcb3b316252d6b540aec1cd89ed"
 dependencies = [
  "hash32",
  "stable_deref_trait",
+]
+
+[[package]]
+name = "init_task"
+version = "0.1.0"
+dependencies = [
+ "kernel_api_types",
+ "ulib",
 ]
 
 [[package]]
@@ -342,9 +359,10 @@ dependencies = [
 name = "runner"
 version = "0.1.0"
 dependencies = [
+ "display_server",
+ "init_task",
  "kernel",
  "tests",
- "user_land",
 ]
 
 [[package]]
@@ -435,6 +453,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ulib"
+version = "0.1.0"
+dependencies = [
+ "embedded-graphics",
+ "kernel_api_types",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -445,16 +471,6 @@ name = "unicode-segmentation"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6ccf251212114b54433ec949fd6a7841275f9ada20dddd2f29e9ceea4501493"
-
-[[package]]
-name = "user_land"
-version = "0.1.0"
-dependencies = [
- "embedded-graphics",
- "heapless",
- "kernel_api_types",
- "owo-colors",
-]
 
 [[package]]
 name = "volatile"

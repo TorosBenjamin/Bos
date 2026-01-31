@@ -1,6 +1,6 @@
 use crate::memory::cpu_local_data::{CpuLocalData, get_local};
 use crate::memory::guarded_stack::{GuardedStack, StackId, StackType};
-use crate::syscall_handlers::{sys_draw_iter, sys_exit, sys_fill_solid, sys_get_bounding_box, sys_mmap, sys_munmap, sys_read_key, sys_spawn, sys_yield};
+use crate::syscall_handlers::{sys_channel_close, sys_channel_create, sys_channel_recv, sys_channel_send, sys_exit, sys_get_bounding_box, sys_get_display_info, sys_get_module, sys_mmap, sys_munmap, sys_present_display, sys_read_key, sys_spawn, sys_transfer_display, sys_yield};
 use core::arch::{asm, naked_asm};
 use core::mem::offset_of;
 use core::sync::atomic::Ordering;
@@ -133,13 +133,19 @@ pub fn init() {
     SFMask::write(RFlags::INTERRUPT_FLAG);
 
     unsafe {
-        SYS_CALL_TABLE[SysCallNumber::DrawIter as usize] = Some(sys_draw_iter);
-        SYS_CALL_TABLE[SysCallNumber::FillSolid as usize] = Some(sys_fill_solid);
         SYS_CALL_TABLE[SysCallNumber::GetBoundingBox as usize] = Some(sys_get_bounding_box);
+        SYS_CALL_TABLE[SysCallNumber::PresentDisplay as usize] = Some(sys_present_display);
+        SYS_CALL_TABLE[SysCallNumber::GetDisplayInfo as usize] = Some(sys_get_display_info);
         SYS_CALL_TABLE[SysCallNumber::ReadKey as usize] = Some(sys_read_key);
         SYS_CALL_TABLE[SysCallNumber::Yield as usize] = Some(sys_yield);
         SYS_CALL_TABLE[SysCallNumber::Spawn as usize] = Some(sys_spawn);
         SYS_CALL_TABLE[SysCallNumber::Mmap as usize] = Some(sys_mmap);
         SYS_CALL_TABLE[SysCallNumber::Munmap as usize] = Some(sys_munmap);
+        SYS_CALL_TABLE[SysCallNumber::ChannelCreate as usize] = Some(sys_channel_create);
+        SYS_CALL_TABLE[SysCallNumber::ChannelSend as usize] = Some(sys_channel_send);
+        SYS_CALL_TABLE[SysCallNumber::ChannelRecv as usize] = Some(sys_channel_recv);
+        SYS_CALL_TABLE[SysCallNumber::ChannelClose as usize] = Some(sys_channel_close);
+        SYS_CALL_TABLE[SysCallNumber::TransferDisplay as usize] = Some(sys_transfer_display);
+        SYS_CALL_TABLE[SysCallNumber::GetModule as usize] = Some(sys_get_module);
     }
 }

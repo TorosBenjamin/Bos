@@ -3,7 +3,7 @@ use crate::memory::physical_memory::{OffsetMappedPhysAddr, OffsetMappedPhysFrame
 use crate::memory::vaddr_allocator::VirtualMemoryAllocator;
 use core::ops::Deref;
 use core::ptr::NonNull;
-use ez_paging::{ConfigurableFlags, Frame, ManagedPat, PagingConfig, max_page_size};
+use ez_paging::{ConfigurableFlags, Frame, ManagedPat, PagingConfig, max_page_size, ManagedL4PageTable};
 use limine::memory_map::EntryType;
 use limine::response::MemoryMapResponse;
 use nodit::NoditSet;
@@ -134,4 +134,15 @@ pub fn create_page_tables(
             l4,
         },
     )
+}
+
+pub fn get_kernel_vaddr_from_user_vaddr(
+    user_l4_page_table: &mut ez_paging::ManagedL4PageTable,
+    user_vaddr: x86_64::VirtAddr,
+) -> Option<x86_64::VirtAddr> {
+    let hhdm_offset = hhdm_offset();
+    let (phys_frame, _) = user_l4_page_table.frame().translate_page( // Corrected line
+                                                                                   ez_paging::Page::new(user_vaddr, ez_paging::PageSize::_4KiB).unwrap(),
+    )?;
+    Some(phys_frame.start_address().offset_mapped())
 }

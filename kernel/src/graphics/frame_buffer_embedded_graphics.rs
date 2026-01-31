@@ -75,6 +75,33 @@ impl FrameBufferEmbeddedGraphics<'_> {
     pub fn shift_up(&mut self, amount: usize) {
         self.buffer.copy_within(amount * self.pixel_pitch.., 0);
     }
+
+    /// Copy a dirty rectangle from a user-space pixel buffer into the framebuffer.
+    ///
+    /// # Safety
+    /// `user_buf` must point to a valid user buffer of at least
+    /// `(dirty_y + dirty_h) * user_width` u32 elements.
+    pub unsafe fn copy_rect_from_user(
+        &mut self,
+        user_buf: *const u32,
+        user_width: usize,
+        dirty_x: usize,
+        dirty_y: usize,
+        dirty_w: usize,
+        dirty_h: usize,
+    ) {
+        for row in 0..dirty_h {
+            let src_offset = (dirty_y + row) * user_width + dirty_x;
+            let dst_offset = (dirty_y + row) * self.pixel_pitch + dirty_x;
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    user_buf.add(src_offset),
+                    self.buffer.as_mut_ptr().add(dst_offset),
+                    dirty_w,
+                );
+            }
+        }
+    }
 }
 
 impl Dimensions for FrameBufferEmbeddedGraphics<'_> {

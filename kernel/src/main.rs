@@ -84,6 +84,7 @@ extern "sysv64" fn init_bsp() -> ! {
 
     // Spawn user task from Limine module
     let user_task = user_task_from_elf::create_user_task_from_elf();
+    display::DISPLAY_OWNER.store(user_task.id.to_u64(), core::sync::atomic::Ordering::Relaxed);
     spawn_task(user_task);
 
     /*

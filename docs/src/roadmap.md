@@ -25,13 +25,13 @@ These decisions guide all phases below:
 - The child gets its own page table, stack, and vaddr set (like `create_user_task_from_elf` but reading from user memory instead of a Limine module)
 - Return a task ID to the parent so it can reference the child later
 - Kernel validates that `elf_ptr..elf_ptr+elf_len` is readable in the caller's address space
-- Add userland wrapper in `user_land/src/syscalls.rs`
+- Add userland wrapper in `ulib/src/lib.rs`
 
 **Files to modify/create:**
 - `kernel/src/syscall_handlers.rs` -- add `sys_spawn`
 - `kernel/src/raw_syscall_handler.rs` -- register `Spawn` handler
 - `kernel/src/user_task_from_elf.rs` -- extract common logic, add variant that reads from user memory
-- `user_land/src/syscalls.rs` -- add `sys_spawn` wrapper
+- `ulib/src/lib.rs` -- add `sys_spawn` wrapper
 
 **Tests:**
 - Init task spawns a child task that calls `Exit`. Init continues running.
@@ -40,7 +40,7 @@ These decisions guide all phases below:
 
 ## Phase 2: Message Passing IPC
 
-**Status:** Not started
+**Status:** Done
 **Blocked by:** Phase 1 (need Spawn to test two tasks communicating)
 
 **Goal:** Two tasks can send and receive fixed-size messages through kernel-mediated channels.
@@ -66,7 +66,7 @@ These decisions guide all phases below:
 - `kernel/src/syscall_handlers.rs` -- channel syscall handlers
 - `kernel/src/raw_syscall_handler.rs` -- register channel syscalls
 - `kernel/src/task/task.rs` -- per-task endpoint table, Blocked state integration
-- `user_land/src/syscalls.rs` -- channel wrappers
+- `ulib/src/lib.rs` -- channel wrappers
 
 **Tests:**
 - Init spawns a child, sends it a message, child receives and echoes it back. Init verifies the reply.
@@ -75,14 +75,14 @@ These decisions guide all phases below:
 
 ## Phase 3: Restrict Graphics Syscalls
 
-**Status:** Not started
+**Status:** Done
 **Blocked by:** Phase 2 (need IPC so non-display tasks can still request drawing)
 
-**Goal:** Only a designated "display server" task can call `DrawIter` / `FillSolid` / `GetBoundingBox`.
+**Goal:** Only a designated "display server" task can call `PresentDisplay` / `GetBoundingBox`.
 
 **What to build:**
 - A global `AtomicU64` storing the task ID of the current display owner (init by default)
-- `DrawIter`, `FillSolid`, `GetBoundingBox` check the caller's task ID against the display owner; return error if mismatch
+- `PresentDisplay`, `GetBoundingBox` check the caller's task ID against the display owner; return error if mismatch
 - A mechanism for the display owner to transfer ownership to a child (e.g. a `TransferDisplay` syscall, or a flag on `Spawn`)
 - Alternatively, a per-task capability flag set at spawn time
 
@@ -91,7 +91,7 @@ These decisions guide all phases below:
 - `kernel_api_types/src/lib.rs` -- new error codes or syscall for transfer
 
 **Tests:**
-- A non-display task calls `FillSolid` and gets an error back.
+- A non-display task calls `PresentDisplay` and gets an error back.
 - Display owner transfers ownership to a child; child can draw, parent can no longer draw.
 
 ---
@@ -109,12 +109,12 @@ These decisions guide all phases below:
   - `FillRect { x, y, w, h, color }`
   - `DrawPixels { data: [PixelData] }`
   - `GetBounds` -- reply: `{ w, h }`
-- A client library (module in `user_land/` or separate crate) that wraps the protocol and implements `embedded_graphics::DrawTarget`, so existing drawing code works transparently
+- A client library (module in `ulib/` or separate crate) that wraps the protocol and implements `embedded_graphics::DrawTarget`, so existing drawing code works transparently
 - Init spawns the display server (passing it display ownership + recv endpoint), then spawns client tasks with send endpoints
 
 **Files to modify/create:**
 - `display_server/` (new crate) -- display server binary
-- `user_land/src/display_client.rs` (new) -- client-side DrawTarget wrapping IPC
+- `ulib/src/display_client.rs` (new) -- client-side DrawTarget wrapping IPC
 - `kernel_api_types/src/lib.rs` -- display protocol message types (shared between server and clients)
 
 **Tests:**
@@ -142,7 +142,7 @@ These decisions guide all phases below:
 
 **Files to modify/create:**
 - `display_server/` -- extend protocol with windowing
-- `user_land/` -- demo client tasks (could be separate binaries or one binary with different entry behavior)
+- `init_task/` -- demo client tasks (could be separate binaries or one binary with different entry behavior)
 
 **Tests:**
 - Three independent animations running simultaneously in different screen regions, all through the display server.

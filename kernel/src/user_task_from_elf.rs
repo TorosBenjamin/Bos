@@ -1,4 +1,4 @@
-use crate::limine_requests::{MODULE_REQUEST, USER_LAND_PATH};
+use crate::limine_requests::{MODULE_REQUEST, INIT_TASK_PATH};
 use crate::memory::MEMORY;
 use crate::memory::cpu_local_data::get_local;
 use crate::memory::physical_memory::{MemoryType, OffsetMappedPhysAddr, OffsetMappedPhysFrame};
@@ -19,7 +19,7 @@ use x86_64::registers::model_specific::PatMemoryType;
 use x86_64::{PhysAddr, VirtAddr};
 use crate::consts::LOWER_HALF_END;
 
-/// Create a user-mode task from the first Limine module matching USER_LAND_PATH.
+/// Create a user-mode task from the first Limine module matching INIT_TASK_PATH.
 ///
 /// This parses the ELF, creates a new address space, maps ELF segments and a
 /// user stack, then returns a `Task` ready to be scheduled.
@@ -29,7 +29,7 @@ pub fn create_user_task_from_elf() -> Task {
         .unwrap()
         .modules()
         .iter()
-        .find(|module| module.path() == USER_LAND_PATH)
+        .find(|module| module.path() == INIT_TASK_PATH)
         .unwrap();
 
     let ptr = NonNull::new(slice_from_raw_parts_mut(

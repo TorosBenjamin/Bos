@@ -47,9 +47,13 @@ fn main() {
     let kernel_dest = iso_dir.join("kernel");
     ensure_symlink(&kernel_executable_file, &kernel_dest).unwrap();
 
-    // User Land
-    let user_land_executable_file = env::var("CARGO_BIN_FILE_USER_LAND").unwrap();
-    ensure_symlink(user_land_executable_file, iso_dir.join("user_land")).unwrap();
+    // Init Task
+    let init_task_executable_file = env::var("CARGO_BIN_FILE_INIT_TASK").unwrap();
+    ensure_symlink(init_task_executable_file, iso_dir.join("init_task")).unwrap();
+
+    // Display Server
+    let display_server_executable_file = env::var("CARGO_BIN_FILE_DISPLAY_SERVER").unwrap();
+    ensure_symlink(display_server_executable_file, iso_dir.join("display_server")).unwrap();
 
     // Copy files from the Limine packaeg into `boot/limine`
     let out_limine_dir = boot_dir.join("limine");

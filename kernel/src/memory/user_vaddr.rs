@@ -49,3 +49,12 @@ pub fn free_user_pages(
     let _ = set.cut(&interval);
     true
 }
+
+pub fn is_user_vaddr_valid_range(
+    set: &NoditSet<u64, Interval<u64>>,
+    start: x86_64::VirtAddr,
+    end: x86_64::VirtAddr,
+) -> bool {
+    let interval = ii(start.as_u64(), end.as_u64() - 1);
+    set.iter().any(|existing| existing.contains_interval(&interval))
+}
