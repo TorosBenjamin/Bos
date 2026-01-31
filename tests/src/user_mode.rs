@@ -70,7 +70,7 @@ pub fn test_lower_half_end_canonical() -> TestResult {
 /// Reads raw u64 values from the task's kernel stack to verify the
 /// iretq frame contains correct CS, SS, RSP, and RIP values.
 pub fn test_user_task_iretq_frame() -> TestResult {
-    let task = kernel::user_land::create_user_task_from_elf();
+    let task = kernel::user_task_from_elf::create_user_task_from_elf();
     let inner = task.inner.lock();
 
     // The RSP points to the InitialTaskFrame on the kernel stack.
@@ -122,9 +122,9 @@ pub fn test_user_task_iretq_frame() -> TestResult {
     if rip == 0 {
         return TestResult::Failed("iretq frame RIP is 0 (null)".into());
     }
-    if rip >= LOWER_HALF_END {
+    if rip > LOWER_HALF_END {
         return TestResult::Failed(format!(
-            "iretq frame RIP = {:#018x} is not in the lower half (>= {:#018x})",
+            "iretq frame RIP = {:#018x} is not in the lower half (> {:#018x})",
             rip, LOWER_HALF_END
         ));
     }
@@ -142,7 +142,7 @@ pub fn test_user_task_iretq_frame() -> TestResult {
 
 /// Verify the user task is created with the correct kind.
 pub fn test_user_task_creation() -> TestResult {
-    let task = kernel::user_land::create_user_task_from_elf();
+    let task = kernel::user_task_from_elf::create_user_task_from_elf();
 
     if task.kind != TaskKind::User {
         return TestResult::Failed(format!(
@@ -168,7 +168,7 @@ pub fn test_user_task_creation() -> TestResult {
 /// Actually switches CR3 to the user page table and reads back values
 /// from the kernel stack and GDT to verify they are accessible.
 pub fn test_user_page_table_kernel_mapped() -> TestResult {
-    let task = kernel::user_land::create_user_task_from_elf();
+    let task = kernel::user_task_from_elf::create_user_task_from_elf();
     let inner = task.inner.lock();
     let kernel_stack_top = inner.kernel_stack_top;
     let rsp = inner.rsp;
@@ -264,7 +264,7 @@ pub fn test_user_task_runs() -> TestResult {
     );
 
     // Create and spawn the user task
-    let user_task = kernel::user_land::create_user_task_from_elf();
+    let user_task = kernel::user_task_from_elf::create_user_task_from_elf();
     kernel::task::global_scheduler::spawn_task(user_task);
 
     // Spawn a checker task that verifies everything ran.

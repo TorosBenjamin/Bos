@@ -12,6 +12,7 @@ pub struct Display;
 
 /// Just for funsies
 pub fn draw_fun(display: &mut Display) {
+    
     // Draw a red rectangle
     Rectangle::new(Point::new(0, 0), Size::new(50, 50))
         .into_styled(PrimitiveStyle::with_fill(Rgb888::new(255, 0, 0)))

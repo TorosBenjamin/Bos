@@ -13,6 +13,7 @@ pub mod time;
 pub mod vaddr_allocator;
 pub mod interrupts;
 pub mod graphics;
+pub mod keyboard;
 pub mod scheduler;
 pub mod timer_interrupt;
 pub mod user_mode;
@@ -92,6 +93,16 @@ pub fn tests() -> &'static [&'static dyn KernelTest] {
         &user_mode::test_user_task_creation,
         &user_mode::test_user_page_table_kernel_mapped,
         &user_mode::test_user_task_iretq_frame,
+
+        // Keyboard driver tests
+        &keyboard::test_key_a_press,
+        &keyboard::test_key_release_ignored,
+        &keyboard::test_shift_produces_uppercase,
+        &keyboard::test_enter_key,
+        &keyboard::test_arrow_keys,
+        &keyboard::test_buffer_empty_after_drain,
+        &keyboard::test_multiple_keys_order,
+        &keyboard::test_capslock_toggle,
 
         // Physical memory tests
         &physical_memory::alloc_one_frame,

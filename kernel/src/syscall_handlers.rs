@@ -79,6 +79,37 @@ pub fn sys_exit() -> ! {
     }
 }
 
+/// Syscall: read a key event (blocking).
+///
+/// The caller passes a pointer to a `KeyEvent` in `key_event_out_ptr`.
+/// If a key is available, it's written immediately and we return 0.
+/// If no key is available, we spin with `hlt` until the keyboard ISR delivers one.
+pub fn sys_read_key(key_event_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    let out = key_event_out_ptr as *mut kernel_api_types::KeyEvent;
+
+    loop {
+        if let Some(event) = crate::drivers::keyboard::try_read_key() {
+            // Safety: pointer comes from userland, TODO: validate
+            unsafe { core::ptr::write(out, event) };
+            return 0;
+        }
+        // No key available — enable interrupts briefly and halt to wait for IRQ
+        x86_64::instructions::interrupts::enable();
+        x86_64::instructions::hlt();
+        x86_64::instructions::interrupts::disable();
+    }
+}
+
+/// Syscall: yield the current timeslice.
+///
+/// Enables interrupts and halts — the timer interrupt will immediately reschedule.
+pub fn sys_yield(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    x86_64::instructions::interrupts::enable();
+    x86_64::instructions::hlt();
+    x86_64::instructions::interrupts::disable();
+    0
+}
+
 pub fn raw_to_rgb888(raw: Rgb888Raw) -> Rgb888 {
     let r = ((raw >> 16) & 0xFF) as u8;
     let g = ((raw >> 8) & 0xFF) as u8;

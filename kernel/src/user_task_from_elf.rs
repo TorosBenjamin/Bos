@@ -193,10 +193,10 @@ pub fn create_user_task_from_elf() -> Task {
         unsafe { ptr.write_bytes(0, count) };
     }
 
-    // Allocate a user stack below the canonical boundary.
-    // LOWER_HALF_END (0x800000000000) is non-canonical; subtract one page
-    // so RSP stays within the canonical lower half (max 0x7FFFFFFFFFFF).
-    let rsp = LOWER_HALF_END - 0x1000;
+    // Allocate a user stack at the top of the canonical lower half.
+    // LOWER_HALF_END is 0x7FFFFFFFFFFF (inclusive). Align down to page boundary
+    // for the stack top, then subtract one page so RSP starts within mapped pages.
+    let rsp = (LOWER_HALF_END + 1) - 0x1000;
     {
         let stack_size: u64 = 64 * 0x400;
         let page_size = PageSize::_4KiB;
