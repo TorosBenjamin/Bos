@@ -12,7 +12,12 @@ pub enum SysCallNumber {
     Spawn = 4,
     ReadKey = 5,
     Yield = 6,
+    Mmap = 7,
+    Munmap = 8,
 }
+
+pub const MMAP_WRITE: u64 = 1 << 0;
+pub const MMAP_EXEC: u64 = 1 << 1;
 
 /// Keyboard event types.
 #[repr(u8)]

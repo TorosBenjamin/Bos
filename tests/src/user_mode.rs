@@ -193,7 +193,7 @@ pub fn test_user_page_table_kernel_mapped() -> TestResult {
     // Switch CR3 to the user page table and verify kernel memory is accessible.
     let user_cr3 = task.cr3;
     let (current_cr3_frame, current_cr3_flags) = x86_64::registers::control::Cr3::read();
-    let current_cr3 = current_cr3_frame.start_address().as_u64();
+    let _current_cr3 = current_cr3_frame.start_address().as_u64();
 
     x86_64::instructions::interrupts::without_interrupts(|| {
         // Switch to user page table

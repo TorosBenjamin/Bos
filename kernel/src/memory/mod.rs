@@ -12,6 +12,7 @@ pub mod guarded_stack;
 pub mod hhdm_offset;
 pub mod page_tables;
 pub mod physical_memory;
+pub mod user_vaddr;
 pub mod vaddr_allocator;
 
 /// Initializes global allocator, creates new page tables, and switches to new page tables.

@@ -31,10 +31,14 @@ The `Exit` syscall is handled specially: since `sys_exit()` never returns, it is
 
 ## Available Syscalls
 
-| Number | Name | Description |
-|--------|------|-------------|
-| 0 | `GetBoundingBox` | Returns the framebuffer bounding box |
-| 1 | `DrawIter` | Draws multiple pixels from a user-space buffer |
-| 2 | `FillSolid` | Fills a rectangle with a solid color |
-| 3 | `Exit` | Terminates the current task (marks it as zombie) |
-| 4 | `Spawn` | Reserved for spawning new user tasks |
+| Number | Name | Status | Description |
+|--------|------|--------|-------------|
+| 0 | `GetBoundingBox` | Implemented | Returns the framebuffer bounding box |
+| 1 | `DrawIter` | Implemented | Draws multiple pixels from a user-space buffer |
+| 2 | `FillSolid` | Implemented | Fills a rectangle with a solid color |
+| 3 | `Exit` | Implemented | Terminates the current task (marks it as zombie) |
+| 4 | `Spawn` | Implemented | Spawns a new user task from ELF bytes in caller's memory |
+| 5 | `ReadKey` | Implemented | Reads a keyboard event (blocking) |
+| 6 | `Yield` | Implemented | Yields the current timeslice |
+| 7 | `Mmap` | Implemented | Allocates virtual memory for the calling user task |
+| 8 | `Munmap` | Implemented | Unmaps virtual memory from the calling user task |

@@ -14,7 +14,9 @@ pub mod vaddr_allocator;
 pub mod interrupts;
 pub mod graphics;
 pub mod keyboard;
+pub mod mmap;
 pub mod scheduler;
+pub mod spawn;
 pub mod timer_interrupt;
 pub mod user_mode;
 
@@ -75,6 +77,12 @@ pub fn tests() -> &'static [&'static dyn KernelTest] {
         &vaddr_allocator::allocate_user_page,
         &vaddr_allocator::allocate_multiple_pages,
 
+        // Mmap tests
+        &mmap::test_user_vaddr_allocate,
+        &mmap::test_user_vaddr_free,
+        &mmap::test_user_vaddr_no_overlap,
+        &mmap::test_mmap_flags_in_api,
+
         // Interrupts tests
         &interrupts::gdt_loaded,
         &interrupts::idt_loaded,
@@ -113,6 +121,11 @@ pub fn tests() -> &'static [&'static dyn KernelTest] {
         &physical_memory::exhaustion,
         &physical_memory::duplicate_allocation,
 
+
+        // Spawn tests
+        &spawn::test_spawn_error_invalid_elf,
+        &spawn::test_spawn_creates_task,
+        &spawn::test_spawn_child_arg,
 
         // Scheduler tests
         &scheduler::simple_task_creation,

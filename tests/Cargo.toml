@@ -12,6 +12,7 @@ ez_paging = { git = "https://github.com/ChocolateLoverRaj/ez_paging", version = 
 embedded-graphics = "0.8.1"
 kernel = {path = "../kernel"}
 kernel_api_types = {path = "../kernel_api_types"}
+nodit = {version = "0.10.0", default-features = false}
 
 [build-dependencies]
 kernel = { path = "../kernel", artifact = "bin", target = "x86_64-unknown-none" }

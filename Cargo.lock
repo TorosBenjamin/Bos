@@ -419,6 +419,7 @@ dependencies = [
  "kernel",
  "kernel_api_types",
  "log",
+ "nodit",
  "x86_64 0.15.4",
 ]
 

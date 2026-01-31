@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::syscall;
 use embedded_graphics::pixelcolor::{Rgb888, RgbColor};
 use kernel_api_types::SysCallNumber;
@@ -57,6 +59,34 @@ pub fn sys_yield() {
     let mut args = [0u64; 7];
     args[0] = SysCallNumber::Yield as u64;
     syscall(&mut args);
+}
+
+pub fn sys_mmap(size: u64, flags: u64) -> *mut u8 {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::Mmap as u64;
+    args[1] = size;
+    args[2] = flags;
+    syscall(&mut args);
+    args[6] as *mut u8
+}
+
+pub fn sys_munmap(addr: *mut u8, size: u64) -> u64 {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::Munmap as u64;
+    args[1] = addr as u64;
+    args[2] = size;
+    syscall(&mut args);
+    args[6]
+}
+
+pub fn sys_spawn(elf_bytes: &[u8], child_arg: u64) -> u64 {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::Spawn as u64;
+    args[1] = elf_bytes.as_ptr() as u64;
+    args[2] = elf_bytes.len() as u64;
+    args[3] = child_arg;
+    syscall(&mut args);
+    args[6]
 }
 
 pub fn rgb888_to_raw(color: Rgb888) -> Rgb888Raw {

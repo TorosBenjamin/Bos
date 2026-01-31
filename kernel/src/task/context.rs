@@ -1,5 +1,6 @@
 //! This crate contains structures and routines for context switching
 //! when SSE/SIMD extensions are not active.
+#![allow(dead_code)]
 
 /// The registers saved before a context switch and restored after a context switch.
 ///
