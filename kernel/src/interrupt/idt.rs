@@ -2,7 +2,7 @@ use core::sync::atomic::Ordering;
 use x86_64::structures::idt::InterruptDescriptorTable;
 use x86_64::VirtAddr;
 use crate::gdt::IstStackIndexes;
-use crate::interrupt::handlers::{breakpoint_handler, double_fault_handler, general_protection_fault_handler, handle_panic_from_other_cpu, nmi_handler, page_fault_handler, timer_interrupt_handler};
+use crate::interrupt::handlers::{breakpoint_handler, double_fault_handler, general_protection_fault_handler, handle_panic_from_other_cpu, keyboard_interrupt_handler, nmi_handler, page_fault_handler, timer_interrupt_handler};
 use crate::interrupt::InterruptVector;
 use crate::interrupt::nmi_handler_state::{NmiHandlerState, NMI_HANDLER_STATES};
 use crate::memory::cpu_local_data::get_local;
@@ -31,6 +31,8 @@ pub fn init() {
             idt[u8::from(InterruptVector::LocalApicTimer)]
                 .set_handler_addr(VirtAddr::new(timer_interrupt_handler as u64));
         }
+        idt[u8::from(InterruptVector::Keyboard)]
+            .set_handler_fn(keyboard_interrupt_handler);
         idt
     });
     idt.load();

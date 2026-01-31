@@ -10,4 +10,5 @@ pub enum InterruptVector {
     LocalApicSpurious = 0x20,
     LocalApicTimer,
     LocalApicError,
+    Keyboard = 0x23,
 }

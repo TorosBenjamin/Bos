@@ -42,6 +42,23 @@ pub fn sys_get_bounding_box(out_rect: &mut Rect) -> GraphicsResult {
     GraphicsResult::from_u64(ret)
 }
 
+pub fn sys_read_key() -> kernel_api_types::KeyEvent {
+    let mut event = kernel_api_types::KeyEvent::EMPTY;
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::ReadKey as u64;
+    args[1] = &mut event as *mut kernel_api_types::KeyEvent as u64;
+
+    syscall(&mut args);
+
+    event
+}
+
+pub fn sys_yield() {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::Yield as u64;
+    syscall(&mut args);
+}
+
 pub fn rgb888_to_raw(color: Rgb888) -> Rgb888Raw {
     ((color.r() as u32) << 16) | ((color.g() as u32) << 8) | (color.b() as u32)
 }

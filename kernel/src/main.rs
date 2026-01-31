@@ -7,12 +7,16 @@ extern crate alloc;
 extern crate kernel;
 
 use crate::kernel::limine_requests::{FRAME_BUFFER_REQUEST, MEMORY_MAP_REQUEST};
+use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, Ordering};
-use kernel::graphics::display;
+use embedded_graphics::geometry::Point;
+use embedded_graphics::pixelcolor::{Rgb888, RgbColor};
+use kernel::graphics::display::{self, DISPLAY};
+use kernel::graphics::writer::Writer;
 use kernel::limine_requests::{BASE_REVISION, RSDP_REQUEST};
 use kernel::memory::cpu_local_data::get_local;
 use kernel::memory::guarded_stack::{GuardedStack, StackId, StackType, NORMAL_STACK_SIZE};
-use kernel::{acpi, apic, gdt, hlt_loop, interrupt, logger, project_version, raw_syscall_handler, time, user_land};
+use kernel::{acpi, apic, gdt, hlt_loop, interrupt, ioapic, logger, project_version, raw_syscall_handler, time, user_task_from_elf};
 use kernel::interrupt::nmi_handler_state;
 use kernel::task::global_scheduler::spawn_task;
 use kernel::task::local_scheduler::init_run_queue;
@@ -63,6 +67,12 @@ extern "sysv64" fn init_bsp() -> ! {
     apic::init_bsp(&acpi_tables);
     apic::init_local_apic();
 
+    ioapic::init(&acpi_tables);
+    ioapic::enable_keyboard_irq(
+        u8::from(kernel::interrupt::InterruptVector::Keyboard),
+        get_local().local_apic_id,
+    );
+
     time::tsc::calibrate();
     time::lapic_timer::init();
     time::lapic_timer::set_deadline(1_000_000);
@@ -73,7 +83,7 @@ extern "sysv64" fn init_bsp() -> ! {
     spawn_task(Task::new(idle_task));
 
     // Spawn user task from Limine module
-    let user_task = user_land::create_user_task_from_elf();
+    let user_task = user_task_from_elf::create_user_task_from_elf();
     spawn_task(user_task);
 
     /*
@@ -137,6 +147,17 @@ static DID_PANIC: AtomicBool = AtomicBool::new(false);
 fn rust_panic(_info: &core::panic::PanicInfo) -> ! {
     if !DID_PANIC.swap(true, Ordering::Relaxed) {
         log::error!("{_info}");
+
+        // Take over the framebuffer for a visual crash dump
+        let bb = DISPLAY.bounding_box();
+        let _ = DISPLAY.fill_solid(&bb, Rgb888::new(0, 0, 128)); // dark blue
+        let mut position = Point::new(10, 10);
+        let mut writer = Writer {
+            position: &mut position,
+            text_color: Rgb888::WHITE,
+        };
+        let _ = write!(writer, "KERNEL PANIC\n\n{_info}");
+
         hlt_loop();
     } else {
         hlt_loop();

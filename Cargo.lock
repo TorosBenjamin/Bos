@@ -417,6 +417,7 @@ dependencies = [
  "ez_paging",
  "heapless",
  "kernel",
+ "kernel_api_types",
  "log",
  "x86_64 0.15.4",
 ]
