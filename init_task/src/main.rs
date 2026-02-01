@@ -8,10 +8,10 @@ fn rust_panic(info: &core::panic::PanicInfo) -> ! {
 
 #[unsafe(no_mangle)]
 unsafe extern "sysv64" fn entry_point() -> ! {
-    // 1. Create IPC channel for display_server
+    // Create IPC channel for display_server
     let (send_ep, recv_ep) = ulib::sys_channel_create(16);
 
-    // 2. Load and spawn display_server
+    // Load and spawn display_server
     let ds_size = ulib::sys_get_module("display_server", core::ptr::null_mut(), 0);
     let ds_buf = ulib::sys_mmap(ds_size, kernel_api_types::MMAP_WRITE);
     let written = ulib::sys_get_module("display_server", ds_buf, ds_size);
@@ -21,7 +21,7 @@ unsafe extern "sysv64" fn entry_point() -> ! {
     let ds_id = ulib::sys_spawn(ds_elf_bytes, recv_ep);
     ulib::sys_munmap(ds_buf, ds_size);
 
-    // 3. Transfer display ownership to display_server
+    // Transfer display ownership to display_server
     ulib::sys_transfer_display(ds_id);
 
     // Give display_server a moment to initialize
@@ -29,7 +29,7 @@ unsafe extern "sysv64" fn entry_point() -> ! {
         ulib::sys_yield();
     }
 
-    // 4. Spawn bouncing_cube_1 client
+    // Spawn bouncing_cube_1 client
     let cube1_size = ulib::sys_get_module("bouncing_cube_1", core::ptr::null_mut(), 0);
     if cube1_size > 0 {
         let cube1_buf = ulib::sys_mmap(cube1_size, kernel_api_types::MMAP_WRITE);

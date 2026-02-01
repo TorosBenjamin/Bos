@@ -30,15 +30,15 @@ pub struct Window {
     dirty: Option<DirtyRect>,
 }
 
-struct DirtyRect {
-    x: u32,
-    y: u32,
-    w: u32,
-    h: u32,
+pub struct DirtyRect {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
 }
 
 impl DirtyRect {
-    fn expand(&mut self, x: u32, y: u32, w: u32, h: u32) {
+    pub(crate) fn expand(&mut self, x: u32, y: u32, w: u32, h: u32) {
         let x2 = self.x + self.w;
         let y2 = self.y + self.h;
         let new_x2 = (x + w).max(x2);

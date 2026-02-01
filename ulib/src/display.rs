@@ -6,33 +6,15 @@ use embedded_graphics::prelude::OriginDimensions;
 use embedded_graphics::Pixel;
 use kernel_api_types::graphics::DisplayInfo;
 use kernel_api_types::MMAP_WRITE;
+use crate::window::DirtyRect;
 
 pub struct Display {
-    buffer: *mut u32,
+    back_buffer: &'static mut [u32],
+    front_buffer: &'static mut [u32],
     width: u32,
     height: u32,
     info: DisplayInfo,
     dirty: Option<DirtyRect>,
-}
-
-struct DirtyRect {
-    x: u32,
-    y: u32,
-    w: u32,
-    h: u32,
-}
-
-impl DirtyRect {
-    fn expand(&mut self, x: u32, y: u32, w: u32, h: u32) {
-        let x2 = self.x + self.w;
-        let y2 = self.y + self.h;
-        let new_x2 = (x + w).max(x2);
-        let new_y2 = (y + h).max(y2);
-        self.x = self.x.min(x);
-        self.y = self.y.min(y);
-        self.w = new_x2 - self.x;
-        self.h = new_y2 - self.y;
-    }
 }
 
 impl Display {
@@ -42,11 +24,21 @@ impl Display {
         let info = crate::sys_get_display_info();
         let width = info.width;
         let height = info.height;
+
         let buf_size = (width as u64) * (height as u64) * 4;
-        let buffer = crate::sys_mmap(buf_size, MMAP_WRITE) as *mut u32;
+
+        // Allocate the Back Buffer (RAM)
+        // This is just normal heap memory or anonymous mmap
+        let back_ptr = crate::sys_mmap(buf_size, MMAP_WRITE);
+        let back_buffer = unsafe { core::slice::from_raw_parts_mut(back_ptr as *mut u32, buf_size as usize / 4) };
+
+        // Get the Front Buffer (VRAM)
+        let front_ptr = 0xFD00_0000_0000 as *mut u32;
+        let front_buffer = unsafe { core::slice::from_raw_parts_mut(front_ptr, buf_size as usize / 4) };
 
         Display {
-            buffer,
+            back_buffer,
+            front_buffer,
             width,
             height,
             info,
@@ -54,17 +46,28 @@ impl Display {
         }
     }
 
-    /// Flush the dirty region to the kernel framebuffer.
+    /// Flushes only the dirty region from the back buffer to the hardware front buffer.
     pub fn present(&mut self) {
         if let Some(dirty) = self.dirty.take() {
-            crate::sys_present_display(
-                self.buffer as *const u32,
-                self.width,
-                dirty.x,
-                dirty.y,
-                dirty.w,
-                dirty.h,
-            );
+            // Safety check: ensure dirty rect is within bounds
+            let x_start = dirty.x as usize;
+            let y_start = dirty.y as usize;
+            let width = dirty.w as usize;
+            let height = dirty.h as usize;
+
+            // Perform row-by-row copy
+            for row in 0..height {
+                let current_y = y_start + row;
+                let offset = current_y * self.width as usize + x_start;
+
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        self.back_buffer.as_ptr().add(offset),
+                        self.front_buffer.as_mut_ptr().add(offset),
+                        width,
+                    );
+                }
+            }
         }
     }
 
@@ -95,17 +98,24 @@ impl DrawTarget for Display {
         for Pixel(point, color) in pixels {
             let x = point.x;
             let y = point.y;
+
+            // Keep as i32 to handle negative coordinates from embedded-graphics
             if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
                 continue;
             }
-            let x = x as u32;
-            let y = y as u32;
+
+            let ux = x as u32;
+            let uy = y as u32;
+
+            // Map color to hardware format
             let pixel = self.info.build_pixel(color.r(), color.g(), color.b());
-            unsafe {
-                let offset = (y as usize) * (self.width as usize) + (x as usize);
-                *self.buffer.add(offset) = pixel;
-            }
-            self.expand_dirty(x, y, 1, 1);
+
+            // Write to Back Buffer (Safe indexing)
+            let offset = (uy as usize) * (self.width as usize) + (ux as usize);
+            self.back_buffer[offset] = pixel;
+
+            // Update dirty tracking
+            self.expand_dirty(ux, uy, 1, 1);
         }
         Ok(())
     }
@@ -127,15 +137,16 @@ impl DrawTarget for Display {
             return Ok(());
         }
 
+        let width = (x1 - x0) as usize;
+
+        // Fill the back buffer row by row
         for y in y0..y1 {
             let row_start = (y as usize) * (self.width as usize) + (x0 as usize);
-            for x_off in 0..(x1 - x0) as usize {
-                unsafe {
-                    *self.buffer.add(row_start + x_off) = pixel;
-                }
-            }
+            // Using fill() on a slice is often optimized to a SIMD memset
+            self.back_buffer[row_start..row_start + width].fill(pixel);
         }
 
+        // Track the rectangle as dirty
         self.expand_dirty(x0, y0, x1 - x0, y1 - y0);
         Ok(())
     }

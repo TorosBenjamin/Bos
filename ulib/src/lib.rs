@@ -34,21 +34,6 @@ pub fn sys_get_bounding_box(out_rect: &mut Rect) -> GraphicsResult {
     GraphicsResult::from_u64(ret)
 }
 
-pub fn sys_present_display(buf_ptr: *const u32, buf_width: u32, dirty_x: u32, dirty_y: u32, dirty_w: u32, dirty_h: u32) -> GraphicsResult {
-    let mut args = [0u64; 7];
-    args[0] = SysCallNumber::PresentDisplay as u64;
-    args[1] = buf_ptr as u64;
-    args[2] = buf_width as u64;
-    args[3] = dirty_x as u64;
-    args[4] = dirty_y as u64;
-    args[5] = dirty_w as u64;
-    args[6] = dirty_h as u64;
-
-    syscall(&mut args);
-
-    GraphicsResult::from_u64(args[6])
-}
-
 pub fn sys_get_display_info() -> DisplayInfo {
     let mut info = DisplayInfo {
         width: 0,

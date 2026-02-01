@@ -19,8 +19,7 @@ pub enum SysCallNumber {
     ChannelClose = 12,
     TransferDisplay = 13,
     GetModule = 14,
-    PresentDisplay = 15,
-    GetDisplayInfo = 16,
+    GetDisplayInfo = 15,
 }
 
 // IPC error codes

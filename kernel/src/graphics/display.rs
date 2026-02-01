@@ -9,6 +9,8 @@ use embedded_graphics::primitives::Rectangle;
 use kernel_api_types::graphics::DisplayInfo;
 use limine::response::FramebufferResponse;
 
+
+
 /// TaskId (as u64) of the current display owner. u64::MAX = no owner.
 pub static DISPLAY_OWNER: AtomicU64 = AtomicU64::new(u64::MAX);
 

@@ -1,19 +1,19 @@
-use crate::graphics::display::DISPLAY;
+use crate::graphics::display::{DISPLAY, DISPLAY_OWNER};
 use crate::limine_requests::MODULE_REQUEST;
 use crate::memory::MEMORY;
 use crate::memory::cpu_local_data::get_local;
 use crate::memory::physical_memory::{MemoryType, OffsetMappedPhysAddr, PhysicalMemory};
 use crate::memory::user_vaddr;
 use crate::memory::page_tables::get_kernel_vaddr_from_user_vaddr;
-use crate::task::task::{TaskKind, TaskState};
+use crate::task::task::{Task, TaskId, TaskKind, TaskState};
 use core::sync::atomic::Ordering;
-use log::debug;
-use log::Level::Debug;
+use nodit::interval::ii;
 use kernel_api_types::graphics::{DisplayInfo, GraphicsResult, Rect};
 use kernel_api_types::{MMAP_EXEC, MMAP_WRITE};
 use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageSize, PageTable, PageTableFlags, PhysFrame, Size4KiB};
 use x86_64::{PhysAddr, VirtAddr};
 use crate::memory::hhdm_offset::hhdm_offset;
+use crate::task::global_scheduler::TASK_TABLE;
 
 /// Syscall: return the bounding box of the framebuffer
 pub fn sys_get_bounding_box(rect_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
@@ -129,7 +129,7 @@ pub fn sys_mmap(size: u64, flags: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
 
     let n_pages = size.div_ceil(Size4KiB::SIZE);
 
-    // 1. Get current task
+    // Get current task
     let cpu = get_local();
     let task = {
         let rq = cpu.run_queue.get().unwrap().lock();
@@ -141,13 +141,13 @@ pub fn sys_mmap(size: u64, flags: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
 
     let mut inner = task.inner.lock();
 
-    // 2. Virtual Allocation
+    // Virtual Allocation
     let start_vaddr = match user_vaddr::allocate_user_pages(&mut inner.user_vaddr_set, n_pages) {
         Some(addr) => addr,
         None => return 0,
     };
 
-    // 3. Flags Setup
+    // Flags Setup
     // All mmaped pages need PRESENT and USER_ACCESSIBLE.
     let mut page_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
     if (flags & MMAP_WRITE) != 0 {
@@ -157,7 +157,7 @@ pub fn sys_mmap(size: u64, flags: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
         page_flags |= PageTableFlags::NO_EXECUTE;
     }
 
-    // 4. Setup the Mapper using the task's cr3
+    // Setup the Mapper using the task's cr3
     let hhdm_offset = hhdm_offset();
 
     // Convert the task's cr3 (u64) into a PhysFrame
@@ -175,7 +175,7 @@ pub fn sys_mmap(size: u64, flags: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
     let memory = MEMORY.get().unwrap();
     let mut physical_memory = memory.physical_memory.lock();
 
-    // 5. Allocation and Mapping Loop
+    // Allocation and Mapping Loop
     for i in 0..n_pages {
         let vaddr = VirtAddr::new(start_vaddr + i * Size4KiB::SIZE);
         let page: Page<Size4KiB> = Page::containing_address(vaddr);
@@ -348,24 +348,81 @@ fn ipc_error_to_code(e: crate::ipc::IpcError) -> u64 {
 /// Returns: 0 on success, 1 if caller is not the current owner,
 ///          2 if target task not found.
 pub fn sys_transfer_display(new_owner_id: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
-    use crate::graphics::display::DISPLAY_OWNER;
-    use crate::task::global_scheduler::TASK_TABLE;
-    use crate::task::task::TaskId;
-    use core::sync::atomic::Ordering;
 
+    // 1. Permission Check
     if !crate::graphics::display::is_display_owner() {
         return 1;
     }
 
-    {
+    // 2. Retrieve the target task
+    // We scope the lock so we don't hold the global task table while doing memory operations
+    let target_task = {
         let table = TASK_TABLE.lock();
-        if !table.contains_key(&TaskId::from_u64(new_owner_id)) {
-            return 2;
+        match table.get(&TaskId::from_u64(new_owner_id)) {
+            Some(task) => task.clone(),
+            None => return 2, // Target task not found
+        }
+    };
+
+    let (fb_phys_addr, fb_size) = get_fb_phys_and_size();
+    let user_fb_virt = VirtAddr::new(0xFD00_0000_0000);
+
+    // 3. Lock the task's internals to access its VirtualMemoryAllocator
+    let mut task_inner = target_task.inner.lock();
+
+    // Assuming your VirtualMemoryAllocator is stored in task_inner.memory or similar
+    // Adjust `.memory` to whatever field name you use for VirtualMemoryAllocator
+    let vma = &mut task_inner.memory;
+
+    // --- A. Mark Virtual Address as Used ---
+    // We must insert this range into the NoditSet so the allocator knows it's busy.
+    let page_count = fb_size.div_ceil(Size4KiB::SIZE);
+    let virt_start = user_fb_virt.as_u64();
+    let virt_end = virt_start + (page_count * Size4KiB::SIZE) - 1;
+
+    // We expect this range to be free. If it's not, we might be overwriting,
+    // but for the display, we usually force it.
+    let _ = vma.set.insert_merge_touching(ii(virt_start, virt_end));
+
+    // --- Prepare Mappers and Allocators ---
+    // We need the global physical memory allocator because map_to might need
+    // to create new Page Tables (L3, L2) to reach this address.
+    let memory_system = MEMORY.get().unwrap();
+    let mut physical_memory = memory_system.physical_memory.lock();
+    let mut frame_allocator = physical_memory.get_user_mode_frame_allocator();
+
+    // Get the mapper using the helper you wrote in VirtualMemoryAllocator
+    // Safety: We hold the lock on task_inner, so the page table won't change under us.
+    let mut mapper = unsafe { vma.mapper() };
+
+    let flags = PageTableFlags::PRESENT
+        | PageTableFlags::WRITABLE
+        | PageTableFlags::USER_ACCESSIBLE
+        | PageTableFlags::WRITE_THROUGH; // Important for video!
+
+    // --- C. Perform the Mapping ---
+    for i in 0..page_count {
+        let offset = i * Size4KiB::SIZE;
+
+        let page = Page::<Size4KiB>::containing_address(user_fb_virt + offset);
+        let frame = PhysFrame::<Size4KiB>::containing_address(fb_phys_addr + offset);
+
+        unsafe {
+            // We use map_to because we are mapping specific existing hardware frames
+            // The &mut frame_allocator is ONLY used if a new PageTable struct needs to be created.
+            if let Ok(mapping) = mapper.map_to(page, frame, flags, &mut frame_allocator) {
+                mapping.flush();
+            } else {
+                // If mapping fails (e.g. OOM for page tables), we should probably handle it,
+                // but for a syscall, panicking or returning error is the option.
+                // ideally: return error code.
+                return 3;
+            }
         }
     }
 
-    log::info!("Transfer display owner to {}", new_owner_id);
-    DISPLAY_OWNER.store(new_owner_id, Ordering::Relaxed);
+    // 4. Update Owner
+    DISPLAY_OWNER.store(new_owner_id, Ordering::SeqCst);
     0
 }
 
@@ -385,9 +442,6 @@ pub fn sys_get_module(name_ptr: u64, name_len: u64, buf_ptr: u64, buf_cap: u64, 
         Ok(s) => s,
         Err(_) => return 0,
     };
-
-
-    log::info!("Loading limine module, name: {}, buf_ptr: {}, buf_cap: {}", name, buf_ptr, buf_cap);
 
     // Build path by prepending "/" to name
     let mut path_buf = [0u8; 258];
@@ -484,83 +538,6 @@ pub fn sys_munmap(addr: u64, size: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
     }
 
     0 // Success
-}
-/// Syscall: present a dirty rectangle from a user-space pixel buffer to the framebuffer.
-///
-/// Arguments: buf_ptr, buf_width, dirty_x, dirty_y, dirty_w, dirty_h
-/// Returns: GraphicsResult code.
-pub fn sys_present_display(buf_ptr: u64, buf_width: u64, dirty_x: u64, dirty_y: u64, dirty_w: u64, dirty_h: u64) -> u64 {
-    if !crate::graphics::display::is_display_owner() {
-        return GraphicsResult::PermissionDenied as u64;
-    }
-
-    log::info!("Display buffer swapped.");
-
-    if buf_ptr == 0 || buf_width == 0 || dirty_w == 0 || dirty_h == 0 {
-        return GraphicsResult::Ok as u64;
-    }
-
-    // Get framebuffer dimensions for bounds checking
-    let bb = DISPLAY.bounding_box();
-    let fb_w = bb.size.width as u64;
-    let fb_h = bb.size.height as u64;
-
-    // Clamp dirty rect to framebuffer bounds
-    if dirty_x >= fb_w || dirty_y >= fb_h {
-        return GraphicsResult::Ok as u64;
-    }
-    let clamped_w = dirty_w.min(fb_w - dirty_x) as usize;
-    let clamped_h = dirty_h.min(fb_h - dirty_y) as usize;
-
-    let cpu = get_local();
-    let task = {
-        let rq = cpu.run_queue.get().unwrap().lock();
-        match &rq.current_task {
-            Some(t) if t.kind == TaskKind::User => t.clone(),
-            _ => return GraphicsResult::PermissionDenied as u64,
-        }
-    };
-
-    let mut task_inner = task.inner.lock();
-    let user_vaddr_set = &task_inner.user_vaddr_set;
-
-    let start_vaddr = VirtAddr::new(buf_ptr);
-
-    let end_vaddr_val = if clamped_h > 0 && clamped_w > 0 {
-        let max_row_offset = (dirty_y + clamped_h as u64 - 1) * buf_width;
-        let max_col_offset = dirty_x + clamped_w as u64;
-        buf_ptr + (max_row_offset + max_col_offset) * core::mem::size_of::<u32>() as u64
-    } else {
-        buf_ptr + core::mem::size_of::<u32>() as u64
-    };
-    let end_vaddr = VirtAddr::new(end_vaddr_val);
-
-    if !user_vaddr::is_user_vaddr_valid_range(user_vaddr_set, start_vaddr, end_vaddr) {
-        return GraphicsResult::InvalidInput as u64;
-    }
-
-    let user_l4 = match &mut task_inner.user_page_table {
-        Some(pt) => pt,
-        None => return GraphicsResult::PermissionDenied as u64,
-    };
-
-    let kernel_buf_ptr = match get_kernel_vaddr_from_user_vaddr(*user_l4, start_vaddr) {
-        Some(vaddr) => vaddr.as_u64() as *const u32,
-        None => return GraphicsResult::InvalidInput as u64,
-    };
-
-    unsafe {
-        DISPLAY.copy_rect_from_user(
-            kernel_buf_ptr,
-            buf_width as usize,
-            dirty_x as usize,
-            dirty_y as usize,
-            clamped_w,
-            clamped_h,
-        );
-    }
-
-    GraphicsResult::Ok as u64
 }
 
 /// Syscall: get display info (dimensions and pixel format).

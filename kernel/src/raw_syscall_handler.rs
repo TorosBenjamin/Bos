@@ -1,6 +1,6 @@
 use crate::memory::cpu_local_data::{CpuLocalData, get_local};
 use crate::memory::guarded_stack::{GuardedStack, StackId, StackType};
-use crate::syscall_handlers::{sys_channel_close, sys_channel_create, sys_channel_recv, sys_channel_send, sys_exit, sys_get_bounding_box, sys_get_display_info, sys_get_module, sys_mmap, sys_munmap, sys_present_display, sys_read_key, sys_spawn, sys_transfer_display, sys_yield};
+use crate::syscall_handlers::{sys_channel_close, sys_channel_create, sys_channel_recv, sys_channel_send, sys_exit, sys_get_bounding_box, sys_get_display_info, sys_get_module, sys_mmap, sys_munmap, sys_read_key, sys_spawn, sys_transfer_display, sys_yield};
 use core::arch::{asm, naked_asm};
 use core::mem::offset_of;
 use core::sync::atomic::Ordering;
@@ -106,7 +106,6 @@ unsafe fn dispatch_syscall(syscall_number: u64, args: &[u64; 6]) -> u64 {
         n if n == SysCallNumber::ChannelClose as u64 => "ChannelClose",
         n if n == SysCallNumber::TransferDisplay as u64 => "TransferDisplay",
         n if n == SysCallNumber::GetModule as u64 => "GetModule",
-        n if n == SysCallNumber::PresentDisplay as u64 => "PresentDisplay",
         n if n == SysCallNumber::GetDisplayInfo as u64 => "GetDisplayInfo",
         _ => "Unknown",
     };
@@ -160,7 +159,6 @@ pub fn init() {
 
     unsafe {
         SYS_CALL_TABLE[SysCallNumber::GetBoundingBox as usize] = Some(sys_get_bounding_box);
-        SYS_CALL_TABLE[SysCallNumber::PresentDisplay as usize] = Some(sys_present_display);
         SYS_CALL_TABLE[SysCallNumber::GetDisplayInfo as usize] = Some(sys_get_display_info);
         SYS_CALL_TABLE[SysCallNumber::ReadKey as usize] = Some(sys_read_key);
         SYS_CALL_TABLE[SysCallNumber::Yield as usize] = Some(sys_yield);
