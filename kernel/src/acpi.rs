@@ -4,10 +4,10 @@ use acpi::{AcpiTables, Handle, PciAddress, PhysicalMapping};
 use core::marker::PhantomData;
 use core::num::NonZero;
 use core::ptr::NonNull;
-use ez_paging::{ConfigurableFlags, Frame, Page, max_page_size};
 use limine::response::RsdpResponse;
 use x86_64::registers::model_specific::PatMemoryType;
 use x86_64::{PhysAddr, VirtAddr};
+use x86_64::structures::paging::{Mapper, Page, PageSize, PageTableFlags, PhysFrame, Size4KiB};
 
 #[derive(Debug, Clone)]
 struct KernelAcpiHandler {
@@ -20,69 +20,80 @@ impl acpi::Handler for KernelAcpiHandler {
         physical_address: usize,
         size: usize,
     ) -> PhysicalMapping<Self, T> {
-        let page_size = max_page_size();
+        let page_size = Size4KiB::SIZE; // 4096
+
         let memory = MEMORY.get().unwrap();
         let mut virtual_memory = memory.virtual_memory.lock();
-        let n_pages = ((size + physical_address) as u64).div_ceil(page_size.byte_len_u64())
-            - physical_address as u64 / page_size.byte_len_u64();
+        let mut physical_memory = memory.physical_memory.lock();
+
+        // Calculate the page-aligned start and end
+        let phys_start = physical_address as u64;
+        let phys_end = phys_start + size as u64;
+
+        let aligned_phys_start = phys_start / page_size * page_size;
+        let aligned_phys_end = (phys_end + page_size - 1) / page_size * page_size;
+        let n_pages = (aligned_phys_end - aligned_phys_start) / page_size;
+
+        // 1. Allocate virtual pages
         let start_page = virtual_memory
             .allocate_kernel_contiguous_pages(
-                page_size,
-                NonZero::new(n_pages).expect("at least 1 byte mapped"),
+                NonZero::new(n_pages).expect("ACPI mapping must be at least 1 byte"),
             )
-            .unwrap();
-        let start_frame = Frame::new(
-            PhysAddr::new(
-                physical_address as u64 / page_size.byte_len_u64() * page_size.byte_len_u64(),
-            ),
-            page_size,
-        )
-        .unwrap();
-        let mut physical_memory = memory.physical_memory.lock();
+            .expect("Failed to allocate virtual memory for ACPI");
+
+        // 2. Prepare mapping
+        let start_frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(PhysAddr::new(aligned_phys_start));
+        let mut mapper = unsafe { virtual_memory.mapper() };
         let mut frame_allocator = physical_memory.get_kernel_frame_allocator();
+
+        let flags = PageTableFlags::PRESENT; // ACPI tables are usually Read-Only
+
         for i in 0..n_pages {
-            let page = start_page.offset(i).unwrap();
-            let frame = start_frame.offset(i).unwrap();
-            let flags = ConfigurableFlags {
-                executable: false,
-                writable: false,
-                pat_memory_type: PatMemoryType::WriteBack,
-            };
+            let page = start_page + i;
+            let frame = start_frame + i;
+
             unsafe {
-                virtual_memory
-                    .l4_mut()
-                    .map_page(page, frame, flags, &mut frame_allocator)
-                    .unwrap();
+                mapper.map_to(page, frame, flags, &mut frame_allocator)
+                    .expect("Failed to map ACPI page")
+                    .flush();
             }
         }
+
+        // Calculate the virtual start address (adding back the offset from alignment)
+        let offset_in_page = phys_start % page_size;
+        let virt_start = start_page.start_address() + offset_in_page;
+
         PhysicalMapping {
             physical_start: physical_address,
-            virtual_start: NonNull::new(
-                (start_page.start_addr() + physical_address as u64 % page_size.byte_len_u64())
-                    .as_mut_ptr(),
-            )
-            .unwrap(),
+            virtual_start: NonNull::new(virt_start.as_mut_ptr()).unwrap(),
             region_length: size,
-            mapped_length: n_pages as usize * page_size.byte_len(),
+            mapped_length: (n_pages * page_size) as usize,
             handler: self.clone(),
         }
     }
 
     fn unmap_physical_region<T>(region: &PhysicalMapping<Self, T>) {
-        let page_size = max_page_size();
-        let start_page = Page::new(
-            VirtAddr::from_ptr(region.virtual_start.as_ptr()).align_down(page_size.byte_len_u64()),
-            page_size,
-        )
-        .unwrap();
-        let mut virtual_memory = MEMORY.get().unwrap().virtual_memory.lock();
-        let n_pages = region.mapped_length as u64 / page_size.byte_len_u64();
+        let memory = MEMORY.get().unwrap();
+        let mut virtual_memory = memory.virtual_memory.lock();
+        let mut mapper = unsafe { virtual_memory.mapper() };
+
+        let page_size = Size4KiB::SIZE;
+        let virt_addr = VirtAddr::from_ptr(region.virtual_start.as_ptr());
+        let aligned_virt_start = virt_addr.align_down(page_size);
+
+        let start_page: Page<Size4KiB> = Page::containing_address(aligned_virt_start);
+        let n_pages = (region.mapped_length as u64) / page_size;
+
         for i in 0..n_pages {
-            let page = start_page.offset(i).unwrap();
-            unsafe {
-                virtual_memory.l4_mut().unmap_page(page).unwrap();
+            let page = start_page + i;
+            // Unmap the page. We don't free the physical frame because
+            // ACPI tables are in reserved/mapped bootloader memory.
+            if let Ok((_, _, flush)) = mapper.unmap(page) {
+                flush.flush();
             }
         }
+
+        // TODO: Free up vaddr
     }
 
     fn read_u8(&self, _address: usize) -> u8 {

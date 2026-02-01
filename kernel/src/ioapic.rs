@@ -4,10 +4,10 @@ use acpi::AcpiTables;
 use alloc::boxed::Box;
 use core::num::NonZero;
 use crate::memory::MEMORY;
-use ez_paging::{ConfigurableFlags, Frame, PageSize};
 use spin::Once;
 use x86_64::registers::model_specific::PatMemoryType;
 use x86_64::PhysAddr;
+use x86_64::structures::paging::{Mapper, PageTableFlags, PhysFrame, Size4KiB};
 
 struct IoApicInfo {
     /// Virtual address of the IOAPIC MMIO registers.
@@ -82,29 +82,37 @@ fn mask_all(base: *mut u32) {
 /// not part of normal RAM and therefore not covered by the Limine HHDM.
 /// We must explicitly map it, just like the local APIC MMIO page.
 fn map_ioapic_mmio(phys_addr: u32) -> *mut u32 {
-    let page_size = PageSize::_4KiB;
-    let frame = Frame::new(PhysAddr::new(phys_addr as u64), page_size).unwrap();
-
     let memory = MEMORY.get().unwrap();
     let mut physical_memory = memory.physical_memory.lock();
-    let mut frame_allocator = physical_memory.get_kernel_frame_allocator();
     let mut virtual_memory = memory.virtual_memory.lock();
-    let page = virtual_memory
-        .allocate_kernel_contiguous_pages(page_size, NonZero::new(1).unwrap())
-        .unwrap();
-    let flags = ConfigurableFlags {
-        writable: true,
-        executable: false,
-        pat_memory_type: PatMemoryType::StrongUncacheable,
-    };
-    unsafe {
-        virtual_memory
-            .l4_mut()
-            .map_page(page, frame, flags, &mut frame_allocator)
-    }
-    .unwrap();
 
-    page.start_addr().as_mut_ptr()
+    // 1. Create the physical frame
+    let frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(PhysAddr::new(phys_addr as u64));
+
+    // 2. Allocate 1 virtual page from the kernel range
+    let page = virtual_memory
+        .allocate_kernel_contiguous_pages(NonZero::new(1).unwrap())
+        .expect("Failed to allocate virtual page for IOAPIC");
+
+    // 3. Define MMIO flags (Uncacheable)
+    let flags = PageTableFlags::PRESENT
+        | PageTableFlags::WRITABLE
+        | PageTableFlags::NO_CACHE
+        | PageTableFlags::WRITE_THROUGH;
+
+    // 4. Get mapper and allocator
+    let mut mapper = unsafe { virtual_memory.mapper() };
+    let mut frame_allocator = physical_memory.get_kernel_frame_allocator();
+
+    // 5. Perform the mapping
+    unsafe {
+        mapper.map_to(page, frame, flags, &mut frame_allocator)
+            .expect("Failed to map IOAPIC MMIO")
+            .flush();
+    }
+
+    // 6. Return the virtual pointer
+    page.start_address().as_mut_ptr()
 }
 
 /// Initialize the IOAPIC subsystem from ACPI tables.

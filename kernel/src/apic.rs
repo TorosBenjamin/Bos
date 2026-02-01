@@ -4,13 +4,13 @@ use crate::memory::cpu_local_data::get_local;
 use acpi::AcpiTables;
 use acpi::platform::InterruptModel;
 use core::num::NonZero;
-use ez_paging::{ConfigurableFlags, Frame, PageSize};
 use force_send_sync::SendSync;
 use raw_cpuid::CpuId;
 use spin::Once;
 use x2apic::lapic::LocalApicBuilder;
 use x86_64::registers::model_specific::{Msr, PatMemoryType};
 use x86_64::{PhysAddr, VirtAddr};
+use x86_64::structures::paging::{Mapper, PageSize, PageTableFlags, PhysFrame, Size4KiB};
 use crate::interrupt::InterruptVector;
 
 const IA32_X2APIC_SVR: u32 = 0x80F;
@@ -35,31 +35,40 @@ pub fn init_bsp(acpi_tables: &AcpiTables<impl acpi::Handler>) {
             LocalApicAccess::RegisterBased
         } else {
             log::info!("x2apic support disabled");
-            // Local apic is always exactly 4KiB, aligned to 4KiB
-            let page_size = PageSize::_4KiB;
-            let frame = Frame::new(PhysAddr::new(apic.local_apic_address), page_size).unwrap();
 
+            // 1. Setup constants and address types
             let memory = MEMORY.get().unwrap();
             let mut physical_memory = memory.physical_memory.lock();
-            let mut frame_allocator = physical_memory.get_kernel_frame_allocator();
             let mut virtual_memory = memory.virtual_memory.lock();
+
+            let lapic_phys_addr = PhysAddr::new(apic.local_apic_address);
+            let frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(lapic_phys_addr);
+
+            // 2. Allocate 1 virtual page
             let page = virtual_memory
-                .allocate_kernel_contiguous_pages(page_size, NonZero::new(1).unwrap())
-                .unwrap();
-            let flags = ConfigurableFlags {
-                writable: true,
-                executable: false,
-                // We use strong uncacheable memory type, because reads and writes have side effects
-                pat_memory_type: PatMemoryType::StrongUncacheable,
-            };
-            // Safety: We map to the correct page for the Local APIC
+                .allocate_kernel_contiguous_pages(NonZero::new(1).unwrap())
+                .expect("Failed to allocate virtual page for LAPIC");
+
+            // 3. Define Flags for MMIO
+            // We replace PatMemoryType::StrongUncacheable with standard PageTableFlags.
+            // For MMIO, we use NO_CACHE (PCD) and WRITE_THROUGH (PWT).
+            let flags = PageTableFlags::PRESENT
+                | PageTableFlags::WRITABLE
+                | PageTableFlags::NO_CACHE
+                | PageTableFlags::WRITE_THROUGH;
+
+            // 4. Map the page
+            let mut mapper = unsafe { virtual_memory.mapper() };
+            let mut frame_allocator = physical_memory.get_kernel_frame_allocator();
+
             unsafe {
-                virtual_memory
-                    .l4_mut()
-                    .map_page(page, frame, flags, &mut frame_allocator)
+                mapper.map_to(page, frame, flags, &mut frame_allocator)
+                    .expect("Failed to map Local APIC MMIO")
+                    .flush();
             }
-            .unwrap();
-            LocalApicAccess::Mmio(page.start_addr())
+
+            // 5. Return the virtual address for access
+            LocalApicAccess::Mmio(page.start_address())
         }
     });
 }

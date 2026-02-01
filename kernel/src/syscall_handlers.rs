@@ -2,17 +2,18 @@ use crate::graphics::display::DISPLAY;
 use crate::limine_requests::MODULE_REQUEST;
 use crate::memory::MEMORY;
 use crate::memory::cpu_local_data::get_local;
-use crate::memory::physical_memory::MemoryType;
+use crate::memory::physical_memory::{MemoryType, OffsetMappedPhysAddr, PhysicalMemory};
 use crate::memory::user_vaddr;
 use crate::memory::page_tables::get_kernel_vaddr_from_user_vaddr;
 use crate::task::task::{TaskKind, TaskState};
 use core::sync::atomic::Ordering;
-use ez_paging::{ConfigurableFlags, Owned4KibFrame, Page, PageSize};
+use log::debug;
+use log::Level::Debug;
 use kernel_api_types::graphics::{DisplayInfo, GraphicsResult, Rect};
 use kernel_api_types::{MMAP_EXEC, MMAP_WRITE};
-use x86_64::registers::model_specific::PatMemoryType;
-use x86_64::structures::paging::PhysFrame;
+use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageSize, PageTable, PageTableFlags, PhysFrame, Size4KiB};
 use x86_64::{PhysAddr, VirtAddr};
+use crate::memory::hhdm_offset::hhdm_offset;
 
 /// Syscall: return the bounding box of the framebuffer
 pub fn sys_get_bounding_box(rect_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
@@ -126,10 +127,9 @@ pub fn sys_mmap(size: u64, flags: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
         return 0;
     }
 
-    let n_pages = size.div_ceil(4096);
-    let page_size = PageSize::_4KiB;
+    let n_pages = size.div_ceil(Size4KiB::SIZE);
 
-    // Get the current task
+    // 1. Get current task
     let cpu = get_local();
     let task = {
         let rq = cpu.run_queue.get().unwrap().lock();
@@ -141,78 +141,72 @@ pub fn sys_mmap(size: u64, flags: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
 
     let mut inner = task.inner.lock();
 
-    // Find a gap in the user vaddr set
+    // 2. Virtual Allocation
     let start_vaddr = match user_vaddr::allocate_user_pages(&mut inner.user_vaddr_set, n_pages) {
         Some(addr) => addr,
         None => return 0,
     };
 
-    let configurable_flags = ConfigurableFlags {
-        pat_memory_type: PatMemoryType::WriteBack,
-        writable: (flags & MMAP_WRITE) != 0,
-        executable: (flags & MMAP_EXEC) != 0,
-    };
+    // 3. Flags Setup
+    // All mmaped pages need PRESENT and USER_ACCESSIBLE.
+    let mut page_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+    if (flags & MMAP_WRITE) != 0 {
+        page_flags |= PageTableFlags::WRITABLE;
+    }
+    if (flags & MMAP_EXEC) == 0 {
+        page_flags |= PageTableFlags::NO_EXECUTE;
+    }
 
-    let user_l4 = match &mut inner.user_page_table {
-        Some(pt) => pt,
-        None => {
-            // Roll back vaddr allocation
-            user_vaddr::free_user_pages(&mut inner.user_vaddr_set, start_vaddr, n_pages * 4096);
-            return 0;
-        }
+    // 4. Setup the Mapper using the task's cr3
+    let hhdm_offset = hhdm_offset();
+
+    // Convert the task's cr3 (u64) into a PhysFrame
+    let user_l4_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3));
+
+    // Calculate the virtual address of the L4 table in the HHDM
+    let l4_virt_addr = VirtAddr::new(hhdm_offset.as_u64() + user_l4_frame.start_address().as_u64());
+    let l4_table = unsafe { &mut *l4_virt_addr.as_mut_ptr::<PageTable>() };
+
+    // Create our standard x86_64 mapper
+    let mut mapper = unsafe {
+        OffsetPageTable::new(l4_table, VirtAddr::new(hhdm_offset.as_u64()))
     };
 
     let memory = MEMORY.get().unwrap();
     let mut physical_memory = memory.physical_memory.lock();
 
-    // Allocate and map each page
+    // 5. Allocation and Mapping Loop
     for i in 0..n_pages {
-        let vaddr = start_vaddr + i * 4096;
-        let page = Page::new(VirtAddr::new(vaddr), page_size).unwrap();
+        let vaddr = VirtAddr::new(start_vaddr + i * Size4KiB::SIZE);
+        let page: Page<Size4KiB> = Page::containing_address(vaddr);
 
-        let frame = match physical_memory.allocate_frame_with_type(page_size, MemoryType::UsedByUserMode) {
+        // Allocate physical frame
+        let frame = match physical_memory.allocate_frame_with_type(MemoryType::UsedByUserMode) {
             Some(f) => f,
             None => {
-                // Rollback: unmap and free already-mapped pages
-                for j in 0..i {
-                    let rollback_vaddr = start_vaddr + j * 4096;
-                    let rollback_page = Page::new(VirtAddr::new(rollback_vaddr), page_size).unwrap();
-                    if let Ok(unmapped_frame) = unsafe { user_l4.unmap_page(rollback_page) } {
-                        let phys_frame = PhysFrame::from_start_address(unmapped_frame.start_addr()).unwrap();
-                        let owned = unsafe { Owned4KibFrame::new(phys_frame) };
-                        let _ = physical_memory.free_frame(owned, MemoryType::UsedByUserMode);
-                    }
-                }
-                user_vaddr::free_user_pages(&mut inner.user_vaddr_set, start_vaddr, n_pages * 4096);
+                rollback_mmap(&mut mapper, &mut physical_memory, start_vaddr, i);
+                user_vaddr::free_user_pages(&mut inner.user_vaddr_set, start_vaddr, n_pages * Size4KiB::SIZE);
                 return 0;
             }
         };
 
-        // Zero the frame for security
-        let frame_virt = PhysAddr::new(frame.start_addr().as_u64());
-        let frame_ptr = crate::memory::physical_memory::OffsetMappedPhysAddr::offset_mapped(frame_virt);
+        // Security: Zero the frame
+        let frame_virt = frame.start_address().offset_mapped();
         unsafe {
-            core::ptr::write_bytes(frame_ptr.as_mut_ptr::<u8>(), 0, 4096);
+            core::ptr::write_bytes(frame_virt.as_mut_ptr::<u8>(), 0, Size4KiB::SIZE as usize);
         }
 
+        // Map it
         let mut frame_allocator = physical_memory.get_user_mode_frame_allocator();
-        if unsafe { user_l4.map_page(page, frame, configurable_flags, &mut frame_allocator) }.is_err() {
-            // Free the frame we just allocated but couldn't map
-            let phys_frame = PhysFrame::from_start_address(frame.start_addr()).unwrap();
-            let owned = unsafe { Owned4KibFrame::new(phys_frame) };
-            drop(frame_allocator);
-            let _ = physical_memory.free_frame(owned, MemoryType::UsedByUserMode);
-            // Rollback previously mapped pages
-            for j in 0..i {
-                let rollback_vaddr = start_vaddr + j * 4096;
-                let rollback_page = Page::new(VirtAddr::new(rollback_vaddr), page_size).unwrap();
-                if let Ok(unmapped_frame) = unsafe { user_l4.unmap_page(rollback_page) } {
-                    let phys_frame = PhysFrame::from_start_address(unmapped_frame.start_addr()).unwrap();
-                    let owned = unsafe { Owned4KibFrame::new(phys_frame) };
-                    let _ = physical_memory.free_frame(owned, MemoryType::UsedByUserMode);
-                }
-            }
-            user_vaddr::free_user_pages(&mut inner.user_vaddr_set, start_vaddr, n_pages * 4096);
+        let map_result = unsafe {
+            mapper.map_to(page, frame, page_flags, &mut frame_allocator)
+        };
+        drop(frame_allocator);
+
+        if map_result.is_err() {
+            let _ = physical_memory.free_frame(frame, MemoryType::UsedByUserMode);
+            rollback_mmap(&mut mapper, &mut physical_memory, start_vaddr, i);
+            user_vaddr::free_user_pages(&mut inner.user_vaddr_set, start_vaddr, n_pages * Size4KiB::SIZE);
             return 0;
         }
     }
@@ -220,6 +214,23 @@ pub fn sys_mmap(size: u64, flags: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
     start_vaddr
 }
 
+/// Helper to clean up partial mappings on failure
+fn rollback_mmap(
+    mapper: &mut OffsetPageTable,
+    physical_memory: &mut PhysicalMemory,
+    start_vaddr: u64,
+    count: u64
+) {
+    for j in 0..count {
+        let rollback_vaddr = VirtAddr::new(start_vaddr + j * Size4KiB::SIZE);
+        let rollback_page: Page<Size4KiB> = Page::containing_address(rollback_vaddr);
+
+        if let Ok((frame, _, flush)) = unsafe { mapper.unmap(rollback_page) } {
+            flush.flush();
+            let _ = physical_memory.free_frame(frame, MemoryType::UsedByUserMode);
+        }
+    }
+}
 /// Syscall: create a new IPC channel.
 ///
 /// Arguments: send_ep_out_ptr, recv_ep_out_ptr, capacity
@@ -353,6 +364,7 @@ pub fn sys_transfer_display(new_owner_id: u64, _: u64, _: u64, _: u64, _: u64, _
         }
     }
 
+    log::info!("Transfer display owner to {}", new_owner_id);
     DISPLAY_OWNER.store(new_owner_id, Ordering::Relaxed);
     0
 }
@@ -373,6 +385,9 @@ pub fn sys_get_module(name_ptr: u64, name_len: u64, buf_ptr: u64, buf_cap: u64, 
         Ok(s) => s,
         Err(_) => return 0,
     };
+
+
+    log::info!("Loading limine module, name: {}, buf_ptr: {}, buf_cap: {}", name, buf_ptr, buf_cap);
 
     // Build path by prepending "/" to name
     let mut path_buf = [0u8; 258];
@@ -414,19 +429,15 @@ pub fn sys_get_module(name_ptr: u64, name_len: u64, buf_ptr: u64, buf_cap: u64, 
     module_size
 }
 
-/// Syscall: unmap virtual memory from the calling user task.
-///
-/// Arguments: addr (page-aligned), size (bytes)
-/// Returns: 0 on success, !0 on failure.
 pub fn sys_munmap(addr: u64, size: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
-    if size == 0 || addr % 4096 != 0 {
+    // 1. Validate alignment and size
+    if size == 0 || addr % Size4KiB::SIZE != 0 {
         return !0u64;
     }
 
-    let n_pages = size.div_ceil(4096);
-    let page_size = PageSize::_4KiB;
+    let n_pages = size.div_ceil(Size4KiB::SIZE);
 
-    // Get the current task
+    // 2. Get the current task
     let cpu = get_local();
     let task = {
         let rq = cpu.run_queue.get().unwrap().lock();
@@ -438,35 +449,42 @@ pub fn sys_munmap(addr: u64, size: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
 
     let mut inner = task.inner.lock();
 
-    // Verify and remove the range from user_vaddr_set
-    let total_size = n_pages * 4096;
+    // 3. Verify and remove the range from user_vaddr_set (NoditSet)
+    let total_size = n_pages * Size4KiB::SIZE;
     if !user_vaddr::free_user_pages(&mut inner.user_vaddr_set, addr, total_size) {
         return !0u64;
     }
 
-    let user_l4 = match &mut inner.user_page_table {
-        Some(pt) => pt,
-        None => return !0u64,
+    // 4. Setup the Mapper using the task's cr3 and HHDM offset
+    let hhdm_offset = hhdm_offset();
+    let user_l4_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3));
+    let l4_virt_addr = VirtAddr::new(hhdm_offset.as_u64() + user_l4_frame.start_address().as_u64());
+    let l4_table = unsafe { &mut *l4_virt_addr.as_mut_ptr::<PageTable>() };
+
+    let mut mapper = unsafe {
+        OffsetPageTable::new(l4_table, VirtAddr::new(hhdm_offset.as_u64()))
     };
 
     let memory = MEMORY.get().unwrap();
     let mut physical_memory = memory.physical_memory.lock();
 
-    // Unmap each page and free its frame
+    // 5. Unmap each page and free its corresponding physical frame
     for i in 0..n_pages {
-        let vaddr = addr + i * 4096;
-        let page = Page::new(VirtAddr::new(vaddr), page_size).unwrap();
+        let vaddr = VirtAddr::new(addr + i * Size4KiB::SIZE);
+        let page: Page<Size4KiB> = Page::containing_address(vaddr);
 
-        if let Ok(unmapped_frame) = unsafe { user_l4.unmap_page(page) } {
-            let phys_frame = PhysFrame::from_start_address(unmapped_frame.start_addr()).unwrap();
-            let owned = unsafe { Owned4KibFrame::new(phys_frame) };
-            let _ = physical_memory.free_frame(owned, MemoryType::UsedByUserMode);
+        // x86_64 unmap returns Ok((PhysFrame, PageTableFlags, MapperFlush))
+        if let Ok((frame, _, flush)) = unsafe { mapper.unmap(page) } {
+            // Invalidate the TLB for this address
+            flush.flush();
+
+            // Return the frame to the physical manager (no 'Owned' wrapper needed)
+            let _ = physical_memory.free_frame(frame, MemoryType::UsedByUserMode);
         }
     }
 
-    0
+    0 // Success
 }
-
 /// Syscall: present a dirty rectangle from a user-space pixel buffer to the framebuffer.
 ///
 /// Arguments: buf_ptr, buf_width, dirty_x, dirty_y, dirty_w, dirty_h
@@ -475,6 +493,8 @@ pub fn sys_present_display(buf_ptr: u64, buf_width: u64, dirty_x: u64, dirty_y: 
     if !crate::graphics::display::is_display_owner() {
         return GraphicsResult::PermissionDenied as u64;
     }
+
+    log::info!("Display buffer swapped.");
 
     if buf_ptr == 0 || buf_width == 0 || dirty_w == 0 || dirty_h == 0 {
         return GraphicsResult::Ok as u64;
@@ -524,7 +544,7 @@ pub fn sys_present_display(buf_ptr: u64, buf_width: u64, dirty_x: u64, dirty_y: 
         None => return GraphicsResult::PermissionDenied as u64,
     };
 
-    let kernel_buf_ptr = match get_kernel_vaddr_from_user_vaddr(user_l4, start_vaddr) {
+    let kernel_buf_ptr = match get_kernel_vaddr_from_user_vaddr(*user_l4, start_vaddr) {
         Some(vaddr) => vaddr.as_u64() as *const u32,
         None => return GraphicsResult::InvalidInput as u64,
     };

@@ -1,6 +1,7 @@
 use crate::limine_requests::HHDM_REQUEST;
 use core::fmt::Debug;
 use limine::response::HhdmResponse;
+use x86_64::VirtAddr;
 
 /// Wrapper around u64 representing HHDM offset
 #[derive(Clone, Copy)]
@@ -24,11 +25,15 @@ impl From<HhdmOffset> for u64 {
     }
 }
 
-impl From<HhdmOffset> for ez_paging::VirtualOffset {
+impl From<HhdmOffset> for VirtAddr {
     fn from(value: HhdmOffset) -> Self {
-        let virtual_offset = value.into();
-        // Safety: The HhdmOffset struct guarantees the offset is correct
-        unsafe { Self::new(virtual_offset) }
+        VirtAddr::new(value.0)
+    }
+}
+
+impl HhdmOffset {
+    pub fn as_u64(&self) -> u64 {
+        self.0
     }
 }
 

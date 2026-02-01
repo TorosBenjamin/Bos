@@ -1,6 +1,7 @@
 #![no_std]
 
 pub mod graphics;
+pub mod window;
 
 #[repr(u64)]
 #[derive(Clone, Copy, Debug)]

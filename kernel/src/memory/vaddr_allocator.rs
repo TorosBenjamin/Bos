@@ -1,41 +1,35 @@
 use core::num::NonZero;
 
 use crate::memory::hhdm_offset::hhdm_offset;
-use ez_paging::{ManagedL4PageTable, Page, PageSize};
 use nodit::{
     InclusiveInterval, Interval, NoditSet,
     interval::{ii, iu},
 };
 use x86_64::{PhysAddr, VirtAddr};
+use x86_64::structures::paging::{OffsetPageTable, Page, PageSize, PageTable, PhysFrame, Size4KiB};
 use crate::consts::{HIGHER_HALF_START, USER_MAX, USER_MIN};
 
 #[derive(Debug)]
 pub struct VirtualMemoryAllocator {
-    /// Allocated vaddrs
-    #[allow(unused)]
     pub(super) set: NoditSet<u64, Interval<u64>>,
-    #[allow(unused)]
-    pub(super) l4: ManagedL4PageTable,
+    pub(super) l4_phys_frame: PhysFrame<Size4KiB>,
 }
 
 impl VirtualMemoryAllocator {
     /// Returns the start page of the allocated range of pages.
-    /// Pages are guaranteed not to be mapped.
     fn allocate_contiguous_pages_in_range(
         &mut self,
         range: Interval<u64>,
-        page_size: PageSize,
         n_pages: NonZero<u64>,
-    ) -> Option<Page> {
-        let page_bytes = page_size.byte_len_u64();
+    ) -> Option<Page<Size4KiB>> {
+        let page_bytes = Size4KiB::SIZE; // 4096
         let total_bytes = n_pages.get() * page_bytes;
 
         let interval = self
             .set
-            .gaps_trimmed(&range) // limit to range
+            .gaps_trimmed(&range)
             .find_map(|gap| {
                 let aligned_start = gap.start().next_multiple_of(page_bytes);
-
                 let end = aligned_start + total_bytes - 1;
                 let interval = ii(aligned_start, end);
 
@@ -46,29 +40,26 @@ impl VirtualMemoryAllocator {
             .insert_merge_touching(interval)
             .expect("no overlap");
 
-        Page::new(VirtAddr::new(*interval.start()), page_size).ok()
+        // Returns x86_64::structures::paging::Page
+        Some(Page::containing_address(VirtAddr::new(*interval.start())))
     }
 
-    /// Allocates available vaddr from the kernel's range
-    pub fn allocate_kernel_contiguous_pages(
-        &mut self,
-        page_size: PageSize,
-        n_pages: NonZero<u64>,
-    ) -> Option<Page> {
-        self.allocate_contiguous_pages_in_range(iu(HIGHER_HALF_START), page_size, n_pages)
+    pub fn allocate_kernel_contiguous_pages(&mut self, n_pages: NonZero<u64>) -> Option<Page<Size4KiB>> {
+        self.allocate_contiguous_pages_in_range(iu(HIGHER_HALF_START), n_pages)
     }
 
-    /// Allocates available vaddr from the user space range
-    pub fn allocate_user_contiguous_pages(
-        &mut self,
-        page_size: PageSize,
-        n_pages: NonZero<u64>,
-    ) -> Option<Page> {
-        self.allocate_contiguous_pages_in_range(ii(USER_MIN, USER_MAX), page_size, n_pages)
+    pub fn allocate_user_contiguous_pages(&mut self, n_pages: NonZero<u64>) -> Option<Page<Size4KiB>> {
+        self.allocate_contiguous_pages_in_range(ii(USER_MIN, USER_MAX), n_pages)
     }
 
-    pub fn l4_mut(&mut self) -> &mut ManagedL4PageTable {
-        &mut self.l4
+    /// Replaces l4_mut. Returns a standard x86_64 Mapper.
+    pub unsafe fn mapper(&mut self) -> OffsetPageTable<'static> {
+        let offset = VirtAddr::new(hhdm_offset().as_u64());
+        let l4_virt = offset + self.l4_phys_frame.start_address().as_u64();
+        unsafe {
+            let l4_table = &mut *l4_virt.as_mut_ptr::<PageTable>();
+            OffsetPageTable::new(l4_table, offset)
+        }
     }
 }
 

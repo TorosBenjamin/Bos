@@ -1,16 +1,15 @@
 use alloc::format;
 use alloc::string::String;
-use ez_paging::Owned4KibFrame;
 use kernel::memory::MEMORY;
 use kernel::memory::physical_memory::{KernelMemoryUsageType, MemoryType, PhysicalMemory};
-use kernel::reexports::x86_64::structures::paging::PhysFrame;
+use kernel::reexports::x86_64::structures::paging::{PhysFrame, Size4KiB};
 use kernel::reexports::x86_64::PhysAddr;
 use crate::TestResult;
 
 /// Clean up allocated kernel frames
 fn with_kernel_frame<F>(mut f: F) -> TestResult
 where
-    F: FnMut(&mut PhysicalMemory, &Owned4KibFrame) -> TestResult,
+    F: FnMut(&mut PhysicalMemory, PhysFrame<Size4KiB>) -> TestResult,
 {
     let mut pm = MEMORY.get().unwrap().physical_memory.lock();
     let mut allocator = pm.get_kernel_frame_allocator();
@@ -20,7 +19,7 @@ where
         None => return TestResult::Failed(String::from("Failed to allocate frame")),
     };
 
-    let result = f(&mut pm, &frame);
+    let result = f(&mut pm, frame);
 
     let _ = pm.free_frame(
         frame,
@@ -103,7 +102,7 @@ pub fn exhaustion() -> TestResult {
     let mut pm = MEMORY.get().unwrap().physical_memory.lock();
     let mut allocator = pm.get_kernel_frame_allocator();
 
-    let mut frames = heapless::Vec::<Owned4KibFrame, 1024>::new();
+    let mut frames = heapless::Vec::<PhysFrame<Size4KiB>, 1024>::new();
 
     while let Some(frame) = allocator.allocate_frame_4kib() {
         if frames.push(frame).is_err() {
@@ -162,9 +161,7 @@ pub fn duplicate_allocation() -> TestResult {
 
     // Clean up
     for addr in seen_addrs {
-        // We need an Owned4KibFrame to free. This is a bit hacky in the test.
         let frame = PhysFrame::from_start_address(PhysAddr::new(addr)).unwrap();
-        let frame = unsafe { Owned4KibFrame::new(frame) };
         let _ = pm.free_frame(frame, MemoryType::UsedByKernel(KernelMemoryUsageType::PageTables));
     }
 

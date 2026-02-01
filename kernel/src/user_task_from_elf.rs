@@ -1,7 +1,8 @@
 use crate::limine_requests::{MODULE_REQUEST, INIT_TASK_PATH};
 use crate::memory::MEMORY;
 use crate::memory::cpu_local_data::get_local;
-use crate::memory::physical_memory::{MemoryType, OffsetMappedPhysAddr, OffsetMappedPhysFrame};
+use crate::memory::hhdm_offset::hhdm_offset;
+use crate::memory::physical_memory::{MemoryType, OffsetMappedPhysAddr};
 use crate::memory::vaddr_allocator::OffsetMappedVirtAddr;
 use crate::task::task::Task;
 use bitflags::bitflags;
@@ -11,13 +12,62 @@ use core::ptr::{NonNull, slice_from_raw_parts_mut};
 use elf::ElfBytes;
 use elf::endian::AnyEndian;
 use elf::segment::ProgramHeader;
-use ez_paging::{ConfigurableFlags, Frame, Page, PageSize};
 use nodit::interval::ie;
 use nodit::{Interval, NoditSet};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
-use x86_64::registers::model_specific::PatMemoryType;
 use x86_64::{PhysAddr, VirtAddr};
+use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageSize, PageTable, PageTableFlags, PhysFrame, Size4KiB};
 use crate::consts::LOWER_HALF_END;
+
+/// Build a `PageTableFlags` from ELF segment flags, always setting PRESENT and USER_ACCESSIBLE.
+fn elf_flags_to_page_table_flags(elf_flags: ElfSegmentFlags) -> PageTableFlags {
+    let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+    if elf_flags.contains(ElfSegmentFlags::WRITABLE) {
+        flags |= PageTableFlags::WRITABLE;
+    }
+    if !elf_flags.contains(ElfSegmentFlags::EXECUTABLE) {
+        flags |= PageTableFlags::NO_EXECUTE;
+    }
+    flags
+}
+
+/// Allocate a new user-mode L4 page table, zero it, copy kernel higher-half
+/// entries (256..512), and return the L4 frame plus an `OffsetPageTable` mapper.
+///
+/// # Safety
+/// The returned mapper borrows the page table with a `'static` lifetime.
+/// The caller must ensure it does not outlive the physical frame.
+unsafe fn create_user_page_table(
+    phys: &mut crate::memory::physical_memory::PhysicalMemory,
+) -> (PhysFrame<Size4KiB>, OffsetPageTable<'static>) {
+    let l4_frame = phys
+        .get_user_mode_frame_allocator()
+        .allocate_frame_4kib()
+        .expect("Failed to allocate L4 frame for user page table");
+
+    let hhdm = VirtAddr::new(hhdm_offset().as_u64());
+    let l4_virt = hhdm + l4_frame.start_address().as_u64();
+
+    unsafe {
+        // Zero the new page table
+        l4_virt.as_mut_ptr::<PageTable>().write(PageTable::new());
+
+        // Copy kernel higher-half entries from the kernel L4
+        let memory = MEMORY.get().unwrap();
+        let kernel_l4_virt = hhdm + memory.new_kernel_cr3.start_address().as_u64();
+        let kernel_table = &*kernel_l4_virt.as_ptr::<PageTable>();
+        let user_table = &mut *l4_virt.as_mut_ptr::<PageTable>();
+        for i in 256..512 {
+            user_table[i] = kernel_table[i].clone();
+        }
+
+        let mapper = OffsetPageTable::new(
+            &mut *l4_virt.as_mut_ptr::<PageTable>(),
+            hhdm,
+        );
+        (l4_frame, mapper)
+    }
+}
 
 /// Create a user-mode task from the first Limine module matching INIT_TASK_PATH.
 ///
@@ -49,23 +99,16 @@ pub fn create_user_task_from_elf() -> Task {
     // Create new address space for user mode
     let memory = MEMORY.get().unwrap();
     let mut physical_memory = memory.physical_memory.lock();
-    let mut user_l4 = memory.virtual_memory.lock().l4_mut().new_user(
-        physical_memory
-            .get_user_mode_frame_allocator()
-            .allocate_frame_4kib()
-            .unwrap(),
-    );
-
-    // Capture CR3 physical address from the allocated L4 frame
-    let cr3 = user_l4.frame().start_address().as_u64();
+    let (l4_frame, mut mapper) = unsafe { create_user_page_table(&mut physical_memory) };
+    let cr3 = l4_frame.start_address().as_u64();
 
     // Remove the module from physical memory map
-    let page_size = PageSize::_4KiB;
+    let page_size = Size4KiB::SIZE;
     let module_physical_interval = {
         let start = VirtAddr::from_ptr(module.addr()).offset_mapped().as_u64();
         ie(
             start,
-            (start + module.size()).next_multiple_of(page_size.byte_len_u64()),
+            (start + module.size()).next_multiple_of(page_size),
         )
     };
     let _ = physical_memory.map_mut().cut(&module_physical_interval);
@@ -80,43 +123,36 @@ pub fn create_user_task_from_elf() -> Task {
         // Make sure the segment is only referencing file memory contained within the ELF
         assert!(segment.p_offset + segment.p_filesz <= module.size());
 
-        let start_page = Page::new(
-            VirtAddr::new(segment.p_vaddr).align_down(page_size.byte_len_u64()),
-            page_size,
-        )
-        .unwrap();
+        let start_page: Page<Size4KiB> = Page::containing_address(
+            VirtAddr::new(segment.p_vaddr),
+        );
         let file_pages_len = if segment.p_filesz > 0 {
-            (segment.p_vaddr + segment.p_filesz).div_ceil(page_size.byte_len_u64())
-                - segment.p_vaddr / page_size.byte_len_u64()
+            (segment.p_vaddr + segment.p_filesz).div_ceil(page_size)
+                - segment.p_vaddr / page_size
         } else {
             0
         };
-        let start_frame = Frame::new(
-            (VirtAddr::from_ptr(module.addr()).offset_mapped() + segment.p_offset)
-                .align_down(page_size.byte_len_u64()),
-            page_size,
-        )
-        .unwrap();
+        let start_frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(
+            VirtAddr::from_ptr(module.addr()).offset_mapped() + segment.p_offset,
+        );
 
         // Map the virtual memory to the ELF's frames
-        let flags = ElfSegmentFlags::from(segment);
-        let mut frame_allocator = physical_memory.get_user_mode_frame_allocator();
-        let flags = ConfigurableFlags {
-            pat_memory_type: PatMemoryType::WriteBack,
-            writable: flags.contains(ElfSegmentFlags::WRITABLE),
-            executable: flags.contains(ElfSegmentFlags::EXECUTABLE),
-        };
+        let elf_flags = ElfSegmentFlags::from(segment);
+        let flags = elf_flags_to_page_table_flags(elf_flags);
         for i in 0..file_pages_len {
-            let page = start_page.offset(i).unwrap();
-            let frame = start_frame.offset(i).unwrap();
-            unsafe { user_l4.map_page(page, frame, flags, &mut frame_allocator) }.unwrap();
+            let page = start_page + i;
+            let frame = start_frame + i;
+            let mut frame_allocator = physical_memory.get_user_mode_frame_allocator();
+            unsafe { mapper.map_to(page, frame, flags, &mut frame_allocator) }
+                .unwrap()
+                .ignore();
         }
 
         // Mark the ELF's frames as used by user mode
         if file_pages_len > 0 {
             let interval = {
-                let start = start_frame.start_addr().as_u64();
-                ie(start, start + file_pages_len * page_size.byte_len_u64())
+                let start = start_frame.start_address().as_u64();
+                ie(start, start + file_pages_len * page_size)
             };
             let _ = physical_memory.map_mut().cut(&interval);
             physical_memory
@@ -138,34 +174,36 @@ pub fn create_user_task_from_elf() -> Task {
                     let start = VirtAddr::from_ptr(module.addr()).offset_mapped()
                         + segment.p_offset
                         + segment.p_filesz;
-                    start..start.align_up(page_size.byte_len_u64())
+                    start..start.align_up(page_size)
                 });
             }
 
             // We need to allocate, zero, and map additional frames
             let extra_pages_len = (segment.p_vaddr + segment.p_memsz)
-                .div_ceil(page_size.byte_len_u64())
-                - (segment.p_vaddr + segment.p_filesz).div_ceil(page_size.byte_len_u64());
-            let start_page = start_page.offset(file_pages_len).unwrap();
+                .div_ceil(page_size)
+                - (segment.p_vaddr + segment.p_filesz).div_ceil(page_size);
+            let extra_start_page = start_page + file_pages_len;
             for i in 0..extra_pages_len {
-                let page = start_page.offset(i).unwrap();
+                let page = extra_start_page + i;
                 let frame = physical_memory
-                    .allocate_frame_with_type(page_size, MemoryType::UsedByUserMode)
+                    .allocate_frame_with_type(MemoryType::UsedByUserMode)
                     .unwrap();
                 let frame_ptr =
-                    NonNull::new(frame.offset_mapped().start_addr().as_mut_ptr::<u8>()).unwrap();
+                    NonNull::new(frame.start_address().offset_mapped().as_mut_ptr::<u8>()).unwrap();
                 // Safety: we own the frame
-                unsafe { frame_ptr.write_bytes(0, page_size.byte_len()) };
+                unsafe { frame_ptr.write_bytes(0, page_size as usize) };
                 let mut frame_allocator = physical_memory.get_user_mode_frame_allocator();
-                unsafe { user_l4.map_page(page, frame, flags, &mut frame_allocator) }.unwrap();
+                unsafe { mapper.map_to(page, frame, flags, &mut frame_allocator) }
+                    .unwrap()
+                    .ignore();
             }
             total_pages += extra_pages_len;
         }
 
         // Track the mapped virtual address range
         if total_pages > 0 {
-            let seg_start = start_page.start_addr().as_u64();
-            let seg_end = seg_start + total_pages * page_size.byte_len_u64();
+            let seg_start = start_page.start_address().as_u64();
+            let seg_end = seg_start + total_pages * page_size;
             user_vaddr_set
                 .insert_merge_touching(ie(seg_start, seg_end))
                 .expect("ELF segment vaddr overlap");
@@ -203,7 +241,7 @@ pub fn create_user_task_from_elf() -> Task {
     {
         let start = module.addr().addr() + module.size() as usize;
         let ptr = NonNull::new(start as *mut u8).unwrap();
-        let end = start.next_multiple_of(page_size.byte_len());
+        let end = start.next_multiple_of(page_size as usize);
         let count = end - start;
         // Safety: we have exclusive access to this memory
         unsafe { ptr.write_bytes(0, count) };
@@ -215,30 +253,26 @@ pub fn create_user_task_from_elf() -> Task {
     let rsp = (LOWER_HALF_END + 1) - 0x1000;
     {
         let stack_size: u64 = 64 * 0x400;
-        let page_size = PageSize::_4KiB;
-        let pages_len = stack_size.div_ceil(page_size.byte_len_u64());
-        let stack_start_vaddr = rsp - pages_len * page_size.byte_len_u64();
-        let start_page = Page::new(
+        let pages_len = stack_size.div_ceil(page_size);
+        let stack_start_vaddr = rsp - pages_len * page_size;
+        let start_page: Page<Size4KiB> = Page::containing_address(
             VirtAddr::new(stack_start_vaddr),
-            page_size,
-        )
-        .unwrap();
+        );
+        let stack_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE
+            | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
         for i in 0..pages_len {
-            let page = start_page.offset(i).unwrap();
+            let page = start_page + i;
             let frame = physical_memory
-                .allocate_frame_with_type(page_size, MemoryType::UsedByUserMode)
+                .allocate_frame_with_type(MemoryType::UsedByUserMode)
                 .unwrap();
-            let flags = ConfigurableFlags {
-                pat_memory_type: PatMemoryType::WriteBack,
-                writable: true,
-                executable: false,
-            };
             let mut frame_allocator = physical_memory.get_user_mode_frame_allocator();
-            unsafe { user_l4.map_page(page, frame, flags, &mut frame_allocator) }.unwrap()
+            unsafe { mapper.map_to(page, frame, stack_flags, &mut frame_allocator) }
+                .unwrap()
+                .ignore();
         }
         // Track the stack virtual address range
         user_vaddr_set
-            .insert_merge_touching(ie(stack_start_vaddr, stack_start_vaddr + pages_len * page_size.byte_len_u64()))
+            .insert_merge_touching(ie(stack_start_vaddr, stack_start_vaddr + pages_len * page_size))
             .expect("user stack vaddr overlap");
     };
 
@@ -251,7 +285,7 @@ pub fn create_user_task_from_elf() -> Task {
     let user_cs = gdt.user_code_selector().0;
     let user_ss = gdt.user_data_selector().0;
 
-    Task::new_user(entry_point.get(), rsp, user_l4, cr3, user_cs, user_ss, user_vaddr_set, 0)
+    Task::new_user(entry_point.get(), rsp, l4_frame, cr3, user_cs, user_ss, user_vaddr_set, 0)
 }
 
 #[derive(Debug)]
@@ -272,16 +306,12 @@ pub fn create_user_task_from_elf_bytes(elf_bytes: &[u8], child_arg: u64) -> Resu
 
     let memory = MEMORY.get().unwrap();
     let mut physical_memory = memory.physical_memory.lock();
-    let mut user_l4 = memory.virtual_memory.lock().l4_mut().new_user(
-        physical_memory
-            .get_user_mode_frame_allocator()
-            .allocate_frame_4kib()
-            .ok_or(SpawnError::OutOfMemory)?,
-    );
+    let (l4_frame, mut mapper) = unsafe {
+        create_user_page_table(&mut physical_memory)
+    };
+    let cr3 = l4_frame.start_address().as_u64();
 
-    let cr3 = user_l4.frame().start_address().as_u64();
-
-    let page_size = PageSize::_4KiB;
+    let page_size = Size4KiB::SIZE;
 
     // Map ELF LOAD segments
     for segment in elf.segments().ok_or(SpawnError::InvalidElf)? {
@@ -294,45 +324,39 @@ pub fn create_user_task_from_elf_bytes(elf_bytes: &[u8], child_arg: u64) -> Resu
             return Err(SpawnError::InvalidElf);
         }
 
-        let start_page = Page::new(
-            VirtAddr::new(segment.p_vaddr).align_down(page_size.byte_len_u64()),
-            page_size,
-        )
-        .map_err(|_| SpawnError::InvalidElf)?;
+        let start_page: Page<Size4KiB> = Page::containing_address(
+            VirtAddr::new(segment.p_vaddr),
+        );
 
         let file_pages_len = if segment.p_filesz > 0 {
-            (segment.p_vaddr + segment.p_filesz).div_ceil(page_size.byte_len_u64())
-                - segment.p_vaddr / page_size.byte_len_u64()
+            (segment.p_vaddr + segment.p_filesz).div_ceil(page_size)
+                - segment.p_vaddr / page_size
         } else {
             0
         };
 
-        let flags = ElfSegmentFlags::from(segment);
-        let configurable_flags = ConfigurableFlags {
-            pat_memory_type: PatMemoryType::WriteBack,
-            writable: flags.contains(ElfSegmentFlags::WRITABLE),
-            executable: flags.contains(ElfSegmentFlags::EXECUTABLE),
-        };
+        let elf_flags = ElfSegmentFlags::from(segment);
+        let flags = elf_flags_to_page_table_flags(elf_flags);
 
         // Allocate fresh frames and copy file data for pages that contain file content
         for i in 0..file_pages_len {
-            let page = start_page.offset(i).unwrap();
+            let page = start_page + i;
             let frame = physical_memory
-                .allocate_frame_with_type(page_size, MemoryType::UsedByUserMode)
+                .allocate_frame_with_type(MemoryType::UsedByUserMode)
                 .ok_or(SpawnError::OutOfMemory)?;
 
             // Zero the frame first, then copy the relevant bytes
-            let frame_virt = frame.offset_mapped().start_addr().as_mut_ptr::<u8>();
+            let frame_virt = frame.start_address().offset_mapped().as_mut_ptr::<u8>();
             let frame_virt = NonNull::new(frame_virt).unwrap();
-            unsafe { frame_virt.write_bytes(0, page_size.byte_len()) };
+            unsafe { frame_virt.write_bytes(0, page_size as usize) };
 
             // Calculate which bytes from the ELF to copy into this frame
-            let page_vaddr = page.start_addr().as_u64();
+            let page_vaddr = page.start_address().as_u64();
             let seg_file_start = segment.p_vaddr; // vaddr where file data starts
             let seg_file_end = segment.p_vaddr + segment.p_filesz;
 
             let copy_start_vaddr = page_vaddr.max(seg_file_start);
-            let copy_end_vaddr = (page_vaddr + page_size.byte_len_u64()).min(seg_file_end);
+            let copy_end_vaddr = (page_vaddr + page_size).min(seg_file_end);
 
             if copy_start_vaddr < copy_end_vaddr {
                 let offset_in_page = (copy_start_vaddr - page_vaddr) as usize;
@@ -349,8 +373,9 @@ pub fn create_user_task_from_elf_bytes(elf_bytes: &[u8], child_arg: u64) -> Resu
             }
 
             let mut frame_allocator = physical_memory.get_user_mode_frame_allocator();
-            unsafe { user_l4.map_page(page, frame, configurable_flags, &mut frame_allocator) }
-                .map_err(|_| SpawnError::OutOfMemory)?;
+            unsafe { mapper.map_to(page, frame, flags, &mut frame_allocator) }
+                .map_err(|_| SpawnError::OutOfMemory)?
+                .ignore();
         }
 
         let mut total_pages = file_pages_len;
@@ -358,28 +383,29 @@ pub fn create_user_task_from_elf_bytes(elf_bytes: &[u8], child_arg: u64) -> Resu
         // Handle BSS (p_memsz > p_filesz): allocate zeroed extra pages
         if segment.p_memsz > segment.p_filesz {
             let extra_pages_len = (segment.p_vaddr + segment.p_memsz)
-                .div_ceil(page_size.byte_len_u64())
-                - (segment.p_vaddr + segment.p_filesz).div_ceil(page_size.byte_len_u64());
-            let bss_start_page = start_page.offset(file_pages_len).unwrap();
+                .div_ceil(page_size)
+                - (segment.p_vaddr + segment.p_filesz).div_ceil(page_size);
+            let bss_start_page = start_page + file_pages_len;
             for i in 0..extra_pages_len {
-                let page = bss_start_page.offset(i).unwrap();
+                let page = bss_start_page + i;
                 let frame = physical_memory
-                    .allocate_frame_with_type(page_size, MemoryType::UsedByUserMode)
+                    .allocate_frame_with_type(MemoryType::UsedByUserMode)
                     .ok_or(SpawnError::OutOfMemory)?;
                 let frame_ptr =
-                    NonNull::new(frame.offset_mapped().start_addr().as_mut_ptr::<u8>()).unwrap();
-                unsafe { frame_ptr.write_bytes(0, page_size.byte_len()) };
+                    NonNull::new(frame.start_address().offset_mapped().as_mut_ptr::<u8>()).unwrap();
+                unsafe { frame_ptr.write_bytes(0, page_size as usize) };
                 let mut frame_allocator = physical_memory.get_user_mode_frame_allocator();
-                unsafe { user_l4.map_page(page, frame, configurable_flags, &mut frame_allocator) }
-                    .map_err(|_| SpawnError::OutOfMemory)?;
+                unsafe { mapper.map_to(page, frame, flags, &mut frame_allocator) }
+                    .map_err(|_| SpawnError::OutOfMemory)?
+                    .ignore();
             }
             total_pages += extra_pages_len;
         }
 
         // Track the mapped virtual address range
         if total_pages > 0 {
-            let seg_start = start_page.start_addr().as_u64();
-            let seg_end = seg_start + total_pages * page_size.byte_len_u64();
+            let seg_start = start_page.start_address().as_u64();
+            let seg_end = seg_start + total_pages * page_size;
             user_vaddr_set
                 .insert_merge_touching(ie(seg_start, seg_end))
                 .expect("ELF segment vaddr overlap");
@@ -393,26 +419,25 @@ pub fn create_user_task_from_elf_bytes(elf_bytes: &[u8], child_arg: u64) -> Resu
     let rsp = (LOWER_HALF_END + 1) - 0x1000;
     {
         let stack_size: u64 = 64 * 0x400;
-        let pages_len = stack_size.div_ceil(page_size.byte_len_u64());
-        let stack_start_vaddr = rsp - pages_len * page_size.byte_len_u64();
-        let start_page = Page::new(VirtAddr::new(stack_start_vaddr), page_size)
-            .map_err(|_| SpawnError::OutOfMemory)?;
+        let pages_len = stack_size.div_ceil(page_size);
+        let stack_start_vaddr = rsp - pages_len * page_size;
+        let start_page: Page<Size4KiB> = Page::containing_address(
+            VirtAddr::new(stack_start_vaddr),
+        );
+        let stack_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE
+            | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
         for i in 0..pages_len {
-            let page = start_page.offset(i).unwrap();
+            let page = start_page + i;
             let frame = physical_memory
-                .allocate_frame_with_type(page_size, MemoryType::UsedByUserMode)
+                .allocate_frame_with_type(MemoryType::UsedByUserMode)
                 .ok_or(SpawnError::OutOfMemory)?;
-            let flags = ConfigurableFlags {
-                pat_memory_type: PatMemoryType::WriteBack,
-                writable: true,
-                executable: false,
-            };
             let mut frame_allocator = physical_memory.get_user_mode_frame_allocator();
-            unsafe { user_l4.map_page(page, frame, flags, &mut frame_allocator) }
-                .map_err(|_| SpawnError::OutOfMemory)?;
+            unsafe { mapper.map_to(page, frame, stack_flags, &mut frame_allocator) }
+                .map_err(|_| SpawnError::OutOfMemory)?
+                .ignore();
         }
         user_vaddr_set
-            .insert_merge_touching(ie(stack_start_vaddr, stack_start_vaddr + pages_len * page_size.byte_len_u64()))
+            .insert_merge_touching(ie(stack_start_vaddr, stack_start_vaddr + pages_len * page_size))
             .expect("user stack vaddr overlap");
     }
 
@@ -423,7 +448,7 @@ pub fn create_user_task_from_elf_bytes(elf_bytes: &[u8], child_arg: u64) -> Resu
     let user_cs = gdt.user_code_selector().0;
     let user_ss = gdt.user_data_selector().0;
 
-    Ok(Task::new_user(entry_point.get(), rsp, user_l4, cr3, user_cs, user_ss, user_vaddr_set, child_arg))
+    Ok(Task::new_user(entry_point.get(), rsp, l4_frame, cr3, user_cs, user_ss, user_vaddr_set, child_arg))
 }
 
 bitflags! {

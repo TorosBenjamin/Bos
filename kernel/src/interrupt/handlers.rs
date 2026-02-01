@@ -23,7 +23,7 @@ pub extern "x86-interrupt" fn page_fault_handler(
         .lock()
         .iter()
         .find_map(|(page, stack_id)| {
-            if accessed_address.align_down(page.size().byte_len_u64()) == page.start_addr() {
+            if accessed_address.align_down(page.size()) == page.start_address() {
                 Some(*stack_id)
             } else {
                 None
@@ -115,7 +115,7 @@ extern "C" fn timer_interrupt_handler_inner(current_rsp: usize) -> usize {
     TIMER_INTERRUPT_COUNT.fetch_add(1, Ordering::Relaxed);
     let next_rsp = crate::task::local_scheduler::schedule_from_interrupt(cpu, current_rsp);
 
-    // Fix SS RPL: when returning to ring 3, SS must have RPL=3.
+    // When returning to ring 3, SS must have RPL=3.
     // The CPU clears SS to a NULL-like selector on privilege-level-changing
     // interrupts in 64-bit mode; the pushed value may lack RPL bits.
     {

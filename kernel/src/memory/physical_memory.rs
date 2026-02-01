@@ -1,10 +1,9 @@
 use crate::memory::global_allocator;
 use crate::memory::hhdm_offset::hhdm_offset;
-use ez_paging::{Frame, Owned4KibFrame, Page, PageSize};
 use limine::memory_map::EntryType;
 use limine::response::MemoryMapResponse;
 use nodit::{Interval, NoditMap};
-use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
+use x86_64::structures::paging::{FrameAllocator, Page, PageSize, PhysFrame, Size4KiB};
 use x86_64::{PhysAddr, VirtAddr};
 use crate::exceptions::FreeError;
 
@@ -88,13 +87,14 @@ impl PhysicalMemory {
 
     pub fn allocate_frame_with_type(
         &mut self,
-        page_size: PageSize,
         memory_type: MemoryType,
-    ) -> Option<Frame> {
-        let aligned_start = self.map.iter().find_map(|(interval, memory_type)| {
-            if let MemoryType::Usable = memory_type {
-                let aligned_start = (*interval.start()).next_multiple_of(page_size.byte_len_u64());
-                let required_end = aligned_start + page_size.byte_len_u64();
+    ) -> Option<PhysFrame<Size4KiB>> {
+        let size = Size4KiB::SIZE; // 4096
+
+        let aligned_start = self.map.iter().find_map(|(interval, m_type)| {
+            if let MemoryType::Usable = m_type {
+                let aligned_start = (*interval.start()).next_multiple_of(size);
+                let required_end = aligned_start + size;
 
                 if required_end <= *interval.end() {
                     Some(aligned_start)
@@ -105,23 +105,26 @@ impl PhysicalMemory {
                 None
             }
         })?;
-        let range = aligned_start..aligned_start + page_size.byte_len_u64();
+
+        let range = aligned_start..aligned_start + size;
         let _ = self.map.cut(&Interval::from(range.clone()));
         self.map
             .insert_merge_touching_if_values_equal(range.into(), memory_type)
             .unwrap();
-        Some(Frame::new(PhysAddr::new(aligned_start), page_size).unwrap())
+
+        Some(PhysFrame::containing_address(PhysAddr::new(aligned_start)))
     }
 
     pub fn free_frame(
         &mut self,
-        frame: Owned4KibFrame,
+        frame: PhysFrame<Size4KiB>,
         expected: MemoryType,
     ) -> Result<(), FreeError> {
         let start = frame.start_address().as_u64();
-        let size = frame.size();
+        let size = Size4KiB::SIZE;
         let end = start + size - 1;
 
+        // Check if the frame exists in our map and matches the type
         let (_, found_type) = self
             .map
             .iter()
@@ -137,10 +140,8 @@ impl PhysicalMemory {
             });
         }
 
-        // Cut out the frame's range
+        // Re-mark the range as Usable
         let _ = self.map.cut(&Interval::from(start..start + size));
-
-        // Insert it back as usable
         self.map
             .insert_merge_touching_if_values_equal(
                 Interval::from(start..start + size),
@@ -151,15 +152,12 @@ impl PhysicalMemory {
         Ok(())
     }
 
-    pub fn is_frame_allocated(&self, frame: &Owned4KibFrame) -> bool {
+    pub fn is_frame_allocated(&self, frame: PhysFrame<Size4KiB>) -> bool {
         let start = frame.start_address().as_u64();
-        let end = start + frame.size() - 1;
-        self
-            .map
-            .iter()
-            .any(|(i, _)| {
-                *i.start() <= start && *i.end() >= end
-            })
+        let end = start + Size4KiB::SIZE - 1;
+        self.map.iter().any(|(i, _)| {
+            *i.start() <= start && *i.end() >= end
+        })
     }
 
 
@@ -174,20 +172,16 @@ pub struct PhysicalMemoryFrameAllocator<'a> {
 }
 
 impl PhysicalMemoryFrameAllocator<'_> {
-    pub fn allocate_frame_4kib(&mut self) -> Option<Owned4KibFrame> {
-        let frame = self
-            .physical_memory
-            .allocate_frame_with_type(PageSize::_4KiB, self.memory_type)?;
-        let frame = PhysFrame::from_start_address(frame.start_addr()).unwrap();
-        // Safety: exclusively access the frame
-        let frame = unsafe { Owned4KibFrame::new(frame) };
-        Some(frame)
+    pub fn allocate_frame_4kib(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        self.physical_memory
+            .allocate_frame_with_type(self.memory_type)
     }
 }
 
+// The trait implementation is now a direct passthrough
 unsafe impl FrameAllocator<Size4KiB> for PhysicalMemoryFrameAllocator<'_> {
-    fn allocate_frame(&mut self) -> Option<PhysFrame> {
-        Some(self.allocate_frame_4kib()?.into())
+    fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        self.allocate_frame_4kib()
     }
 }
 
@@ -200,11 +194,11 @@ impl OffsetMappedPhysAddr for PhysAddr {
     }
 }
 pub trait OffsetMappedPhysFrame {
-    fn offset_mapped(self) -> Page;
+    fn offset_mapped(self) -> Page<Size4KiB>;
 }
 
-impl OffsetMappedPhysFrame for Frame {
-    fn offset_mapped(self) -> Page {
-        ez_paging::Page::new(self.start_addr().offset_mapped(), self.size()).unwrap()
+impl OffsetMappedPhysFrame for PhysFrame<Size4KiB> {
+    fn offset_mapped(self) -> Page<Size4KiB> {
+        Page::containing_address(self.start_address().offset_mapped())
     }
 }

@@ -1,12 +1,12 @@
 use crate::memory::guarded_stack::{GuardedStack, StackId, StackType, NORMAL_STACK_SIZE};
 use atomic_enum::atomic_enum;
 use core::sync::atomic::{AtomicU64, Ordering};
-use ez_paging::ManagedL4PageTable;
 use nodit::{Interval, NoditSet};
 use spin::mutex::Mutex;
 use crate::memory::cpu_local_data::get_local;
 use x86_64::instructions::segmentation::{CS, SS, Segment};
 use x86_64::registers::control::Cr3;
+use x86_64::structures::paging::PhysFrame;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskId(u64);
@@ -83,7 +83,7 @@ pub struct TaskInner {
     pub kernel_stack: GuardedStack,
     pub kernel_stack_top: u64,
     /// Owns the user-mode page table (keeps it alive). None for kernel tasks.
-    pub user_page_table: Option<ManagedL4PageTable>,
+    pub user_page_table: Option<PhysFrame>,
     /// Tracks user-space virtual address allocations (ELF segments, stack, mmap).
     /// Empty for kernel tasks.
     pub user_vaddr_set: NoditSet<u64, Interval<u64>>,
@@ -164,7 +164,7 @@ impl Task {
     pub fn new_user(
         entry_rip: u64,
         user_rsp: u64,
-        page_table: ManagedL4PageTable,
+        page_table: PhysFrame,
         cr3: u64,
         user_cs: u16,
         user_ss: u16,

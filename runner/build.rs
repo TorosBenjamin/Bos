@@ -55,6 +55,25 @@ fn main() {
     let display_server_executable_file = env::var("CARGO_BIN_FILE_DISPLAY_SERVER").unwrap();
     ensure_symlink(display_server_executable_file, iso_dir.join("display_server")).unwrap();
 
+    // User Land binaries - check all env vars to find the right names
+    for (key, value) in env::vars() {
+        if key.starts_with("CARGO_BIN_FILE") && key.contains("USER_LAND") {
+            eprintln!("Found user_land env var: {} = {}", key, value);
+        }
+    }
+
+    // User Land: Bouncing Cube 1
+    let bouncing_cube_1_executable_file = env::var("CARGO_BIN_FILE_USER_LAND_BOUNCING_CUBE_1")
+        .or_else(|_| env::var("CARGO_BIN_FILE_USER_LAND_bouncing_cube_1"))
+        .expect("bouncing_cube_1 binary not found");
+    ensure_symlink(bouncing_cube_1_executable_file, iso_dir.join("bouncing_cube_1")).unwrap();
+
+    // User Land: Bouncing Cube 2
+    let bouncing_cube_2_executable_file = env::var("CARGO_BIN_FILE_USER_LAND_BOUNCING_CUBE_2")
+        .or_else(|_| env::var("CARGO_BIN_FILE_USER_LAND_bouncing_cube_2"))
+        .expect("bouncing_cube_2 binary not found");
+    ensure_symlink(bouncing_cube_2_executable_file, iso_dir.join("bouncing_cube_2")).unwrap();
+
     // Copy files from the Limine packaeg into `boot/limine`
     let out_limine_dir = boot_dir.join("limine");
     create_dir_all(&out_limine_dir).unwrap();

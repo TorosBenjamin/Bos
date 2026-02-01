@@ -1,17 +1,13 @@
 use crate::memory::hhdm_offset::hhdm_offset;
-use crate::memory::physical_memory::{OffsetMappedPhysAddr, OffsetMappedPhysFrame, PhysicalMemory};
+use crate::memory::physical_memory::{PhysicalMemory};
 use crate::memory::vaddr_allocator::VirtualMemoryAllocator;
-use core::ops::Deref;
-use core::ptr::NonNull;
-use ez_paging::{ConfigurableFlags, Frame, ManagedPat, PagingConfig, max_page_size, ManagedL4PageTable};
 use limine::memory_map::EntryType;
 use limine::response::MemoryMapResponse;
 use nodit::NoditSet;
 use nodit::interval::iu;
-use x86_64::PhysAddr;
+use x86_64::{PhysAddr, VirtAddr};
 use x86_64::registers::control::{Cr3, Cr3Flags};
-use x86_64::registers::model_specific::PatMemoryType;
-use x86_64::structures::paging::{PageTable, PhysFrame};
+use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, Translate};
 
 /// Creates new page tables
 pub fn create_page_tables(
@@ -20,129 +16,101 @@ pub fn create_page_tables(
 ) -> (PhysFrame, Cr3Flags, VirtualMemoryAllocator) {
     let hhdm_offset = hhdm_offset();
     let mut frame_allocator = physical_memory.get_kernel_frame_allocator();
-    let mut l4 = PagingConfig::new(
-        // Safety: we don't touch the PAT
-        unsafe { ManagedPat::new() },
-        hhdm_offset.into(),
-    )
-    .new_kernel(frame_allocator.allocate_frame_4kib().unwrap());
 
-    // Offset map everything that is currently offset mapped
-    let page_size = max_page_size();
-    let mut last_mapped_address = None::<PhysAddr>;
+    // Allocate and initialize the new L4 Frame
+    let l4_frame: PhysFrame<Size4KiB> = frame_allocator.allocate_frame_4kib().expect("No frames for L4");
+    let l4_virt = VirtAddr::new(hhdm_offset.as_u64() + l4_frame.start_address().as_u64());
+
+    // Zero out the new page table
+    unsafe {
+        let ptr = l4_virt.as_mut_ptr::<PageTable>();
+        ptr.write(PageTable::new());
+    }
+
+    let mut mapper = unsafe {
+        OffsetPageTable::new(&mut *l4_virt.as_mut_ptr::<PageTable>(), VirtAddr::new(hhdm_offset.as_u64()))
+    };
+
+    // Map the physical memory regions (HHDM mapping)
     for entry in memory_map.entries() {
-        if [
-            EntryType::USABLE,
-            EntryType::BOOTLOADER_RECLAIMABLE,
-            EntryType::EXECUTABLE_AND_MODULES,
-            EntryType::FRAMEBUFFER,
-        ]
-        .contains(&entry.entry_type)
-        {
-            let range_to_map = {
-                let start = PhysAddr::new(entry.base);
-                let end = start + entry.length;
-                match last_mapped_address {
-                    Some(last_mapped_address) => {
-                        if start > last_mapped_address {
-                            Some(start..end)
-                        } else if end > last_mapped_address {
-                            Some(last_mapped_address + 1..end)
-                        } else {
-                            None
-                        }
-                    }
-                    None => Some(start..end),
-                }
-            };
-            if let Some(range_to_map) = range_to_map {
-                let first_frame = Frame::new(
-                    range_to_map.start.align_down(page_size.byte_len_u64()),
-                    page_size,
-                )
-                .unwrap();
+        if matches!(entry.entry_type,
+            EntryType::USABLE |
+            EntryType::BOOTLOADER_RECLAIMABLE |
+            EntryType::EXECUTABLE_AND_MODULES |
+            EntryType::FRAMEBUFFER
+        ) {
+            let start = entry.base;
+            let end = entry.base + entry.length;
 
-                let pages_len = range_to_map.end.as_u64().div_ceil(page_size.byte_len_u64())
-                    - range_to_map.start.as_u64() / page_size.byte_len_u64();
+            // Map in 4KiB chunks (you can optimize to 2MiB later)
+            for phys_addr in (start..end).step_by(4096) {
+                let phys = PhysAddr::new(phys_addr);
+                let virt = VirtAddr::new(hhdm_offset.as_u64() + phys_addr);
+                let frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(phys);
+                let page: Page<Size4KiB> = Page::containing_address(virt);
 
-                for i in 0..pages_len {
-                    let frame = first_frame.offset(i).unwrap();
-                    let page = frame.offset_mapped();
-                    let flags = ConfigurableFlags {
-                        writable: true,
-                        executable: false,
-                        pat_memory_type: PatMemoryType::WriteBack,
-                    };
-                    unsafe { l4.map_page(page, frame, flags, &mut frame_allocator) }.unwrap();
+                let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+
+                unsafe {
+                    mapper.map_to(page, frame, flags, &mut frame_allocator)
+                        .expect("Failed to map HHDM")
+                        .flush();
                 }
-                last_mapped_address = Some(range_to_map.end.align_up(page_size.byte_len_u64()) - 1);
             }
         }
     }
 
-    // Map the kernel to the top 2 GiB of virtual memory
-    // Reuse Limine's mappings for the top 512 GiB
+    // 4. Clone the Kernel/Limine mappings (Index 511)
     let (current_l4_frame, cr3_flags) = Cr3::read();
-    let current_l4_page_table = {
-        let ptr = NonNull::new(
-            current_l4_frame
-                .start_address()
-                .offset_mapped()
-                .as_mut_ptr::<PageTable>(),
-        )
-        .unwrap();
-        // Safety: we are just going to reference it immutably, and nothing is referencing it mutably
-        unsafe { ptr.as_ref() }
-    };
-    let new_l4_page_table = {
-        let mut ptr = l4.page_table();
-        // Safety: we are just going to copy the last entry, and not modify that region's mappings
-        unsafe { ptr.as_mut() }
-    };
-    new_l4_page_table[511].clone_from(&current_l4_page_table[511]);
+    let current_l4_virt = VirtAddr::new(hhdm_offset.as_u64() + current_l4_frame.start_address().as_u64());
+
+    unsafe {
+        let current_table = &*current_l4_virt.as_ptr::<PageTable>();
+        let new_table = &mut *l4_virt.as_mut_ptr::<PageTable>();
+        new_table[511] = current_table[511].clone();
+    }
 
     (
-        *l4.frame().deref(),
+        l4_frame,
         cr3_flags,
         VirtualMemoryAllocator {
             set: {
-                // Keep track of used virtual memory
                 let mut set = NoditSet::default();
-                // Add all the offset mapped regions (already used 1 gib)
                 for entry in memory_map.entries() {
-                    if [
-                        EntryType::USABLE,
-                        EntryType::BOOTLOADER_RECLAIMABLE,
-                        EntryType::EXECUTABLE_AND_MODULES,
-                        EntryType::FRAMEBUFFER,
-                    ]
-                    .contains(&entry.entry_type)
-                    {
-                        let start = u64::from(hhdm_offset)
-                            + entry.base / page_size.byte_len_u64() * page_size.byte_len_u64();
-                        let end = u64::from(hhdm_offset)
-                            + (entry.base + (entry.length - 1)) / page_size.byte_len_u64()
-                                * page_size.byte_len_u64()
-                            + (page_size.byte_len_u64() - 1);
+                    if matches!(entry.entry_type,
+                        EntryType::USABLE |
+                        EntryType::BOOTLOADER_RECLAIMABLE |
+                        EntryType::EXECUTABLE_AND_MODULES |
+                        EntryType::FRAMEBUFFER
+                    ) {
+                        let start = hhdm_offset.as_u64() + (entry.base / 4096) * 4096;
+                        let end = hhdm_offset.as_u64() + ((entry.base + entry.length - 1) / 4096) * 4096 + 4095;
                         set.insert_merge_touching_or_overlapping((start..=end).into());
                     }
                 }
-                // Let's add the top 512 GiB
                 set.insert_merge_touching(iu(0xFFFFFF8000000000)).unwrap();
                 set
             },
-            l4,
+            l4_phys_frame: l4_frame,
         },
     )
 }
 
 pub fn get_kernel_vaddr_from_user_vaddr(
-    user_l4_page_table: &mut ez_paging::ManagedL4PageTable,
-    user_vaddr: x86_64::VirtAddr,
-) -> Option<x86_64::VirtAddr> {
-    let hhdm_offset = hhdm_offset();
-    let (phys_frame, _) = user_l4_page_table.frame().translate_page( // Corrected line
-                                                                                   ez_paging::Page::new(user_vaddr, ez_paging::PageSize::_4KiB).unwrap(),
-    )?;
-    Some(phys_frame.start_address().offset_mapped())
+    user_l4_phys_frame: PhysFrame,
+    user_vaddr: VirtAddr,
+) -> Option<VirtAddr> {
+    let offset = VirtAddr::new(hhdm_offset().as_u64());
+
+    // Recreate a mapper for the user's page table
+    let l4_virt = offset + user_l4_phys_frame.start_address().as_u64();
+    let mapper = unsafe {
+        OffsetPageTable::new(&mut *l4_virt.as_mut_ptr::<PageTable>(), offset)
+    };
+
+    // Use the translate_addr method from the Translate trait
+    let phys_addr = mapper.translate_addr(user_vaddr)?;
+
+    // Return the HHDM version of that physical address
+    Some(offset + phys_addr.as_u64())
 }

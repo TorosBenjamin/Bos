@@ -3,17 +3,15 @@ use crate::memory::physical_memory::{KernelMemoryUsageType, MemoryType};
 use alloc::collections::BTreeMap;
 use core::arch::naked_asm;
 use core::num::NonZero;
-use ez_paging::{ConfigurableFlags, ManagedL4PageTable, Page, PageSize};
 use x86_64::VirtAddr;
 use x86_64::registers::model_specific::PatMemoryType;
+use x86_64::structures::paging::{Mapper, Page, PageSize, PageTableFlags, Size4KiB};
 
 pub const NORMAL_STACK_SIZE: u64 = 256 * 0x400;
 pub const EXCEPTION_HANDLER_STACK_SIZE: u64 = 64 * 0x400;
 
-pub const STACK_PAGE_SIZE: PageSize = PageSize::_4KiB;
-
 // Keep track of stack guard pages for debugging
-pub static STACK_GUARD_PAGES: spin::Mutex<BTreeMap<Page, StackInfo>> =
+pub static STACK_GUARD_PAGES: spin::Mutex<BTreeMap<Page<Size4KiB>, StackInfo>> =
     spin::Mutex::new(BTreeMap::new());
 
 #[derive(Debug, Clone, Copy)]
@@ -49,50 +47,47 @@ impl GuardedStack {
         let mut physical_memory = memory.physical_memory.lock();
         let mut virtual_memory = memory.virtual_memory.lock();
 
-        let n_mapped_pages = size.div_ceil(STACK_PAGE_SIZE.byte_len_u64());
+        let page_size = Size4KiB::SIZE; // 4096
+        let n_mapped_pages = size.div_ceil(page_size);
         let n_virtual_pages = n_mapped_pages + 1; // +1 for the guard page
 
         // allocate contiguous virtual pages including the guard page
         let allocated_pages = virtual_memory
             .allocate_kernel_contiguous_pages(
-                STACK_PAGE_SIZE,
-                NonZero::new(n_virtual_pages).unwrap(),
+                NonZero::new(n_virtual_pages).expect("Stack size cannot be 0"),
             )
-            .unwrap();
+            .expect("Failed to allocate virtual memory for stack");
 
-        // create the guard page
-        let guard_page = Page::new(allocated_pages.start_addr(), STACK_PAGE_SIZE).unwrap();
+        // Identify the guard page (the first page in the allocated range)
+        let guard_page = allocated_pages;
         STACK_GUARD_PAGES
             .lock()
             .insert(guard_page, StackInfo { id, size });
 
-        // start of the real stack memory
-        let start_page = guard_page.offset(1).unwrap();
+        // Identify the start of real stack memory (immediately after guard page)
+        let start_page = guard_page + 1;
 
-        // map the real stack pages
+        // Get the mapper and map the real stack pages
+        let mut mapper = unsafe { virtual_memory.mapper() };
+        let mut frame_allocator = physical_memory.get_kernel_frame_allocator();
+
         for i in 0..n_mapped_pages {
-            let page = start_page.offset(i).unwrap();
-            let frame = physical_memory
-                .allocate_frame_with_type(
-                    STACK_PAGE_SIZE,
-                    MemoryType::UsedByKernel(KernelMemoryUsageType::Stack),
-                )
-                .unwrap();
-            let flags = ConfigurableFlags {
-                writable: true,
-                executable: false,
-                pat_memory_type: PatMemoryType::WriteBack,
-            };
-            let mut frame_allocator = physical_memory.get_kernel_frame_allocator();
+            let page = start_page + i;
+            let frame = frame_allocator
+                .allocate_frame_4kib()
+                .expect("Failed to allocate physical frame for stack");
+
+            let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+
             unsafe {
-                virtual_memory
-                    .l4_mut()
-                    .map_page(page, frame, flags, &mut frame_allocator)
+                mapper.map_to(page, frame, flags, &mut frame_allocator)
+                    .expect("Failed to map stack page")
+                    .flush(); // Ensure TLB is updated
             }
-            .unwrap();
         }
         Self {
-            top: (start_page.start_addr() + n_mapped_pages * STACK_PAGE_SIZE.byte_len_u64()),
+            // Stack grows DOWN, so top is the end of the last mapped page
+            top: start_page.start_address() + (n_mapped_pages * page_size),
         }
     }
 
@@ -100,7 +95,7 @@ impl GuardedStack {
         Self::allocate_stack(size, id)
     }
 
-    pub fn new_user(size: u64, id: StackId, _address_space: &mut ManagedL4PageTable) -> Self {
+    pub fn new_user(size: u64, id: StackId) -> Self {
         Self::allocate_stack(size, id)
     }
 

@@ -9,6 +9,7 @@ kernel = { path = "../kernel", artifact = "bin", target = "x86_64-unknown-none" 
 tests = { path = "../tests", artifact = "bin", target = "x86_64-unknown-none" }
 init_task = {path = "../init_task", artifact = "bin", target = "x86_64-unknown-none"}
 display_server = {path = "../display_server", artifact = "bin", target = "x86_64-unknown-none"}
+user_land = {path = "../user_land", artifact = "bin", target = "x86_64-unknown-none"}
 
 [features]
 kernel_test = []

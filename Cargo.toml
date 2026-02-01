@@ -1,5 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["runner", "kernel", "tests", "init_task", "kernel_api_types", "ulib", "display_server"]
+members = ["runner", "kernel", "tests", "init_task", "kernel_api_types", "ulib", "display_server", "user_land"]
 default-members = ["runner"]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
 
