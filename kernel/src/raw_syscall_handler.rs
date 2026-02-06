@@ -1,6 +1,11 @@
-use crate::memory::cpu_local_data::{CpuLocalData, get_local};
+use crate::memory::cpu_local_data::{CpuLocalData, IN_SYSCALL_HANDLER_OFFSET, CURRENT_CONTEXT_PTR_OFFSET, get_local};
 use crate::memory::guarded_stack::{GuardedStack, StackId, StackType};
 use crate::syscall_handlers::{sys_channel_close, sys_channel_create, sys_channel_recv, sys_channel_send, sys_exit, sys_get_bounding_box, sys_get_display_info, sys_get_module, sys_mmap, sys_munmap, sys_read_key, sys_spawn, sys_transfer_display, sys_yield};
+use crate::task::task::{
+    CTX_RAX, CTX_RBP, CTX_RBX, CTX_RCX, CTX_RDI, CTX_RDX, CTX_RSI,
+    CTX_R8, CTX_R9, CTX_R10, CTX_R11, CTX_R12, CTX_R13, CTX_R14, CTX_R15,
+    CTX_RIP, CTX_CS, CTX_RFLAGS, CTX_RSP, CTX_SS,
+};
 use core::arch::{asm, naked_asm};
 use core::mem::offset_of;
 use core::sync::atomic::Ordering;
@@ -15,12 +20,60 @@ unsafe extern "sysv64" fn raw_syscall_handler() -> ! {
     naked_asm!(
         "
             // Save the user mode stack pointer
-            mov gs:[{syscall_handler_scratch_offset}], rsp
+            mov gs:[{scratch_offset}], rsp
             // Switch to the kernel stack pointer
-            mov rsp, gs:[{syscall_handler_stack_pointer_offset}]
+            mov rsp, gs:[{stack_ptr_offset}]
 
+            // --- Save user state to CpuContext ---
+            // Push rax (syscall number) to free it as scratch
+            push rax
+            // Load CpuContext pointer
+            mov rax, gs:[{ctx_ptr_offset}]
+            test rax, rax
+            jz 2f
+
+            // Save all 15 GPRs to CpuContext
+            mov [rax + {CTX_RBX}], rbx
+            mov [rax + {CTX_RCX}], rcx        // rcx = user RIP (SYSCALL sets it)
+            mov [rax + {CTX_RDX}], rdx
+            mov [rax + {CTX_RSI}], rsi
+            mov [rax + {CTX_RDI}], rdi
+            mov [rax + {CTX_RBP}], rbp
+            mov [rax + {CTX_R8}],  r8
+            mov [rax + {CTX_R9}],  r9
+            mov [rax + {CTX_R10}], r10
+            mov [rax + {CTX_R11}], r11        // r11 = user RFLAGS (SYSCALL sets it)
+            mov [rax + {CTX_R12}], r12
+            mov [rax + {CTX_R13}], r13
+            mov [rax + {CTX_R14}], r14
+            mov [rax + {CTX_R15}], r15
+            // Save original rax (syscall number) from stack
+            mov rbx, [rsp]
+            mov [rax + {CTX_RAX}], rbx
+
+            // Build iretq frame in CpuContext
+            mov [rax + {CTX_RIP}], rcx        // user RIP
+            mov rbx, 0x23
+            mov [rax + {CTX_CS}], rbx         // user CS
+            mov [rax + {CTX_RFLAGS}], r11     // user RFLAGS
+            mov rbx, gs:[{scratch_offset}]    // user RSP (saved earlier)
+            mov [rax + {CTX_RSP}], rbx
+            mov rbx, 0x1B
+            mov [rax + {CTX_SS}], rbx         // user SS
+
+            // Set in_syscall flag
+            mov byte ptr gs:[{in_syscall_offset}], 1
+
+            // Restore rbx — we used it as scratch above, but rbx is callee-saved
+            // in the SysV ABI. User code expects it preserved across syscall.
+            mov rbx, [rax + {CTX_RBX}]
+
+        2:
+            pop rax                           // restore rax (syscall number)
+
+            // --- Original push/call sequence ---
             // input[9]
-            push gs:[{syscall_handler_scratch_offset}]
+            push gs:[{scratch_offset}]
 
             // input[8]
             // Save `rcx` before modifying it
@@ -37,9 +90,31 @@ unsafe extern "sysv64" fn raw_syscall_handler() -> ! {
 
             call {syscall_handler}
         ",
-        syscall_handler_scratch_offset = const offset_of!(CpuLocalData, syscall_handler_scratch),
-        syscall_handler_stack_pointer_offset = const offset_of!(CpuLocalData, syscall_handler_stack_pointer),
+        scratch_offset = const offset_of!(CpuLocalData, syscall_handler_scratch),
+        stack_ptr_offset = const offset_of!(CpuLocalData, syscall_handler_stack_pointer),
+        ctx_ptr_offset = const CURRENT_CONTEXT_PTR_OFFSET,
+        in_syscall_offset = const IN_SYSCALL_HANDLER_OFFSET,
         syscall_handler = sym syscall_handler,
+        CTX_RBX = const CTX_RBX,
+        CTX_RCX = const CTX_RCX,
+        CTX_RDX = const CTX_RDX,
+        CTX_RSI = const CTX_RSI,
+        CTX_RDI = const CTX_RDI,
+        CTX_RBP = const CTX_RBP,
+        CTX_R8 = const CTX_R8,
+        CTX_R9 = const CTX_R9,
+        CTX_R10 = const CTX_R10,
+        CTX_R11 = const CTX_R11,
+        CTX_R12 = const CTX_R12,
+        CTX_R13 = const CTX_R13,
+        CTX_R14 = const CTX_R14,
+        CTX_R15 = const CTX_R15,
+        CTX_RAX = const CTX_RAX,
+        CTX_RIP = const CTX_RIP,
+        CTX_CS = const CTX_CS,
+        CTX_RFLAGS = const CTX_RFLAGS,
+        CTX_RSP = const CTX_RSP,
+        CTX_SS = const CTX_SS,
     )
 }
 
@@ -62,6 +137,9 @@ unsafe extern "sysv64" fn syscall_handler(
 
     let inputs = [input1, input2, input3, input4, input5, input6];
     let ret = unsafe { dispatch_syscall(input0, &inputs) };
+
+    // Clear in_syscall flag before returning to user mode
+    get_local().in_syscall_handler.store(0, Ordering::Relaxed);
 
     // Output
     unsafe {

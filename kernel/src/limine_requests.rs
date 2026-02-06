@@ -9,6 +9,8 @@ use limine::request::{
 
 pub const INIT_TASK_PATH: &CStr = c"/init_task";
 pub const DISPLAY_SERVER_PATH: &CStr = c"/display_server";
+pub const BOUNCING_CUBE_1_PATH: &CStr = c"/bouncing_cube_1";
+pub const BOUNCING_CUBE_2_PATH: &CStr = c"/bouncing_cube_2";
 
 #[used]
 #[unsafe(link_section = ".requests")]
@@ -40,6 +42,8 @@ pub static MODULE_REQUEST: ModuleRequest =
     ModuleRequest::new().with_internal_modules(&[
         &InternalModule::new().with_path(INIT_TASK_PATH),
         &InternalModule::new().with_path(DISPLAY_SERVER_PATH),
+        &InternalModule::new().with_path(BOUNCING_CUBE_1_PATH),
+        &InternalModule::new().with_path(BOUNCING_CUBE_2_PATH),
     ]);
 
 #[used]

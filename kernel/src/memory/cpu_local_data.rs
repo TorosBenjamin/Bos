@@ -1,11 +1,13 @@
 use crate::gdt::Gdt;
 use crate::limine_requests::MP_REQUEST;
 use crate::task::local_scheduler::RunQueue;
+use crate::task::task::CpuContext;
 use alloc::boxed::Box;
 use core::cell::UnsafeCell;
 use core::default::Default;
+use core::mem::offset_of;
 use core::ptr::NonNull;
-use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicU8};
 use force_send_sync::SendSync;
 use limine::mp::Cpu;
 use limine::response::MpResponse;
@@ -29,7 +31,17 @@ pub struct CpuLocalData {
 
     pub syscall_handler_stack_pointer: AtomicU64,
     pub syscall_handler_scratch: AtomicU64,
+    /// Pointer to the current task's CpuContext (used by timer handler for save/restore)
+    pub current_context_ptr: AtomicPtr<CpuContext>,
+    /// Set to 1 while inside a syscall handler. When the timer fires with this flag set,
+    /// it skips saving registers (user state was already saved at syscall entry).
+    pub in_syscall_handler: AtomicU8,
 }
+
+/// Offset of current_context_ptr in CpuLocalData for assembly access
+pub const CURRENT_CONTEXT_PTR_OFFSET: usize = offset_of!(CpuLocalData, current_context_ptr);
+/// Offset of in_syscall_handler in CpuLocalData for assembly access
+pub const IN_SYSCALL_HANDLER_OFFSET: usize = offset_of!(CpuLocalData, in_syscall_handler);
 
 impl CpuLocalData {
     /// Update TSS.RSP0 so that interrupts from ring 3 use the correct kernel stack.
@@ -74,6 +86,8 @@ fn init_cpu(kernel_id: u32, local_apic_id: u32) {
             syscall_handler_scratch: Default::default(),
             syscall_handler_stack_pointer: Default::default(),
             run_queue: Once::new(),
+            current_context_ptr: AtomicPtr::new(core::ptr::null_mut()),
+            in_syscall_handler: AtomicU8::new(0),
         }),
     )
 }

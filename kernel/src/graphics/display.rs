@@ -107,6 +107,15 @@ impl Display {
             blue_mask_shift: fb.info.pixel.blue_mask_shift,
         }
     }
+
+    /// Get the framebuffer's physical address and total size in bytes.
+    /// Used by syscall to map the framebuffer into user space.
+    pub fn get_fb_phys_and_size(&self) -> (x86_64::PhysAddr, u64) {
+        let inner = self.inner.lock();
+        let fb = inner.fb.as_ref().expect("Display not initialized");
+        let size = fb.info.pitch * fb.info.height;
+        (fb.info.phys_addr, size)
+    }
 }
 
 impl Dimensions for DisplayDraw {

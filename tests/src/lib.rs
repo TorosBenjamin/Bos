@@ -138,7 +138,7 @@ pub fn tests() -> &'static [&'static dyn KernelTest] {
         // Display owner tests
         &display_owner::test_no_current_task_is_not_owner,
         &display_owner::test_no_owner_is_not_owner,
-        &display_owner::test_non_owner_present_display_rejected,
+        &display_owner::test_non_owner_get_bounding_box_rejected,
         &display_owner::test_transfer_display_not_owner,
         &display_owner::test_transfer_display_no_current_task,
         &display_owner::test_display_owner_atomic,

@@ -8,7 +8,7 @@ use crate::memory::page_tables::get_kernel_vaddr_from_user_vaddr;
 use crate::task::task::{Task, TaskId, TaskKind, TaskState};
 use core::sync::atomic::Ordering;
 use nodit::interval::ii;
-use kernel_api_types::graphics::{DisplayInfo, GraphicsResult, Rect};
+use kernel_api_types::graphics::{DisplayInfo, GraphicsResult, Rect, FRAMEBUFFER_USER_VADDR};
 use kernel_api_types::{MMAP_EXEC, MMAP_WRITE};
 use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageSize, PageTable, PageTableFlags, PhysFrame, Size4KiB};
 use x86_64::{PhysAddr, VirtAddr};
@@ -56,7 +56,7 @@ pub fn sys_exit() -> ! {
 ///
 /// The caller passes a pointer to a `KeyEvent` in `key_event_out_ptr`.
 /// If a key is available, it's written immediately and we return 0.
-/// If no key is available, we spin with `hlt` until the keyboard ISR delivers one.
+/// If no key is available, we spin-wait until the keyboard ISR delivers one.
 pub fn sys_read_key(key_event_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
     let out = key_event_out_ptr as *mut kernel_api_types::KeyEvent;
 
@@ -66,17 +66,23 @@ pub fn sys_read_key(key_event_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u
             unsafe { core::ptr::write(out, event) };
             return 0;
         }
-        // No key available — enable interrupts briefly and halt to wait for IRQ
-        x86_64::instructions::interrupts::enable();
-        x86_64::instructions::hlt();
-        x86_64::instructions::interrupts::disable();
+        // Spin-wait: we can't enable interrupts here because we're on
+        // the syscall handler stack, not the task's kernel stack.
+        core::hint::spin_loop();
     }
 }
 
 /// Syscall: yield the current timeslice.
 ///
 /// Enables interrupts and halts — the timer interrupt will immediately reschedule.
+/// When the timer preempts us here, it sees in_syscall=1 and uses the CpuContext
+/// that was saved at syscall entry. We set rax in CpuContext to the return value
+/// so the user task sees the correct result when it resumes via iretq.
 pub fn sys_yield(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    let ctx_ptr = get_local().current_context_ptr.load(Ordering::Relaxed);
+    if !ctx_ptr.is_null() {
+        unsafe { (*ctx_ptr).rax = 0; } // success return value
+    }
     x86_64::instructions::interrupts::enable();
     x86_64::instructions::hlt();
     x86_64::instructions::interrupts::disable();
@@ -279,10 +285,11 @@ pub fn sys_channel_send(endpoint_id: u64, msg_ptr: u64, msg_len: u64, _: u64, _:
         match crate::ipc::try_send(endpoint_id, data) {
             Ok(()) => return kernel_api_types::IPC_OK,
             Err(crate::ipc::IpcError::ChannelFull) => {
-                // Spin-yield: let other tasks run
-                x86_64::instructions::interrupts::enable();
-                x86_64::instructions::hlt();
-                x86_64::instructions::interrupts::disable();
+                // Spin-wait: we can't enable interrupts here because we're on
+                // the syscall handler stack, not the task's kernel stack.
+                // If a timer interrupt fires, the scheduler would save RSP pointing
+                // to this shared stack, corrupting state.
+                core::hint::spin_loop();
             }
             Err(e) => return ipc_error_to_code(e),
         }
@@ -309,7 +316,14 @@ pub fn sys_channel_recv(endpoint_id: u64, buf_ptr: u64, buf_cap: u64, bytes_read
                 return kernel_api_types::IPC_OK;
             }
             Err(crate::ipc::IpcError::WouldBlock) => {
-                // Spin-yield: let other tasks run
+                // We can safely enable interrupts here because the syscall entry
+                // saved the user's full register state to CpuContext and set
+                // in_syscall=1. The timer handler will skip re-saving and use
+                // the already-saved user state.
+                let ctx_ptr = get_local().current_context_ptr.load(Ordering::Relaxed);
+                if !ctx_ptr.is_null() {
+                    unsafe { (*ctx_ptr).rax = kernel_api_types::IPC_ERR_CHANNEL_FULL; }
+                }
                 x86_64::instructions::interrupts::enable();
                 x86_64::instructions::hlt();
                 x86_64::instructions::interrupts::disable();
@@ -346,82 +360,73 @@ fn ipc_error_to_code(e: crate::ipc::IpcError) -> u64 {
 ///
 /// Arguments: new_owner_task_id
 /// Returns: 0 on success, 1 if caller is not the current owner,
-///          2 if target task not found.
+///          2 if target task not found, 3 if mapping failed.
 pub fn sys_transfer_display(new_owner_id: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
-
     // 1. Permission Check
     if !crate::graphics::display::is_display_owner() {
         return 1;
     }
 
     // 2. Retrieve the target task
-    // We scope the lock so we don't hold the global task table while doing memory operations
     let target_task = {
         let table = TASK_TABLE.lock();
         match table.get(&TaskId::from_u64(new_owner_id)) {
             Some(task) => task.clone(),
-            None => return 2, // Target task not found
+            None => return 2,
         }
     };
 
-    let (fb_phys_addr, fb_size) = get_fb_phys_and_size();
-    let user_fb_virt = VirtAddr::new(0xFD00_0000_0000);
+    // 3. Get framebuffer physical address and size from Display
+    let (fb_phys_addr, fb_size) = DISPLAY.get_fb_phys_and_size();
+    let user_fb_virt = VirtAddr::new(FRAMEBUFFER_USER_VADDR);
 
-    // 3. Lock the task's internals to access its VirtualMemoryAllocator
+    // 4. Lock the task's internals
     let mut task_inner = target_task.inner.lock();
 
-    // Assuming your VirtualMemoryAllocator is stored in task_inner.memory or similar
-    // Adjust `.memory` to whatever field name you use for VirtualMemoryAllocator
-    let vma = &mut task_inner.memory;
-
-    // --- A. Mark Virtual Address as Used ---
-    // We must insert this range into the NoditSet so the allocator knows it's busy.
+    // Mark virtual address range as used in the task's vaddr set
     let page_count = fb_size.div_ceil(Size4KiB::SIZE);
     let virt_start = user_fb_virt.as_u64();
     let virt_end = virt_start + (page_count * Size4KiB::SIZE) - 1;
+    let _ = task_inner.user_vaddr_set.insert_merge_touching(ii(virt_start, virt_end));
 
-    // We expect this range to be free. If it's not, we might be overwriting,
-    // but for the display, we usually force it.
-    let _ = vma.set.insert_merge_touching(ii(virt_start, virt_end));
+    // 5. Setup the mapper using the target task's page table
+    let hhdm = hhdm_offset();
+    let user_l4_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(target_task.cr3));
+    let l4_virt_addr = VirtAddr::new(hhdm.as_u64() + user_l4_frame.start_address().as_u64());
+    let l4_table = unsafe { &mut *l4_virt_addr.as_mut_ptr::<PageTable>() };
+    let mut mapper = unsafe { OffsetPageTable::new(l4_table, VirtAddr::new(hhdm.as_u64())) };
 
-    // --- Prepare Mappers and Allocators ---
-    // We need the global physical memory allocator because map_to might need
-    // to create new Page Tables (L3, L2) to reach this address.
+    // 6. Get frame allocator for creating page table entries
     let memory_system = MEMORY.get().unwrap();
     let mut physical_memory = memory_system.physical_memory.lock();
     let mut frame_allocator = physical_memory.get_user_mode_frame_allocator();
 
-    // Get the mapper using the helper you wrote in VirtualMemoryAllocator
-    // Safety: We hold the lock on task_inner, so the page table won't change under us.
-    let mut mapper = unsafe { vma.mapper() };
-
     let flags = PageTableFlags::PRESENT
         | PageTableFlags::WRITABLE
         | PageTableFlags::USER_ACCESSIBLE
-        | PageTableFlags::WRITE_THROUGH; // Important for video!
+        | PageTableFlags::WRITE_THROUGH; // Important for video memory!
 
-    // --- C. Perform the Mapping ---
+    // 7. Map each framebuffer page into user space
+    log::info!("TransferDisplay: mapping {} pages starting at virt={:#x}, phys={:#x}",
+        page_count, user_fb_virt.as_u64(), fb_phys_addr.as_u64());
     for i in 0..page_count {
         let offset = i * Size4KiB::SIZE;
-
         let page = Page::<Size4KiB>::containing_address(user_fb_virt + offset);
         let frame = PhysFrame::<Size4KiB>::containing_address(fb_phys_addr + offset);
 
         unsafe {
-            // We use map_to because we are mapping specific existing hardware frames
-            // The &mut frame_allocator is ONLY used if a new PageTable struct needs to be created.
             if let Ok(mapping) = mapper.map_to(page, frame, flags, &mut frame_allocator) {
-                mapping.flush();
+                // Don't flush - we're mapping into target task's page table, not current CR3
+                mapping.ignore();
             } else {
-                // If mapping fails (e.g. OOM for page tables), we should probably handle it,
-                // but for a syscall, panicking or returning error is the option.
-                // ideally: return error code.
-                return 3;
+                log::error!("TransferDisplay: map_to failed at page {}", i);
+                return 3; // Mapping failed (e.g., OOM for page tables)
             }
         }
     }
+    log::info!("TransferDisplay: mapping complete");
 
-    // 4. Update Owner
+    // 8. Update display ownership
     DISPLAY_OWNER.store(new_owner_id, Ordering::SeqCst);
     0
 }

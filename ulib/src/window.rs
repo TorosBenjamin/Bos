@@ -69,8 +69,13 @@ impl Window {
         x: i32,
         y: i32,
     ) -> Option<Self> {
-        // Build create window message
-        let mut msg = [0u8; core::mem::size_of::<WindowMessageType>() + core::mem::size_of::<CreateWindowRequest>()];
+        // Create a channel to receive the response (needed before sending request)
+        let (our_send, our_recv) = crate::sys_channel_create(1);
+
+        // Build create window message: [type][CreateWindowRequest][reply_send_ep]
+        // The display_server expects all three in a single message.
+        const MSG_SIZE: usize = 1 + core::mem::size_of::<CreateWindowRequest>() + 8;
+        let mut msg = [0u8; MSG_SIZE];
         msg[0] = WindowMessageType::CreateWindow as u8;
 
         let req = CreateWindowRequest { width, height, x, y };
@@ -82,27 +87,29 @@ impl Window {
             );
         }
 
-        // Send create window request
+        // Append reply endpoint
+        let ep_offset = 1 + core::mem::size_of::<CreateWindowRequest>();
+        msg[ep_offset..ep_offset + 8].copy_from_slice(&our_send.to_le_bytes());
+
+        // Send combined create window request
         let result = crate::sys_channel_send(display_server_send_ep, &msg);
-        if result != kernel_api_types::IPC_OK {
-            return None;
-        }
-
-        // Create a channel to receive the response
-        let (our_send, our_recv) = crate::sys_channel_create(1);
-
-        // Send our receive endpoint so server can reply
-        let ep_bytes = our_send.to_le_bytes();
-        let result = crate::sys_channel_send(display_server_send_ep, &ep_bytes);
         if result != kernel_api_types::IPC_OK {
             crate::sys_channel_close(our_send);
             crate::sys_channel_close(our_recv);
             return None;
         }
 
-        // Wait for response
+        // Wait for response (retry until display_server replies)
         let mut response_buf = [0u8; core::mem::size_of::<CreateWindowResponse>()];
-        let (recv_result, bytes_read) = crate::sys_channel_recv(our_recv, &mut response_buf);
+        let (recv_result, bytes_read) = loop {
+            let (res, len) = crate::sys_channel_recv(our_recv, &mut response_buf);
+            if res == kernel_api_types::IPC_ERR_CHANNEL_FULL {
+                // Channel empty — display_server hasn't replied yet, yield and retry
+                crate::sys_yield();
+                continue;
+            }
+            break (res, len);
+        };
 
         crate::sys_channel_close(our_send);
         crate::sys_channel_close(our_recv);

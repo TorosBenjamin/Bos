@@ -1,5 +1,9 @@
 pub type Rgb888Raw = u32; // 0x00RRGGBB
 
+/// Virtual address where the framebuffer is mapped after TransferDisplay syscall.
+/// This is a canonical lower-half address (user space).
+pub const FRAMEBUFFER_USER_VADDR: u64 = 0x7F00_0000_0000;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct Rect {

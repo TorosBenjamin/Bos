@@ -1,6 +1,6 @@
 use crate::memory::cpu_local_data::{CpuLocalData, get_local};
 use crate::memory::MEMORY;
-use crate::task::task::{Task, TaskState};
+use crate::task::task::{CpuContext, Task, TaskState};
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
@@ -34,21 +34,34 @@ pub fn add(cpu: &CpuLocalData, task: Arc<Task>) {
     });
 }
 
-/// Interrupt-safe scheduling: returns the next task stack pointer to load.
+/// Interrupt-safe scheduling: returns pointer to next task's CpuContext.
+///
+/// The caller (timer interrupt handler) has already saved the current task's
+/// context to its CpuContext struct. This function:
+/// 1. Re-queues the current task if it's still runnable
+/// 2. Picks the next task from the ready queue
+/// 3. Switches CR3 and TSS.RSP0 as needed
+/// 4. Returns pointer to next task's context (for the timer handler to restore)
 ///
 /// This function only locks the per-CPU run queue — it never touches TASK_TABLE,
 /// so it cannot deadlock with code that holds TASK_TABLE when interrupted.
-pub fn schedule_from_interrupt(cpu: &CpuLocalData, current_rsp: usize) -> usize {
+pub fn schedule_from_interrupt(cpu: &CpuLocalData) -> *mut CpuContext {
     let mut rq = cpu.run_queue.get().unwrap().lock();
+
+    // Get pointer to current context (saved by timer handler)
+    let current_ctx_ptr = cpu.current_context_ptr.load(Ordering::Relaxed);
 
     let next_task = match rq.ready.pop_front() {
         Some(task) => task,
-        None => return current_rsp, // nothing to switch to
+        None => {
+            // No task to switch to - return current context
+            return current_ctx_ptr;
+        }
     };
 
-    // Save the current task's RSP and push it back to the ready queue
+    // Re-queue the current task if it's still runnable
     if let Some(prev_task) = rq.current_task.take() {
-        prev_task.inner.lock().rsp = current_rsp;
+        // Context is already saved by timer handler - no need to save RSP
 
         // If the previous task is a zombie, don't re-queue it — just drop the Arc.
         if prev_task.state.load(Ordering::Relaxed) != TaskState::Zombie {
@@ -58,10 +71,21 @@ pub fn schedule_from_interrupt(cpu: &CpuLocalData, current_rsp: usize) -> usize 
     }
 
     next_task.state.store(TaskState::Running, Ordering::Relaxed);
-    let next_inner = next_task.inner.lock();
-    let next_rsp = next_inner.rsp;
+    let mut next_inner = next_task.inner.lock();
     let next_kernel_stack_top = next_inner.kernel_stack_top;
+
+    // Get pointer to next task's context
+    let next_ctx_ptr = &mut next_inner.context as *mut CpuContext;
+
     drop(next_inner);
+
+    // Debug: check if kernel stack is in framebuffer physical range
+    let hhdm = crate::memory::hhdm_offset::hhdm_offset().as_u64();
+    let stack_phys = next_kernel_stack_top - hhdm;
+    if stack_phys >= 0x80000000 && stack_phys < 0x80400000 {
+        panic!("KERNEL STACK OVERLAPS FRAMEBUFFER! stack_top={:#x} phys={:#x}",
+            next_kernel_stack_top, stack_phys);
+    }
 
     // Switch address space if needed
     let next_cr3 = next_task.cr3;
@@ -76,7 +100,23 @@ pub fn schedule_from_interrupt(cpu: &CpuLocalData, current_rsp: usize) -> usize 
     // Update TSS.RSP0 so interrupts from ring 3 land on this task's kernel stack
     unsafe { cpu.set_tss_rsp0(next_kernel_stack_top) };
 
+    // Verify the context is valid
+    {
+        let ctx = unsafe { &*next_ctx_ptr };
+        // CS should be 0x08 (kernel) or 0x23 (user)
+        if ctx.cs != 0x08 && ctx.cs != 0x23 {
+            panic!(
+                "SCHED: task {} has invalid context: rip={:#x} cs={:#x} fl={:#x} rsp={:#x} ss={:#x}",
+                next_task.id.to_u64(), ctx.rip, ctx.cs, ctx.rflags, ctx.rsp, ctx.ss
+            );
+        }
+    }
+
     rq.current_task = Some(next_task);
 
-    next_rsp
+    // Update per-CPU current context pointer (timer handler will also do this,
+    // but we need it updated for nested scenarios)
+    cpu.current_context_ptr.store(next_ctx_ptr, Ordering::Relaxed);
+
+    next_ctx_ptr
 }

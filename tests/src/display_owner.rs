@@ -2,7 +2,7 @@ use crate::TestResult;
 use alloc::format;
 use core::sync::atomic::Ordering;
 use kernel::graphics::display::{DISPLAY_OWNER, is_display_owner};
-use kernel::syscall_handlers::{sys_present_display, sys_transfer_display};
+use kernel::syscall_handlers::{sys_get_bounding_box, sys_transfer_display};
 use kernel_api_types::graphics::GraphicsResult;
 
 /// Helper: save and restore DISPLAY_OWNER around a test closure.
@@ -37,10 +37,10 @@ pub fn test_no_owner_is_not_owner() -> TestResult {
     })
 }
 
-/// A non-owner calling sys_present_display gets PermissionDenied.
-pub fn test_non_owner_present_display_rejected() -> TestResult {
+/// A non-owner calling sys_get_bounding_box gets PermissionDenied.
+pub fn test_non_owner_get_bounding_box_rejected() -> TestResult {
     with_display_owner(u64::MAX, || {
-        let ret = sys_present_display(0, 0, 0, 0, 0, 0);
+        let ret = sys_get_bounding_box(0, 0, 0, 0, 0, 0);
         if ret == GraphicsResult::PermissionDenied as u64 {
             TestResult::Ok
         } else {

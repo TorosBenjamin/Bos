@@ -34,13 +34,7 @@ impl Window {
         if buffer.is_null() {
             return None;
         }
-
-        // Initialize buffer to black
-        unsafe {
-            for i in 0..(width * height) as usize {
-                *buffer.add(i) = 0xFF000000; // Black with full alpha
-            }
-        }
+        // Buffer is already zeroed by sys_mmap (black in any pixel format)
 
         Some(Window {
             id,
@@ -88,38 +82,17 @@ impl Window {
         true
     }
 
-    /// Composite this window onto the display at its position
-    fn composite_to_display(&self, display: &mut Display, display_info: &kernel_api_types::graphics::DisplayInfo) {
-        unsafe {
-            for y in 0..self.height {
-                for x in 0..self.width {
-                    let screen_x = self.x + x as i32;
-                    let screen_y = self.y + y as i32;
-
-                    // Clip to display bounds
-                    if screen_x < 0 || screen_y < 0
-                        || screen_x >= display_info.width as i32
-                        || screen_y >= display_info.height as i32 {
-                        continue;
-                    }
-
-                    let pixel_offset = (y * self.width + x) as usize;
-                    let pixel = *self.buffer.add(pixel_offset);
-
-                    // Extract RGB from pixel (assuming 0xAARRGGBB format)
-                    let r = ((pixel >> 16) & 0xFF) as u8;
-                    let g = ((pixel >> 8) & 0xFF) as u8;
-                    let b = (pixel & 0xFF) as u8;
-
-                    let _ = display.draw_iter(core::iter::once(
-                        embedded_graphics::Pixel(
-                            Point::new(screen_x, screen_y),
-                            Rgb888::new(r, g, b),
-                        )
-                    ));
-                }
-            }
-        }
+    /// Composite this window onto the display using fast raw blit.
+    /// Window buffer pixels are already in native framebuffer format.
+    fn composite_to_display(&self, display: &mut Display) {
+        display.blit_raw(
+            self.buffer,
+            self.width,
+            self.x,
+            self.y,
+            self.width,
+            self.height,
+        );
     }
 }
 
@@ -183,9 +156,8 @@ impl Compositor {
                     window_id,
                 };
                 self.send_response(reply_ep, &response);
-
-                // Composite and present the new window
-                self.composite_all();
+                // Don't composite here — window is initially black, nothing to show.
+                // Compositing happens on UpdateWindow when the client sends pixels.
             }
             None => {
                 let response = CreateWindowResponse {
@@ -253,23 +225,14 @@ impl Compositor {
 
     /// Composite all windows onto the display and present
     fn composite_all(&mut self) {
-        // Clear display to black
-        let screen_rect = Rectangle::new(
-            Point::new(0, 0),
-            Size::new(self.display_info.width, self.display_info.height),
-        );
-        let _ = screen_rect
-            .into_styled(PrimitiveStyle::with_fill(Rgb888::new(0, 0, 0)))
-            .draw(&mut self.display);
-
-        // Composite each window in order (painters algorithm - first = bottom)
+        // Blit each window directly (no full-screen clear — windows are opaque)
         for window_slot in &self.windows {
             if let Some(window) = window_slot {
-                window.composite_to_display(&mut self.display, &self.display_info);
+                window.composite_to_display(&mut self.display);
             }
         }
 
-        // Present to framebuffer
+        // Present only the dirty region to framebuffer
         self.display.present();
     }
 

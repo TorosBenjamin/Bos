@@ -66,30 +66,22 @@ pub fn test_lower_half_end_canonical() -> TestResult {
     }
 }
 
-/// Inspect the InitialTaskFrame of a freshly created user task.
-/// Reads raw u64 values from the task's kernel stack to verify the
-/// iretq frame contains correct CS, SS, RSP, and RIP values.
+/// Inspect the CpuContext of a freshly created user task.
+/// Verifies the iretq frame values (CS, SS, RSP, RIP) are correct.
 pub fn test_user_task_iretq_frame() -> TestResult {
     let task = kernel::user_task_from_elf::create_user_task_from_elf();
     let inner = task.inner.lock();
 
-    // The RSP points to the InitialTaskFrame on the kernel stack.
-    // InitialTaskFrame layout (20 u64s, repr(C)):
-    //   [0..14]: r15, r14, r13, r12, r11, r10, r9, r8, rdi, rsi, rbp, rbx, rdx, rcx, rax
-    //   [15]:    rip
-    //   [16]:    cs
-    //   [17]:    rflags
-    //   [18]:    rsp  (user stack pointer)
-    //   [19]:    ss
-    let frame_ptr = inner.rsp as *const u64;
-    let rip = unsafe { *frame_ptr.add(15) };
-    let cs = unsafe { *frame_ptr.add(16) };
-    let rflags = unsafe { *frame_ptr.add(17) };
-    let user_rsp = unsafe { *frame_ptr.add(18) };
-    let ss = unsafe { *frame_ptr.add(19) };
+    // CpuContext now holds all the registers and iretq frame values
+    let ctx = &inner.context;
+    let rip = ctx.rip;
+    let cs = ctx.cs;
+    let rflags = ctx.rflags;
+    let user_rsp = ctx.rsp;
+    let ss = ctx.ss;
 
     log::info!(
-        "InitialTaskFrame: rip={:#018x} cs={:#06x} rflags={:#x} rsp={:#018x} ss={:#06x}",
+        "CpuContext: rip={:#018x} cs={:#06x} rflags={:#x} rsp={:#018x} ss={:#06x}",
         rip, cs, rflags, user_rsp, ss
     );
 
@@ -171,7 +163,6 @@ pub fn test_user_page_table_kernel_mapped() -> TestResult {
     let task = kernel::user_task_from_elf::create_user_task_from_elf();
     let inner = task.inner.lock();
     let kernel_stack_top = inner.kernel_stack_top;
-    let rsp = inner.rsp;
 
     if kernel_stack_top < 0xFFFF_8000_0000_0000 {
         return TestResult::Failed(format!(
@@ -180,15 +171,11 @@ pub fn test_user_page_table_kernel_mapped() -> TestResult {
         ));
     }
 
-    if (rsp as u64) < 0xFFFF_8000_0000_0000 {
-        return TestResult::Failed(format!(
-            "Task RSP = {:#x} is not in the higher half",
-            rsp
-        ));
-    }
+    // Read the SS value from the CpuContext before CR3 switch to compare later.
+    let ss_before = inner.context.ss;
 
-    // Read the iretq frame SS value before CR3 switch to compare later.
-    let ss_before = unsafe { *(rsp as *const u64).add(19) };
+    // Get a pointer to the context to read after CR3 switch
+    let ctx_ptr = &inner.context as *const kernel::task::task::CpuContext;
 
     // Switch CR3 to the user page table and verify kernel memory is accessible.
     let user_cr3 = task.cr3;
@@ -202,8 +189,8 @@ pub fn test_user_page_table_kernel_mapped() -> TestResult {
         );
         unsafe { x86_64::registers::control::Cr3::write(user_frame, current_cr3_flags) };
 
-        // Try to read the kernel stack (SS value from iretq frame)
-        let ss_after = unsafe { *(rsp as *const u64).add(19) };
+        // Try to read from the CpuContext (which is in kernel memory)
+        let ss_after = unsafe { (*ctx_ptr).ss };
 
         // Read from the GDT to verify it's accessible
         let sgdt = x86_64::instructions::tables::sgdt();
@@ -215,13 +202,13 @@ pub fn test_user_page_table_kernel_mapped() -> TestResult {
 
         if ss_before != ss_after {
             log::error!(
-                "Kernel stack not readable under user CR3! ss_before={:#x} ss_after={:#x}",
+                "Kernel memory not readable under user CR3! ss_before={:#x} ss_after={:#x}",
                 ss_before, ss_after
             );
         }
 
         log::info!(
-            "User CR3 test: kernel stack readable (ss={:#x}), GDT at {:#x} readable",
+            "User CR3 test: kernel memory readable (ss={:#x}), GDT at {:#x} readable",
             ss_after, gdt_base
         );
     });

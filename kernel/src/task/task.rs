@@ -8,6 +8,67 @@ use x86_64::instructions::segmentation::{CS, SS, Segment};
 use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::PhysFrame;
 
+/// CPU context saved/restored on task switches.
+/// Layout matches assembly expectations - DO NOT reorder fields.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CpuContext {
+    // GPRs (offset 0-119, 15 registers * 8 bytes)
+    pub r15: u64,  // offset 0
+    pub r14: u64,  // offset 8
+    pub r13: u64,  // offset 16
+    pub r12: u64,  // offset 24
+    pub r11: u64,  // offset 32
+    pub r10: u64,  // offset 40
+    pub r9: u64,   // offset 48
+    pub r8: u64,   // offset 56
+    pub rdi: u64,  // offset 64
+    pub rsi: u64,  // offset 72
+    pub rbp: u64,  // offset 80
+    pub rbx: u64,  // offset 88
+    pub rdx: u64,  // offset 96
+    pub rcx: u64,  // offset 104
+    pub rax: u64,  // offset 112
+    // iretq frame (offset 120-159)
+    pub rip: u64,    // offset 120
+    pub cs: u64,     // offset 128
+    pub rflags: u64, // offset 136
+    pub rsp: u64,    // offset 144
+    pub ss: u64,     // offset 152
+}
+
+// Offset constants for assembly access
+pub const CTX_R15: usize = 0;
+pub const CTX_R14: usize = 8;
+pub const CTX_R13: usize = 16;
+pub const CTX_R12: usize = 24;
+pub const CTX_R11: usize = 32;
+pub const CTX_R10: usize = 40;
+pub const CTX_R9: usize = 48;
+pub const CTX_R8: usize = 56;
+pub const CTX_RDI: usize = 64;
+pub const CTX_RSI: usize = 72;
+pub const CTX_RBP: usize = 80;
+pub const CTX_RBX: usize = 88;
+pub const CTX_RDX: usize = 96;
+pub const CTX_RCX: usize = 104;
+pub const CTX_RAX: usize = 112;
+pub const CTX_RIP: usize = 120;
+pub const CTX_CS: usize = 128;
+pub const CTX_RFLAGS: usize = 136;
+pub const CTX_RSP: usize = 144;
+pub const CTX_SS: usize = 152;
+
+impl Default for CpuContext {
+    fn default() -> Self {
+        Self {
+            r15: 0, r14: 0, r13: 0, r12: 0, r11: 0, r10: 0, r9: 0, r8: 0,
+            rdi: 0, rsi: 0, rbp: 0, rbx: 0, rdx: 0, rcx: 0, rax: 0,
+            rip: 0, cs: 0, rflags: 0, rsp: 0, ss: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskId(u64);
 
@@ -47,39 +108,9 @@ pub enum TaskKind {
     User,
 }
 
-/// Initial stack frame for a new task, matching the layout that
-/// `timer_interrupt_handler` expects to pop: 15 GPRs + iretq frame.
-///
-/// Fields are ordered from lowest address (where RSP points) to highest.
-#[repr(C)]
-struct InitialTaskFrame {
-    // GPRs — popped by the timer handler (r15 first, rax last)
-    r15: u64,
-    r14: u64,
-    r13: u64,
-    r12: u64,
-    r11: u64,
-    r10: u64,
-    r9: u64,
-    r8: u64,
-    rdi: u64,
-    rsi: u64,
-    rbp: u64,
-    rbx: u64,
-    rdx: u64,
-    rcx: u64,
-    rax: u64,
-    // iretq frame
-    rip: u64,
-    cs: u64,
-    rflags: u64,
-    rsp: u64,
-    ss: u64,
-}
-
 /// Parts of the task that can be modified after creation
 pub struct TaskInner {
-    pub rsp: usize,
+    pub context: CpuContext,
     pub kernel_stack: GuardedStack,
     pub kernel_stack_top: u64,
     /// Owns the user-mode page table (keeps it alive). None for kernel tasks.
@@ -112,11 +143,6 @@ impl Task {
 
         let stack_top = stack.top().as_u64();
 
-        // Place the initial frame at the top of the stack.
-        let frame_size = core::mem::size_of::<InitialTaskFrame>() as u64;
-        let frame_addr = stack_top - frame_size;
-        let frame_ptr = frame_addr as *mut InitialTaskFrame;
-
         // Read current segment selectors so the iretq frame returns to kernel mode.
         let cs = CS::get_reg().0 as u64;
         let ss = SS::get_reg().0 as u64;
@@ -125,22 +151,21 @@ impl Task {
         let (cr3_frame, _) = Cr3::read();
         let cr3 = cr3_frame.start_address().as_u64();
 
-        unsafe {
-            core::ptr::write(frame_ptr, InitialTaskFrame {
-                r15: entry as u64, // trampoline reads entry fn from r15
-                r14: 0, r13: 0, r12: 0, r11: 0, r10: 0, r9: 0, r8: 0,
-                rdi: 0, rsi: 0, rbp: 0, rbx: 0, rdx: 0, rcx: 0, rax: 0,
-                rip: task_trampoline as u64,
-                cs,
-                rflags: 0x200, // IF=1 (interrupts enabled on entry)
-                rsp: stack_top, // after iretq, task uses full stack from the top
-                ss,
-            });
-        }
+        // Initialize context in the Task struct
+        let context = CpuContext {
+            r15: entry as u64, // trampoline reads entry fn from r15
+            r14: 0, r13: 0, r12: 0, r11: 0, r10: 0, r9: 0, r8: 0,
+            rdi: 0, rsi: 0, rbp: 0, rbx: 0, rdx: 0, rcx: 0, rax: 0,
+            rip: task_trampoline as u64,
+            cs,
+            rflags: 0x200, // IF=1 (interrupts enabled on entry)
+            rsp: stack_top, // after iretq, task uses full stack from the top
+            ss,
+        };
 
         Task {
             inner: Mutex::new(TaskInner {
-                rsp: frame_addr as usize,
+                context,
                 kernel_stack: stack,
                 kernel_stack_top: stack_top,
                 user_page_table: None,
@@ -182,29 +207,21 @@ impl Task {
 
         let kernel_stack_top = kernel_stack.top().as_u64();
 
-        // Place InitialTaskFrame on the kernel stack with user CS/SS in iretq frame.
-        // When the scheduler first switches to this task, it will pop the GPRs and iretq
-        // into user mode.
-        let frame_size = core::mem::size_of::<InitialTaskFrame>() as u64;
-        let frame_addr = kernel_stack_top - frame_size;
-        let frame_ptr = frame_addr as *mut InitialTaskFrame;
-
-        unsafe {
-            core::ptr::write(frame_ptr, InitialTaskFrame {
-                // All GPRs zeroed for clean user register state
-                r15: 0, r14: 0, r13: 0, r12: 0, r11: 0, r10: 0, r9: 0, r8: 0,
-                rdi: arg, rsi: 0, rbp: 0, rbx: 0, rdx: 0, rcx: 0, rax: 0,
-                rip: entry_rip,
-                cs: user_cs as u64,
-                rflags: 0x200, // IF=1 (interrupts enabled in user mode)
-                rsp: user_rsp,
-                ss: user_ss as u64,
-            });
-        }
+        // Initialize context in the Task struct (not on the stack)
+        let context = CpuContext {
+            // All GPRs zeroed for clean user register state
+            r15: 0, r14: 0, r13: 0, r12: 0, r11: 0, r10: 0, r9: 0, r8: 0,
+            rdi: arg, rsi: 0, rbp: 0, rbx: 0, rdx: 0, rcx: 0, rax: 0,
+            rip: entry_rip,
+            cs: user_cs as u64,
+            rflags: 0x200, // IF=1 (interrupts enabled in user mode)
+            rsp: user_rsp,
+            ss: user_ss as u64,
+        };
 
         Task {
             inner: Mutex::new(TaskInner {
-                rsp: frame_addr as usize,
+                context,
                 kernel_stack,
                 kernel_stack_top,
                 user_page_table: Some(page_table),

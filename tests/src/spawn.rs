@@ -47,7 +47,7 @@ pub fn test_spawn_creates_task() -> TestResult {
     }
 }
 
-/// Verify that child_arg is placed in the InitialTaskFrame's rdi field.
+/// Verify that child_arg is placed in the CpuContext's rdi field.
 pub fn test_spawn_child_arg() -> TestResult {
     let elf_bytes = get_user_elf_bytes();
     let arg_value: u64 = 0xDEAD_BEEF_CAFE_BABE;
@@ -56,10 +56,8 @@ pub fn test_spawn_child_arg() -> TestResult {
         Err(e) => TestResult::Failed(format!("Failed to create task: {:?}", e)),
         Ok(task) => {
             let inner = task.inner.lock();
-            // InitialTaskFrame layout: [r15..rax (15 GPRs), rip, cs, rflags, rsp, ss]
-            // rdi is at index 8 (r15=0, r14=1, r13=2, r12=3, r11=4, r10=5, r9=6, r8=7, rdi=8)
-            let frame_ptr = inner.rsp as *const u64;
-            let rdi = unsafe { *frame_ptr.add(8) };
+            // rdi is now in the CpuContext struct
+            let rdi = inner.context.rdi;
 
             if rdi != arg_value {
                 return TestResult::Failed(format!(

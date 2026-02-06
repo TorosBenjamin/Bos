@@ -16,6 +16,11 @@ pub struct FrameBufferEmbeddedGraphics<'a> {
 }
 
 impl FrameBufferEmbeddedGraphics<'_> {
+    /// Returns the virtual address of the framebuffer.
+    pub fn buffer_virt_addr(&self) -> u64 {
+        self.buffer.as_ptr() as u64
+    }
+
     /// # Safety
     /// The frame buffer must be mapped at `addr`
     pub unsafe fn new(addr: NonZero<usize>, info: FrameBufferInfo) -> Self {
