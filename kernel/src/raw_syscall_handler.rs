@@ -1,6 +1,6 @@
 use crate::memory::cpu_local_data::{CpuLocalData, IN_SYSCALL_HANDLER_OFFSET, CURRENT_CONTEXT_PTR_OFFSET, get_local};
 use crate::memory::guarded_stack::{GuardedStack, StackId, StackType};
-use crate::syscall_handlers::{sys_channel_close, sys_channel_create, sys_channel_recv, sys_channel_send, sys_exit, sys_get_bounding_box, sys_get_display_info, sys_get_module, sys_mmap, sys_munmap, sys_read_key, sys_spawn, sys_transfer_display, sys_yield};
+use crate::syscall_handlers::{sys_channel_close, sys_channel_create, sys_channel_recv, sys_channel_send, sys_debug_log, sys_exit, sys_get_bounding_box, sys_get_display_info, sys_get_module, sys_mmap, sys_munmap, sys_read_key, sys_spawn, sys_transfer_display, sys_yield};
 use crate::task::task::{
     CTX_RAX, CTX_RBP, CTX_RBX, CTX_RCX, CTX_RDI, CTX_RDX, CTX_RSI,
     CTX_R8, CTX_R9, CTX_R10, CTX_R11, CTX_R12, CTX_R13, CTX_R14, CTX_R15,
@@ -19,6 +19,9 @@ use x86_64::registers::rflags::RFlags;
 unsafe extern "sysv64" fn raw_syscall_handler() -> ! {
     naked_asm!(
         "
+            // SYSCALL always comes from ring 3 — swap GS to get kernel CpuLocalData
+            swapgs
+
             // Save the user mode stack pointer
             mov gs:[{scratch_offset}], rsp
             // Switch to the kernel stack pointer
@@ -146,6 +149,7 @@ unsafe extern "sysv64" fn syscall_handler(
         asm!(
         "
             mov rsp, {}
+            swapgs
             sysretq
         ",
         in(reg) return_stack_pointer,
@@ -185,6 +189,7 @@ unsafe fn dispatch_syscall(syscall_number: u64, args: &[u64; 6]) -> u64 {
         n if n == SysCallNumber::TransferDisplay as u64 => "TransferDisplay",
         n if n == SysCallNumber::GetModule as u64 => "GetModule",
         n if n == SysCallNumber::GetDisplayInfo as u64 => "GetDisplayInfo",
+        n if n == SysCallNumber::DebugLog as u64 => "DebugLog",
         _ => "Unknown",
     };
 
@@ -249,5 +254,6 @@ pub fn init() {
         SYS_CALL_TABLE[SysCallNumber::ChannelClose as usize] = Some(sys_channel_close);
         SYS_CALL_TABLE[SysCallNumber::TransferDisplay as usize] = Some(sys_transfer_display);
         SYS_CALL_TABLE[SysCallNumber::GetModule as usize] = Some(sys_get_module);
+        SYS_CALL_TABLE[SysCallNumber::DebugLog as usize] = Some(sys_debug_log);
     }
 }

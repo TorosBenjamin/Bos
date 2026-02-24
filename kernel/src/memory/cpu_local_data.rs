@@ -14,7 +14,7 @@ use limine::response::MpResponse;
 use spin::{Lazy, Mutex, Once};
 use x2apic::lapic::LocalApic;
 use x86_64::VirtAddr;
-use x86_64::registers::model_specific::GsBase;
+use x86_64::registers::model_specific::{GsBase, KernelGsBase};
 use x86_64::structures::idt::InterruptDescriptorTable;
 use x86_64::structures::tss::TaskStateSegment;
 
@@ -68,8 +68,10 @@ static CPU_LOCAL_DATA: Lazy<Box<[Once<CpuLocalData>]>> =
     Lazy::new(|| mp_response().cpus().iter().map(|_| Once::new()).collect());
 
 fn write_gs_base(ptr: &'static CpuLocalData) {
+    let vaddr = VirtAddr::from_ptr(ptr);
     unsafe {
-        GsBase::write(VirtAddr::from_ptr(ptr));
+        GsBase::write(vaddr);
+        KernelGsBase::write(vaddr);
     }
 }
 

@@ -52,6 +52,13 @@ impl VirtualMemoryAllocator {
         self.allocate_contiguous_pages_in_range(ii(USER_MIN, USER_MAX), n_pages)
     }
 
+    /// Release a contiguous range of kernel virtual pages back to the allocator.
+    pub fn free_kernel_pages(&mut self, start: Page<Size4KiB>, n_pages: NonZero<u64>) {
+        let start_addr = start.start_address().as_u64();
+        let end_addr = start_addr + n_pages.get() * Size4KiB::SIZE - 1;
+        let _ = self.set.cut(&nodit::interval::ii(start_addr, end_addr));
+    }
+
     /// Replaces l4_mut. Returns a standard x86_64 Mapper.
     pub unsafe fn mapper(&mut self) -> OffsetPageTable<'static> {
         let offset = VirtAddr::new(hhdm_offset().as_u64());

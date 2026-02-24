@@ -98,6 +98,14 @@ pub extern "x86-interrupt" fn nmi_handler(_stack_frame: InterruptStackFrame) {
 #[unsafe(naked)]
 pub extern "C" fn timer_interrupt_handler() {
     core::arch::naked_asm!(
+        // Check if interrupted from ring 3 (CS RPL bits), swapgs if so.
+        // At entry rsp points to the hardware-pushed iretq frame: [rip][cs][rflags][rsp][ss]
+        "mov r11, [rsp + 8]",   // CS from interrupt frame
+        "test r11, 3",
+        "jz 9f",                // RPL=0, from kernel, skip swapgs
+        "swapgs",
+        "9:",
+
         // Use r11 as scratch to hold current context pointer
         // (r11 is caller-saved so we can clobber it)
         "push r11",
@@ -202,6 +210,13 @@ pub extern "C" fn timer_interrupt_handler() {
         "or rax, 3",
         "mov [rsp + 40], rax",
         "3:",
+        // Check if returning to ring 3, swapgs if so.
+        // Stack: [rsp+0]=saved_r11, [rsp+8]=rip, [rsp+16]=cs
+        "mov rax, [rsp + 16]",  // target CS
+        "test rax, 3",
+        "jz 8f",
+        "swapgs",
+        "8:",
 
         // Restore all GPRs from new context
         "mov r15, [r11 + {CTX_R15}]",
@@ -230,6 +245,12 @@ pub extern "C" fn timer_interrupt_handler() {
         "pop r11",
         // Still need to send EOI and return
         "call {early_eoi}",
+        // Check if returning to ring 3, swapgs if so.
+        "mov rax, [rsp + 8]",   // CS from iretq frame (rip at [rsp], cs at [rsp+8])
+        "test rax, 3",
+        "jz 7f",
+        "swapgs",
+        "7:",
         "iretq",
 
         inner = sym timer_interrupt_handler_inner,
@@ -330,6 +351,13 @@ pub unsafe extern "C" fn load_context_and_iretq(context: *const CpuContext) -> !
         "or rax, 3",
         "4:",
         "mov [rsp + 32], rax",
+
+        // Swap GS if returning to ring 3
+        "mov rcx, [rsp + 8]",  // cs
+        "test rcx, 3",
+        "jz 5f",
+        "swapgs",
+        "5:",
 
         // Restore all GPRs from context
         "mov r15, [r11 + {CTX_R15}]",

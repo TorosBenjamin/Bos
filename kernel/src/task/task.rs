@@ -1,4 +1,6 @@
 use crate::memory::guarded_stack::{GuardedStack, StackId, StackType, NORMAL_STACK_SIZE};
+use crate::memory::MEMORY;
+use crate::memory::physical_memory::MemoryType;
 use atomic_enum::atomic_enum;
 use core::sync::atomic::{AtomicU64, Ordering};
 use nodit::{Interval, NoditSet};
@@ -6,7 +8,8 @@ use spin::mutex::Mutex;
 use crate::memory::cpu_local_data::get_local;
 use x86_64::instructions::segmentation::{CS, SS, Segment};
 use x86_64::registers::control::Cr3;
-use x86_64::structures::paging::PhysFrame;
+use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame};
+use x86_64::{PhysAddr, VirtAddr};
 
 /// CPU context saved/restored on task switches.
 /// Layout matches assembly expectations - DO NOT reorder fields.
@@ -118,6 +121,80 @@ pub struct TaskInner {
     /// Tracks user-space virtual address allocations (ELF segments, stack, mmap).
     /// Empty for kernel tasks.
     pub user_vaddr_set: NoditSet<u64, Interval<u64>>,
+}
+
+/// Walk L4 entries 0..256 (user space) and free all page table frames and data frames.
+/// All user frames are `UsedByUserMode`.
+///
+/// # Safety
+/// `l4_phys` must be a valid physical address of a user page table L4 frame.
+/// Must not be called while the page table is still active (CR3).
+unsafe fn free_user_address_space(
+    l4_phys: PhysAddr,
+    phys_mem: &mut crate::memory::physical_memory::PhysicalMemory,
+) {
+    let hhdm = crate::memory::hhdm_offset::hhdm_offset().as_u64();
+
+    let l4 = unsafe { &*VirtAddr::new(hhdm + l4_phys.as_u64()).as_ptr::<PageTable>() };
+    for i in 0..256usize {
+        let l4e = &l4[i];
+        if !l4e.flags().contains(PageTableFlags::PRESENT) {
+            continue;
+        }
+        let l3_phys = l4e.addr();
+        let l3 = unsafe { &*VirtAddr::new(hhdm + l3_phys.as_u64()).as_ptr::<PageTable>() };
+        for l3e in l3.iter() {
+            if !l3e.flags().contains(PageTableFlags::PRESENT) {
+                continue;
+            }
+            let l2_phys = l3e.addr();
+            let l2 = unsafe { &*VirtAddr::new(hhdm + l2_phys.as_u64()).as_ptr::<PageTable>() };
+            for l2e in l2.iter() {
+                if !l2e.flags().contains(PageTableFlags::PRESENT) {
+                    continue;
+                }
+                let l1_phys = l2e.addr();
+                let l1 = unsafe { &*VirtAddr::new(hhdm + l1_phys.as_u64()).as_ptr::<PageTable>() };
+                for l1e in l1.iter() {
+                    if !l1e.flags().contains(PageTableFlags::PRESENT) {
+                        continue;
+                    }
+                    let _ = phys_mem.free_frame(
+                        PhysFrame::containing_address(l1e.addr()),
+                        MemoryType::UsedByUserMode,
+                    );
+                }
+                let _ = phys_mem.free_frame(
+                    PhysFrame::containing_address(l1_phys),
+                    MemoryType::UsedByUserMode,
+                );
+            }
+            let _ = phys_mem.free_frame(
+                PhysFrame::containing_address(l2_phys),
+                MemoryType::UsedByUserMode,
+            );
+        }
+        let _ = phys_mem.free_frame(
+            PhysFrame::containing_address(l3_phys),
+            MemoryType::UsedByUserMode,
+        );
+    }
+    // Free the L4 frame itself
+    let _ = phys_mem.free_frame(
+        PhysFrame::containing_address(l4_phys),
+        MemoryType::UsedByUserMode,
+    );
+}
+
+impl Drop for TaskInner {
+    fn drop(&mut self) {
+        if let Some(l4_frame) = self.user_page_table.take() {
+            let memory = MEMORY.get().unwrap();
+            let mut phys_mem = memory.physical_memory.lock();
+            unsafe { free_user_address_space(l4_frame.start_address(), &mut phys_mem); }
+        }
+        // kernel_stack's GuardedStack::drop runs automatically
+    }
 }
 
 pub struct Task {

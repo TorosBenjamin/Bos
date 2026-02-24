@@ -7,6 +7,34 @@ use crate::memory::user_vaddr;
 use crate::memory::page_tables::get_kernel_vaddr_from_user_vaddr;
 use crate::task::task::{Task, TaskId, TaskKind, TaskState};
 use core::sync::atomic::Ordering;
+
+/// Returns true if [ptr, ptr+size) is fully within the current user task's
+/// allocated virtual address space and within canonical lower-half bounds.
+fn validate_user_ptr(ptr: u64, size: u64) -> bool {
+    if ptr == 0 || size == 0 {
+        return false;
+    }
+    let end = match ptr.checked_add(size) {
+        Some(e) => e,
+        None => return false,
+    };
+    if ptr < crate::consts::USER_MIN || end > crate::consts::USER_MAX + 1 {
+        return false;
+    }
+    let cpu = get_local();
+    let rq = cpu.run_queue.get().unwrap().lock();
+    let task = match &rq.current_task {
+        Some(t) if t.kind == TaskKind::User => t.clone(),
+        _ => return false,
+    };
+    drop(rq);
+    let inner = task.inner.lock();
+    crate::memory::user_vaddr::is_user_vaddr_valid_range(
+        &inner.user_vaddr_set,
+        x86_64::VirtAddr::new(ptr),
+        x86_64::VirtAddr::new(end),
+    )
+}
 use nodit::interval::ii;
 use kernel_api_types::graphics::{DisplayInfo, GraphicsResult, Rect, FRAMEBUFFER_USER_VADDR};
 use kernel_api_types::{MMAP_EXEC, MMAP_WRITE};
@@ -15,13 +43,23 @@ use x86_64::{PhysAddr, VirtAddr};
 use crate::memory::hhdm_offset::hhdm_offset;
 use crate::task::global_scheduler::TASK_TABLE;
 
+/// Syscall: emit a debug value to the serial console.
+///
+/// Arguments: value (u64), tag (u64) — printed as "DBG[tag]: value"
+pub fn sys_debug_log(value: u64, tag: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    log::info!("DBG[{:#x}]: {:#x}", tag, value);
+    0
+}
+
 /// Syscall: return the bounding box of the framebuffer
 pub fn sys_get_bounding_box(rect_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
     if !crate::graphics::display::is_display_owner() {
         return GraphicsResult::PermissionDenied as u64;
     }
 
-    // TODO: Pointer validation
+    if !validate_user_ptr(rect_out_ptr, core::mem::size_of::<Rect>() as u64) {
+        return GraphicsResult::InvalidInput as u64;
+    }
     let rect_out = unsafe { &mut *(rect_out_ptr as *mut Rect) };
 
     let bb = DISPLAY.bounding_box();
@@ -34,18 +72,29 @@ pub fn sys_get_bounding_box(rect_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _
     GraphicsResult::Ok as u64
 }
 
-/// Exit the current task. Marks it as a zombie, enables interrupts, and halts.
-/// The timer will fire and the scheduler will drop the zombie from the queue.
+/// Exit the current task. Marks it as a zombie, removes it from TASK_TABLE,
+/// enables interrupts, and halts. The timer will schedule another task and
+/// when the scheduler drops current_task Arc the Task is fully freed.
 pub fn sys_exit() -> ! {
     let cpu = get_local();
-    {
+    let task_id = {
         let rq = cpu.run_queue.get().unwrap().lock();
         if let Some(current) = &rq.current_task {
             current.state.store(TaskState::Zombie, Ordering::Relaxed);
+            Some(current.id)
+        } else {
+            None
         }
+    }; // run_queue lock dropped here
+
+    // Remove from global table; Arc refcount drops by 1.
+    // The remaining Arc in run_queue.current_task is dropped by the scheduler
+    // on the next timer tick (zombie is not re-queued), triggering Task::drop.
+    if let Some(id) = task_id {
+        TASK_TABLE.lock().remove(&id);
     }
+
     // Enable interrupts and halt — timer will schedule another task.
-    // The zombie won't be re-queued by the scheduler.
     x86_64::instructions::interrupts::enable();
     loop {
         x86_64::instructions::hlt();
@@ -58,11 +107,13 @@ pub fn sys_exit() -> ! {
 /// If a key is available, it's written immediately and we return 0.
 /// If no key is available, we spin-wait until the keyboard ISR delivers one.
 pub fn sys_read_key(key_event_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    if !validate_user_ptr(key_event_out_ptr, core::mem::size_of::<kernel_api_types::KeyEvent>() as u64) {
+        return 1;
+    }
     let out = key_event_out_ptr as *mut kernel_api_types::KeyEvent;
 
     loop {
         if let Some(event) = crate::drivers::keyboard::try_read_key() {
-            // Safety: pointer comes from userland, TODO: validate
             unsafe { core::ptr::write(out, event) };
             return 0;
         }
@@ -95,7 +146,10 @@ pub fn sys_yield(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
 /// Returns: task ID on success, 0 on failure.
 pub fn sys_spawn(elf_ptr: u64, elf_len: u64, child_arg: u64, _: u64, _: u64, _: u64) -> u64 {
     // Basic validation
-    if elf_ptr == 0 || elf_len == 0 || elf_len > 64 * 1024 * 1024 {
+    if elf_len == 0 || elf_len > 64 * 1024 * 1024 {
+        return 0;
+    }
+    if !validate_user_ptr(elf_ptr, elf_len) {
         return 0;
     }
 
@@ -243,7 +297,7 @@ fn rollback_mmap(
 /// Writes the two endpoint IDs to the output pointers.
 /// Returns: IPC status code.
 pub fn sys_channel_create(send_ep_out_ptr: u64, recv_ep_out_ptr: u64, capacity: u64, _: u64, _: u64, _: u64) -> u64 {
-    if send_ep_out_ptr == 0 || recv_ep_out_ptr == 0 {
+    if !validate_user_ptr(send_ep_out_ptr, 8) || !validate_user_ptr(recv_ep_out_ptr, 8) {
         return kernel_api_types::IPC_ERR_INVALID_ARGS;
     }
 
@@ -271,7 +325,7 @@ pub fn sys_channel_send(endpoint_id: u64, msg_ptr: u64, msg_len: u64, _: u64, _:
     if msg_len > crate::ipc::MAX_MESSAGE_SIZE as u64 {
         return kernel_api_types::IPC_ERR_MSG_TOO_LARGE;
     }
-    if msg_len > 0 && msg_ptr == 0 {
+    if msg_len > 0 && !validate_user_ptr(msg_ptr, msg_len) {
         return kernel_api_types::IPC_ERR_INVALID_ARGS;
     }
 
@@ -301,7 +355,7 @@ pub fn sys_channel_send(endpoint_id: u64, msg_ptr: u64, msg_len: u64, _: u64, _:
 /// Arguments: endpoint_id, buf_ptr, buf_cap, bytes_read_out_ptr
 /// Returns: IPC status code.
 pub fn sys_channel_recv(endpoint_id: u64, buf_ptr: u64, buf_cap: u64, bytes_read_out_ptr: u64, _: u64, _: u64) -> u64 {
-    if buf_ptr == 0 || bytes_read_out_ptr == 0 {
+    if !validate_user_ptr(buf_ptr, buf_cap) || !validate_user_ptr(bytes_read_out_ptr, 8) {
         return kernel_api_types::IPC_ERR_INVALID_ARGS;
     }
 
@@ -438,7 +492,10 @@ pub fn sys_transfer_display(new_owner_id: u64, _: u64, _: u64, _: u64, _: u64, _
 /// Size query: if buf_ptr == 0 && buf_cap == 0, returns the module size (or 0 if not found).
 /// Copy: copies module bytes to buf, returns bytes written (or 0 on failure).
 pub fn sys_get_module(name_ptr: u64, name_len: u64, buf_ptr: u64, buf_cap: u64, _: u64, _: u64) -> u64 {
-    if name_ptr == 0 || name_len == 0 || name_len > 256 {
+    if name_len == 0 || name_len > 256 {
+        return 0;
+    }
+    if !validate_user_ptr(name_ptr, name_len) {
         return 0;
     }
 
@@ -473,6 +530,10 @@ pub fn sys_get_module(name_ptr: u64, name_len: u64, buf_ptr: u64, buf_cap: u64, 
 
     // Buffer too small
     if buf_cap < module_size {
+        return 0;
+    }
+
+    if !validate_user_ptr(buf_ptr, buf_cap) {
         return 0;
     }
 
@@ -550,13 +611,12 @@ pub fn sys_munmap(addr: u64, size: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
 /// Arguments: info_out_ptr
 /// Returns: GraphicsResult code.
 pub fn sys_get_display_info(info_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
-    if info_out_ptr == 0 {
+    if !validate_user_ptr(info_out_ptr, core::mem::size_of::<DisplayInfo>() as u64) {
         return GraphicsResult::InvalidInput as u64;
     }
 
     let info = DISPLAY.get_display_info();
 
-    // TODO: Pointer validation
     unsafe {
         core::ptr::write(info_out_ptr as *mut DisplayInfo, info);
     }

@@ -39,6 +39,9 @@ pub struct StackInfo {
 #[derive(Debug)]
 pub struct GuardedStack {
     top: VirtAddr,
+    guard_page: Page<Size4KiB>,
+    /// Total virtual pages allocated: 1 guard + n_mapped
+    n_virtual_pages: u64,
 }
 
 impl GuardedStack {
@@ -88,6 +91,8 @@ impl GuardedStack {
         Self {
             // Stack grows DOWN, so top is the end of the last mapped page
             top: start_page.start_address() + (n_mapped_pages * page_size),
+            guard_page,
+            n_virtual_pages,
         }
     }
 
@@ -106,6 +111,36 @@ impl GuardedStack {
     pub fn switch(self, f: extern "sysv64" fn() -> !) {
         let new_rsp = self.top.as_u64();
         unsafe { switch_to(new_rsp, f) }
+    }
+}
+
+impl Drop for GuardedStack {
+    fn drop(&mut self) {
+        let memory = MEMORY.get().unwrap();
+        let mut physical_memory = memory.physical_memory.lock();
+        let mut virtual_memory = memory.virtual_memory.lock();
+        let mut mapper = unsafe { virtual_memory.mapper() };
+
+        // Unmap and free each mapped page (index 0 is the guard page, skip it)
+        for i in 1..self.n_virtual_pages {
+            let page = self.guard_page + i;
+            if let Ok((frame, _, flush)) = unsafe { mapper.unmap(page) } {
+                flush.flush();
+                let _ = physical_memory.free_frame(
+                    frame,
+                    MemoryType::UsedByKernel(KernelMemoryUsageType::PageTables),
+                );
+            }
+        }
+
+        // Release the virtual address range (guard page + all mapped pages)
+        virtual_memory.free_kernel_pages(
+            self.guard_page,
+            NonZero::new(self.n_virtual_pages).unwrap(),
+        );
+
+        // Remove the guard page tracking entry
+        STACK_GUARD_PAGES.lock().remove(&self.guard_page);
     }
 }
 
