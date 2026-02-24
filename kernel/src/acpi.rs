@@ -5,7 +5,6 @@ use core::marker::PhantomData;
 use core::num::NonZero;
 use core::ptr::NonNull;
 use limine::response::RsdpResponse;
-use x86_64::registers::model_specific::PatMemoryType;
 use x86_64::{PhysAddr, VirtAddr};
 use x86_64::structures::paging::{Mapper, Page, PageSize, PageTableFlags, PhysFrame, Size4KiB};
 

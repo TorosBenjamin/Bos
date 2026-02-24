@@ -48,7 +48,14 @@ impl Display {
 
     /// Flushes only the dirty region from the back buffer to the hardware front buffer.
     pub fn present(&mut self) {
+        if self.dirty.is_none() {
+            crate::sys_debug_log(0, 0xD001); // D001 = present called but dirty is None (nothing to flush)
+        }
         if let Some(dirty) = self.dirty.take() {
+            crate::sys_debug_log(
+                dirty.x as u64 | ((dirty.y as u64) << 16) | ((dirty.w as u64) << 32) | ((dirty.h as u64) << 48),
+                0xD002, // D002 = dirty rect (x|y|w|h packed into u64)
+            );
             // Safety check: ensure dirty rect is within bounds
             let x_start = dirty.x as usize;
             let y_start = dirty.y as usize;

@@ -1,6 +1,8 @@
 use crate::memory::guarded_stack::{GuardedStack, StackId, StackType, NORMAL_STACK_SIZE};
 use crate::memory::MEMORY;
 use crate::memory::physical_memory::MemoryType;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use atomic_enum::atomic_enum;
 use core::sync::atomic::{AtomicU64, Ordering};
 use nodit::{Interval, NoditSet};
@@ -121,6 +123,8 @@ pub struct TaskInner {
     /// Tracks user-space virtual address allocations (ELF segments, stack, mmap).
     /// Empty for kernel tasks.
     pub user_vaddr_set: NoditSet<u64, Interval<u64>>,
+    /// IPC endpoint IDs owned by this task; closed on exit.
+    pub owned_endpoints: Vec<u64>,
 }
 
 /// Walk L4 entries 0..256 (user space) and free all page table frames and data frames.
@@ -205,6 +209,10 @@ pub struct Task {
     /// Physical address of the L4 page table for this task.
     /// For kernel tasks, this is the kernel CR3.
     pub cr3: u64,
+    /// Exit code set by sys_exit.
+    pub exit_code: AtomicU64,
+    /// Task waiting for this task to exit (set by sys_waitpid).
+    pub exit_waiter: Mutex<Option<(Arc<Task>, u32)>>,
 }
 
 impl Task {
@@ -247,11 +255,14 @@ impl Task {
                 kernel_stack_top: stack_top,
                 user_page_table: None,
                 user_vaddr_set: NoditSet::default(),
+                owned_endpoints: Vec::new(),
             }),
             id: TaskId::new(),
             state: AtomicTaskState::new(TaskState::Initializing),
             kind: TaskKind::Kernel,
             cr3,
+            exit_code: AtomicU64::new(0),
+            exit_waiter: Mutex::new(None),
         }
     }
 
@@ -303,11 +314,14 @@ impl Task {
                 kernel_stack_top,
                 user_page_table: Some(page_table),
                 user_vaddr_set,
+                owned_endpoints: Vec::new(),
             }),
             id: TaskId::new(),
             state: AtomicTaskState::new(TaskState::Initializing),
             kind: TaskKind::User,
             cr3,
+            exit_code: AtomicU64::new(0),
+            exit_waiter: Mutex::new(None),
         }
     }
 

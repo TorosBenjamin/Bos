@@ -1,10 +1,5 @@
 #![no_std]
 #![no_main]
-use embedded_graphics::geometry::{Point, Size};
-use embedded_graphics::pixelcolor::Rgb888;
-use embedded_graphics::prelude::{Primitive, DrawTarget};
-use embedded_graphics::primitives::{Rectangle, PrimitiveStyle};
-use embedded_graphics::Drawable;
 use ulib::display::Display;
 use kernel_api_types::window::*;
 use kernel_api_types::{IPC_OK, MMAP_WRITE};
@@ -170,23 +165,32 @@ impl Compositor {
     }
 
     fn handle_update_window(&mut self, header: &UpdateWindowRequest, pixels: &[u32]) {
+        // Diagnostic: log that we received an UpdateWindow
+        ulib::sys_debug_log(header.window_id, 0xA001); // tag A001 = UpdateWindow received, value = window_id
+        ulib::sys_debug_log(header.dirty_width as u64 | ((header.dirty_height as u64) << 32), 0xA002); // A002 = dirty WxH
+
         // Find the window
         let window = match self.windows.iter_mut()
             .filter_map(|w| w.as_mut())
             .find(|w| w.id == header.window_id) {
             Some(w) => w,
-            None => return, // Invalid window ID
+            None => {
+                ulib::sys_debug_log(header.window_id, 0xA003); // A003 = window not found
+                return;
+            }
         };
 
         // Update the window's buffer
-        if window.update_region(
+        let ok = window.update_region(
             header.buffer_width,
             header.dirty_x,
             header.dirty_y,
             header.dirty_width,
             header.dirty_height,
             pixels,
-        ) {
+        );
+        ulib::sys_debug_log(ok as u64, 0xA004); // A004 = update_region result (1=ok, 0=fail)
+        if ok {
             // Composite and present
             self.composite_all();
         }
@@ -225,15 +229,19 @@ impl Compositor {
 
     /// Composite all windows onto the display and present
     fn composite_all(&mut self) {
+        ulib::sys_debug_log(0, 0xB001); // B001 = composite_all start
         // Blit each window directly (no full-screen clear — windows are opaque)
         for window_slot in &self.windows {
             if let Some(window) = window_slot {
+                ulib::sys_debug_log(window.id, 0xB002); // B002 = blitting window id
                 window.composite_to_display(&mut self.display);
             }
         }
 
+        ulib::sys_debug_log(0, 0xB003); // B003 = calling present
         // Present only the dirty region to framebuffer
         self.display.present();
+        ulib::sys_debug_log(0, 0xB004); // B004 = present done
     }
 
     fn process_message(&mut self, msg: &[u8]) {
@@ -311,14 +319,18 @@ impl Compositor {
     }
 
     fn run(&mut self) -> ! {
+        ulib::sys_debug_log(self.recv_endpoint, 0xC001); // C001 = display_server run() started, value = recv_ep
+
         // Allocate message buffer
         let msg_buf = ulib::sys_mmap(MAX_MSG_SIZE as u64, MMAP_WRITE);
         if msg_buf.is_null() {
-            // Failed to allocate, just yield forever
+            ulib::sys_debug_log(0, 0xC002); // C002 = msg_buf alloc failed
             loop {
                 ulib::sys_yield();
             }
         }
+
+        ulib::sys_debug_log(msg_buf as u64, 0xC003); // C003 = msg_buf addr
 
         loop {
             // Receive a message
@@ -329,6 +341,8 @@ impl Compositor {
             let (result, bytes_read) = ulib::sys_channel_recv(self.recv_endpoint, msg_slice);
 
             if result == IPC_OK && bytes_read > 0 {
+                ulib::sys_debug_log(bytes_read, 0xC004); // C004 = message received, value = bytes
+                ulib::sys_debug_log(msg_slice[0] as u64, 0xC005); // C005 = message type byte
                 let msg = &msg_slice[..bytes_read as usize];
                 self.process_message(msg);
             }

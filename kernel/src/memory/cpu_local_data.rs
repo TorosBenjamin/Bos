@@ -115,6 +115,19 @@ pub fn get_local() -> &'static CpuLocalData {
     try_get_local().unwrap()
 }
 
+pub fn get_cpu(id: u32) -> &'static CpuLocalData {
+    CPU_LOCAL_DATA[id as usize].get().unwrap()
+}
+
+/// Returns None if the CPU with the given kernel_id has not been initialized yet
+/// or its run queue is not yet set up.
+pub fn try_get_ready_cpu(id: u32) -> Option<&'static CpuLocalData> {
+    let cpu = CPU_LOCAL_DATA.get(id as usize)?.get()?;
+    // Only consider a CPU "ready" if its run queue is initialized
+    cpu.run_queue.get()?;
+    Some(cpu)
+}
+
 /// Initialize CPU local data for the BSP
 ///
 /// # Safety:

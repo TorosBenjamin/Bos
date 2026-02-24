@@ -149,6 +149,16 @@ pub fn sys_transfer_display(new_owner_task_id: u64) -> u64 {
     args[6]
 }
 
+/// Emit a debug value to the kernel serial console.
+/// `tag` is a u64 label printed alongside `value`.
+pub fn sys_debug_log(value: u64, tag: u64) {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::DebugLog as u64;
+    args[1] = value;
+    args[2] = tag;
+    syscall(&mut args);
+}
+
 pub fn sys_get_module(name: &str, buf: *mut u8, buf_cap: u64) -> u64 {
     let mut args = [0u64; 7];
     args[0] = SysCallNumber::GetModule as u64;

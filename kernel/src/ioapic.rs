@@ -5,7 +5,6 @@ use alloc::boxed::Box;
 use core::num::NonZero;
 use crate::memory::MEMORY;
 use spin::Once;
-use x86_64::registers::model_specific::PatMemoryType;
 use x86_64::PhysAddr;
 use x86_64::structures::paging::{Mapper, PageTableFlags, PhysFrame, Size4KiB};
 

@@ -8,9 +8,9 @@ use force_send_sync::SendSync;
 use raw_cpuid::CpuId;
 use spin::Once;
 use x2apic::lapic::LocalApicBuilder;
-use x86_64::registers::model_specific::{Msr, PatMemoryType};
+use x86_64::registers::model_specific::Msr;
 use x86_64::{PhysAddr, VirtAddr};
-use x86_64::structures::paging::{Mapper, PageSize, PageTableFlags, PhysFrame, Size4KiB};
+use x86_64::structures::paging::{Mapper, PageTableFlags, PhysFrame, Size4KiB};
 use crate::interrupt::InterruptVector;
 
 const IA32_X2APIC_SVR: u32 = 0x80F;
@@ -111,4 +111,23 @@ fn cpu_has_x2apic() -> bool {
 pub fn is_enabled() -> bool {
     let svr = unsafe { Msr::new(IA32_X2APIC_SVR).read() };
     svr & (1 << 8) != 0
+}
+
+/// Send a fixed-delivery IPI to the given APIC ID on the given vector.
+pub fn send_fixed_ipi(target_apic_id: u32, vector: u8) {
+    match LOCAL_APIC_ACCESS.get().unwrap() {
+        LocalApicAccess::RegisterBased => {
+            // x2APIC: write ICR (MSR 0x830) with destination in bits [63:32] and vector in [7:0]
+            let icr = ((target_apic_id as u64) << 32) | vector as u64;
+            unsafe { Msr::new(0x830).write(icr) };
+        }
+        LocalApicAccess::Mmio(base) => {
+            // xAPIC MMIO: write ICR_HIGH (base+0x310) first, then ICR_LOW (base+0x300)
+            let base = base.as_u64();
+            unsafe {
+                core::ptr::write_volatile((base + 0x310) as *mut u32, target_apic_id << 24);
+                core::ptr::write_volatile((base + 0x300) as *mut u32, vector as u32);
+            }
+        }
+    }
 }

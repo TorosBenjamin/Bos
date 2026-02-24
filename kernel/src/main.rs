@@ -13,7 +13,7 @@ use embedded_graphics::geometry::Point;
 use embedded_graphics::pixelcolor::{Rgb888, RgbColor};
 use kernel::graphics::display::{self, DISPLAY};
 use kernel::graphics::writer::Writer;
-use kernel::limine_requests::{BASE_REVISION, RSDP_REQUEST};
+use kernel::limine_requests::{BASE_REVISION, MP_REQUEST, RSDP_REQUEST};
 use kernel::memory::cpu_local_data::get_local;
 use kernel::memory::guarded_stack::{GuardedStack, StackId, StackType, NORMAL_STACK_SIZE};
 use kernel::{acpi, apic, gdt, hlt_loop, interrupt, ioapic, logger, project_version, raw_syscall_handler, time, user_task_from_elf};
@@ -87,19 +87,18 @@ extern "sysv64" fn init_bsp() -> ! {
     display::DISPLAY_OWNER.store(user_task.id.to_u64(), core::sync::atomic::Ordering::Relaxed);
     spawn_task(user_task);
 
-    /*
     let mp_response = MP_REQUEST.get_response().unwrap();
     for cpu in mp_response.cpus() {
-        cpu.goto_address.write(ap_entry);
+        if cpu.lapic_id != mp_response.bsp_lapic_id() {
+            cpu.goto_address.write(ap_entry);
+        }
     }
-    */
 
     x86_64::instructions::interrupts::enable();
 
     hlt_loop();
 }
 
-#[allow(dead_code)]
 /// AP - Application processor
 unsafe extern "C" fn ap_entry(_cpu: &limine::mp::Cpu) -> ! {
     unsafe { kernel::memory::init_ap() };
@@ -117,7 +116,6 @@ unsafe extern "C" fn ap_entry(_cpu: &limine::mp::Cpu) -> ! {
     hlt_loop();
 }
 
-#[allow(dead_code)]
 extern "sysv64" fn init_ap() -> ! {
     gdt::init();
     interrupt::idt::init();

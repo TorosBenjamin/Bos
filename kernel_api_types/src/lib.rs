@@ -20,6 +20,8 @@ pub enum SysCallNumber {
     TransferDisplay = 13,
     GetModule = 14,
     GetDisplayInfo = 15,
+    DebugLog = 16,
+    Waitpid = 17,
 }
 
 // IPC error codes

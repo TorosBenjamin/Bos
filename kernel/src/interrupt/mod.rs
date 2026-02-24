@@ -8,7 +8,8 @@ pub mod handlers;
 #[repr(u8)]
 pub enum InterruptVector {
     LocalApicSpurious = 0x20,
-    LocalApicTimer,
-    LocalApicError,
+    LocalApicTimer,       // 0x21
+    LocalApicError,       // 0x22
     Keyboard = 0x23,
+    Reschedule = 0x24,
 }

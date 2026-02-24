@@ -63,10 +63,14 @@ pub fn schedule_from_interrupt(cpu: &CpuLocalData) -> *mut CpuContext {
     if let Some(prev_task) = rq.current_task.take() {
         // Context is already saved by timer handler - no need to save RSP
 
-        // If the previous task is a zombie, don't re-queue it — just drop the Arc.
-        if prev_task.state.load(Ordering::Relaxed) != TaskState::Zombie {
-            prev_task.state.store(TaskState::Ready, Ordering::Relaxed);
-            rq.ready.push_back(prev_task);
+        match prev_task.state.load(Ordering::Relaxed) {
+            // Zombie: being cleaned up by scheduler drop
+            // Sleeping: waiter slot holds the only remaining Arc; just drop this one
+            TaskState::Zombie | TaskState::Sleeping => {}
+            _ => {
+                prev_task.state.store(TaskState::Ready, Ordering::Relaxed);
+                rq.ready.push_back(prev_task);
+            }
         }
     }
 

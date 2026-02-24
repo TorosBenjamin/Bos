@@ -4,7 +4,6 @@ use alloc::collections::BTreeMap;
 use core::arch::naked_asm;
 use core::num::NonZero;
 use x86_64::VirtAddr;
-use x86_64::registers::model_specific::PatMemoryType;
 use x86_64::structures::paging::{Mapper, Page, PageSize, PageTableFlags, Size4KiB};
 
 pub const NORMAL_STACK_SIZE: u64 = 256 * 0x400;
@@ -124,7 +123,7 @@ impl Drop for GuardedStack {
         // Unmap and free each mapped page (index 0 is the guard page, skip it)
         for i in 1..self.n_virtual_pages {
             let page = self.guard_page + i;
-            if let Ok((frame, _, flush)) = unsafe { mapper.unmap(page) } {
+            if let Ok((frame, _, flush)) =  mapper.unmap(page) {
                 flush.flush();
                 let _ = physical_memory.free_frame(
                     frame,

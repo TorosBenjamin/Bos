@@ -431,6 +431,16 @@ pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: Interrupt
     }
 }
 
+/// Reschedule IPI handler: just send EOI. The CPU was woken from hlt;
+/// the next timer tick will schedule the newly-ready task.
+pub extern "x86-interrupt" fn reschedule_ipi_handler(_stack_frame: InterruptStackFrame) {
+    let cpu = get_local();
+    unsafe {
+        let local_apic = &mut *cpu.local_apic.get().unwrap().get();
+        local_apic.end_of_interrupt();
+    }
+}
+
 // -- NMI ---
 pub fn handle_panic_from_other_cpu() -> ! {
     if let Some(local) = try_get_local()

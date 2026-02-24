@@ -4,6 +4,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
+use crate::task::task::{Task, TaskState};
 
 pub const MAX_MESSAGE_SIZE: usize = 4096;
 pub const DEFAULT_CHANNEL_CAPACITY: usize = 16;
@@ -27,6 +28,10 @@ pub struct Channel {
     pub inner: Mutex<ChannelInner>,
     pub send_closed: AtomicBool,
     pub recv_closed: AtomicBool,
+    /// Task sleeping waiting to receive; woken when try_send succeeds.
+    pub recv_waiter: Mutex<Option<(Arc<Task>, u32)>>,
+    /// Task sleeping waiting to send (channel full); woken when try_recv succeeds.
+    pub send_waiter: Mutex<Option<(Arc<Task>, u32)>>,
 }
 
 pub struct ChannelInner {
@@ -59,6 +64,8 @@ pub fn create_channel(capacity: usize) -> (u64, u64) {
         }),
         send_closed: AtomicBool::new(false),
         recv_closed: AtomicBool::new(false),
+        recv_waiter: Mutex::new(None),
+        send_waiter: Mutex::new(None),
     });
 
     let send_id = NEXT_ENDPOINT_ID.fetch_add(1, Ordering::Relaxed);
@@ -78,6 +85,18 @@ pub fn create_channel(capacity: usize) -> (u64, u64) {
     registry.insert(recv_id, recv_ep);
 
     (send_id, recv_id)
+}
+
+fn wake_waiter(waiter: &Mutex<Option<(Arc<Task>, u32)>>) {
+    if let Some((task, cpu_id)) = waiter.lock().take() {
+        task.state.store(TaskState::Ready, Ordering::Release);
+        crate::task::local_scheduler::add(crate::memory::cpu_local_data::get_cpu(cpu_id), task);
+        let local_kernel_id = crate::memory::cpu_local_data::get_local().kernel_id;
+        if cpu_id != local_kernel_id {
+            let apic_id = crate::memory::cpu_local_data::local_apic_id_of(cpu_id);
+            crate::apic::send_fixed_ipi(apic_id, u8::from(crate::interrupt::InterruptVector::Reschedule));
+        }
+    }
 }
 
 pub fn try_send(endpoint_id: u64, data: &[u8]) -> Result<(), IpcError> {
@@ -104,6 +123,9 @@ pub fn try_send(endpoint_id: u64, data: &[u8]) -> Result<(), IpcError> {
     }
 
     inner.queue.push_back(data.to_vec());
+    drop(inner);
+    // Wake any task that was sleeping waiting to receive
+    wake_waiter(&channel.recv_waiter);
     Ok(())
 }
 
@@ -119,6 +141,9 @@ pub fn try_recv(endpoint_id: u64) -> Result<Vec<u8>, IpcError> {
 
     let mut inner = channel.inner.lock();
     if let Some(msg) = inner.queue.pop_front() {
+        drop(inner);
+        // Wake any task that was sleeping waiting to send (queue was full)
+        wake_waiter(&channel.send_waiter);
         return Ok(msg);
     }
 

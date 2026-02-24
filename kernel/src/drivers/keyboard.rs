@@ -1,6 +1,8 @@
+use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
 use kernel_api_types::KeyEvent;
 use spin::Mutex;
+use crate::task::task::{Task, TaskState};
 
 /// PS/2 Set 1 scancode-to-ASCII lookup table (unshifted)
 static NORMAL: &[u8] = &[
@@ -63,6 +65,9 @@ static KEY_BUFFER: Mutex<KeyBuffer> = Mutex::new(KeyBuffer::new());
 
 /// Set when a key event is available (used to wake sleeping tasks)
 static KEY_AVAILABLE: AtomicBool = AtomicBool::new(false);
+
+/// Task sleeping on keyboard input: (task_arc, cpu_kernel_id)
+pub static KEYBOARD_WAITER: Mutex<Option<(Arc<Task>, u32)>> = Mutex::new(None);
 
 // Keyboard state
 static SHIFT_PRESSED: Mutex<bool> = Mutex::new(false);
@@ -155,6 +160,15 @@ pub fn handle_scancode(scancode: u8) {
 fn push_event(event: KeyEvent) {
     KEY_BUFFER.lock().push(event);
     KEY_AVAILABLE.store(true, Ordering::Release);
+    if let Some((task, cpu_id)) = KEYBOARD_WAITER.lock().take() {
+        task.state.store(TaskState::Ready, Ordering::Release);
+        crate::task::local_scheduler::add(crate::memory::cpu_local_data::get_cpu(cpu_id), task);
+        let local_kernel_id = crate::memory::cpu_local_data::get_local().kernel_id;
+        if cpu_id != local_kernel_id {
+            let apic_id = crate::memory::cpu_local_data::local_apic_id_of(cpu_id);
+            crate::apic::send_fixed_ipi(apic_id, u8::from(crate::interrupt::InterruptVector::Reschedule));
+        }
+    }
 }
 
 /// Try to pop a key event from the buffer. Returns None if empty.
