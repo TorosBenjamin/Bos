@@ -13,6 +13,15 @@ user_land = {path = "../../userspace/user_land", artifact = "bin", target = "x86
 
 [features]
 kernel_test = []
+test_mem       = ["kernel_test"]
+test_time      = ["kernel_test"]
+test_interrupts = ["kernel_test"]
+test_graphics  = ["kernel_test"]
+test_usermode  = ["kernel_test"]
+test_keyboard  = ["kernel_test"]
+test_ipc       = ["kernel_test"]
+test_display   = ["kernel_test"]
+test_scheduler = ["kernel_test"]
 
 [[bin]]
 name = "runner"

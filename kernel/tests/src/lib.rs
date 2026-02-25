@@ -2,8 +2,8 @@
 #![no_main]
 extern crate alloc;
 
-use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::panic::PanicInfo;
 use kernel::hlt_loop;
 
@@ -22,16 +22,6 @@ pub mod ipc;
 pub mod user_mode;
 pub mod display_owner;
 pub mod get_module;
-
-pub fn test_runner(tests: &[&dyn Fn()]) {
-    log::info!("Running {} tests", tests.len());
-    for test in tests {
-        test();
-    }
-    exit_qemu(QemuExitCode::Success);
-
-    hlt_loop();
-}
 
 pub fn test_panic_handler(info: &PanicInfo) -> ! {
     log::error!("[failed]");
@@ -59,122 +49,159 @@ where
     }
 }
 
-
 #[derive(Debug)]
 pub enum TestResult {
     Ok,
     Failed(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestGroup {
+    Memory,     // physical_memory, vaddr_allocator, mmap
+    Time,       // time
+    Interrupts, // interrupts, timer_interrupt
+    Graphics,   // graphics
+    UserMode,   // user_mode (diagnostic + scheduler handoff)
+    Keyboard,   // keyboard
+    Ipc,        // ipc
+    Display,    // display_owner, get_module
+    Scheduler,  // scheduler, spawn
+}
 
-pub fn tests() -> &'static [&'static dyn KernelTest] {
+pub struct TestEntry {
+    pub group: TestGroup,
+    pub test: &'static dyn KernelTest,
+}
+
+pub fn parse_test_group(cmdline: &[u8]) -> Option<TestGroup> {
+    let s = core::str::from_utf8(cmdline).ok()?;
+    let prefix = "test_suite=";
+    let pos = s.find(prefix)?;
+    let value = s[pos + prefix.len()..].split_whitespace().next()?;
+    match value {
+        "mem"        => Some(TestGroup::Memory),
+        "time"       => Some(TestGroup::Time),
+        "interrupts" => Some(TestGroup::Interrupts),
+        "graphics"   => Some(TestGroup::Graphics),
+        "usermode"   => Some(TestGroup::UserMode),
+        "keyboard"   => Some(TestGroup::Keyboard),
+        "ipc"        => Some(TestGroup::Ipc),
+        "display"    => Some(TestGroup::Display),
+        "scheduler"  => Some(TestGroup::Scheduler),
+        _            => None,
+    }
+}
+
+pub fn tests() -> &'static [TestEntry] {
     &[
-        &trivial_assertion,
+        // Time
+        TestEntry { group: TestGroup::Time, test: &time::tsc_calibration },
+        TestEntry { group: TestGroup::Time, test: &time::pit_sleep },
 
-        // Time tests
-        &time::tsc_calibration,
-        &time::pit_sleep,
+        // Memory — virtual address allocator
+        TestEntry { group: TestGroup::Memory, test: &vaddr_allocator::allocate_kernel_page },
+        TestEntry { group: TestGroup::Memory, test: &vaddr_allocator::allocate_user_page },
+        TestEntry { group: TestGroup::Memory, test: &vaddr_allocator::allocate_multiple_pages },
 
-        // Virtual Memory tests
-        &vaddr_allocator::allocate_kernel_page,
-        &vaddr_allocator::allocate_user_page,
-        &vaddr_allocator::allocate_multiple_pages,
+        // Memory — mmap
+        TestEntry { group: TestGroup::Memory, test: &mmap::test_user_vaddr_allocate },
+        TestEntry { group: TestGroup::Memory, test: &mmap::test_user_vaddr_free },
+        TestEntry { group: TestGroup::Memory, test: &mmap::test_user_vaddr_no_overlap },
+        TestEntry { group: TestGroup::Memory, test: &mmap::test_mmap_flags_in_api },
 
-        // Mmap tests
-        &mmap::test_user_vaddr_allocate,
-        &mmap::test_user_vaddr_free,
-        &mmap::test_user_vaddr_no_overlap,
-        &mmap::test_mmap_flags_in_api,
+        // Memory — physical frames
+        TestEntry { group: TestGroup::Memory, test: &physical_memory::alloc_one_frame },
+        TestEntry { group: TestGroup::Memory, test: &physical_memory::free_and_reuse_kernel_frame },
+        TestEntry { group: TestGroup::Memory, test: &physical_memory::frame_alignment },
+        TestEntry { group: TestGroup::Memory, test: &physical_memory::kernel_type },
+        TestEntry { group: TestGroup::Memory, test: &physical_memory::user_type },
+        TestEntry { group: TestGroup::Memory, test: &physical_memory::exhaustion },
+        TestEntry { group: TestGroup::Memory, test: &physical_memory::duplicate_allocation },
 
-        // Interrupts tests
-        &interrupts::gdt_loaded,
-        &interrupts::idt_loaded,
-        &interrupts::breakpoint_exception,
+        // Interrupts
+        TestEntry { group: TestGroup::Interrupts, test: &interrupts::gdt_loaded },
+        TestEntry { group: TestGroup::Interrupts, test: &interrupts::idt_loaded },
+        TestEntry { group: TestGroup::Interrupts, test: &interrupts::breakpoint_exception },
+        TestEntry { group: TestGroup::Interrupts, test: &timer_interrupt::timer_interrupt_fires },
 
-        // Timer interrupt test
-        &timer_interrupt::timer_interrupt_fires,
+        // Graphics
+        TestEntry { group: TestGroup::Graphics, test: &graphics::basic_draw },
+        TestEntry { group: TestGroup::Graphics, test: &graphics::bounding_box_valid },
 
-        // Graphics tests
-        &graphics::basic_draw,
-        &graphics::bounding_box_valid,
+        // User mode (diagnostic, no scheduler handoff)
+        TestEntry { group: TestGroup::UserMode, test: &user_mode::test_user_selector_rpl },
+        TestEntry { group: TestGroup::UserMode, test: &user_mode::test_lower_half_end_canonical },
+        TestEntry { group: TestGroup::UserMode, test: &user_mode::test_user_task_creation },
+        TestEntry { group: TestGroup::UserMode, test: &user_mode::test_user_page_table_kernel_mapped },
+        TestEntry { group: TestGroup::UserMode, test: &user_mode::test_user_task_iretq_frame },
 
-        // User mode diagnostic tests (run before scheduler handoff)
-        &user_mode::test_user_selector_rpl,
-        &user_mode::test_lower_half_end_canonical,
-        &user_mode::test_user_task_creation,
-        &user_mode::test_user_page_table_kernel_mapped,
-        &user_mode::test_user_task_iretq_frame,
+        // Keyboard
+        TestEntry { group: TestGroup::Keyboard, test: &keyboard::test_key_a_press },
+        TestEntry { group: TestGroup::Keyboard, test: &keyboard::test_key_release_ignored },
+        TestEntry { group: TestGroup::Keyboard, test: &keyboard::test_shift_produces_uppercase },
+        TestEntry { group: TestGroup::Keyboard, test: &keyboard::test_enter_key },
+        TestEntry { group: TestGroup::Keyboard, test: &keyboard::test_arrow_keys },
+        TestEntry { group: TestGroup::Keyboard, test: &keyboard::test_buffer_empty_after_drain },
+        TestEntry { group: TestGroup::Keyboard, test: &keyboard::test_multiple_keys_order },
+        TestEntry { group: TestGroup::Keyboard, test: &keyboard::test_capslock_toggle },
 
-        // Keyboard driver tests
-        &keyboard::test_key_a_press,
-        &keyboard::test_key_release_ignored,
-        &keyboard::test_shift_produces_uppercase,
-        &keyboard::test_enter_key,
-        &keyboard::test_arrow_keys,
-        &keyboard::test_buffer_empty_after_drain,
-        &keyboard::test_multiple_keys_order,
-        &keyboard::test_capslock_toggle,
+        // IPC
+        TestEntry { group: TestGroup::Ipc, test: &ipc::test_channel_create },
+        TestEntry { group: TestGroup::Ipc, test: &ipc::test_send_recv },
+        TestEntry { group: TestGroup::Ipc, test: &ipc::test_send_on_recv_fails },
+        TestEntry { group: TestGroup::Ipc, test: &ipc::test_recv_on_send_fails },
+        TestEntry { group: TestGroup::Ipc, test: &ipc::test_close_then_fail },
+        TestEntry { group: TestGroup::Ipc, test: &ipc::test_channel_full },
+        TestEntry { group: TestGroup::Ipc, test: &ipc::test_recv_closed_then_send_fails },
+        TestEntry { group: TestGroup::Ipc, test: &ipc::test_fifo_order },
 
-        // Physical memory tests
-        &physical_memory::alloc_one_frame,
-        &physical_memory::free_and_reuse_kernel_frame,
-        &physical_memory::frame_alignment,
-        &physical_memory::kernel_type,
-        &physical_memory::user_type,
-        &physical_memory::exhaustion,
-        &physical_memory::duplicate_allocation,
+        // Display
+        TestEntry { group: TestGroup::Display, test: &display_owner::test_no_current_task_is_not_owner },
+        TestEntry { group: TestGroup::Display, test: &display_owner::test_no_owner_is_not_owner },
+        TestEntry { group: TestGroup::Display, test: &display_owner::test_non_owner_get_bounding_box_rejected },
+        TestEntry { group: TestGroup::Display, test: &display_owner::test_transfer_display_not_owner },
+        TestEntry { group: TestGroup::Display, test: &display_owner::test_transfer_display_no_current_task },
+        TestEntry { group: TestGroup::Display, test: &display_owner::test_display_owner_atomic },
+        TestEntry { group: TestGroup::Display, test: &get_module::test_init_task_module_exists },
+        TestEntry { group: TestGroup::Display, test: &get_module::test_display_server_module_exists },
+        TestEntry { group: TestGroup::Display, test: &get_module::test_nonexistent_module_missing },
+        TestEntry { group: TestGroup::Display, test: &get_module::test_module_has_nonzero_size },
 
+        // Scheduler
+        TestEntry { group: TestGroup::Scheduler, test: &spawn::test_spawn_error_invalid_elf },
+        TestEntry { group: TestGroup::Scheduler, test: &spawn::test_spawn_creates_task },
+        TestEntry { group: TestGroup::Scheduler, test: &spawn::test_spawn_child_arg },
+        TestEntry { group: TestGroup::Scheduler, test: &scheduler::simple_task_creation },
 
-        // IPC tests
-        &ipc::test_channel_create,
-        &ipc::test_send_recv,
-        &ipc::test_send_on_recv_fails,
-        &ipc::test_recv_on_send_fails,
-        &ipc::test_close_then_fail,
-        &ipc::test_channel_full,
-        &ipc::test_recv_closed_then_send_fails,
-        &ipc::test_fifo_order,
-
-        // Display owner tests
-        &display_owner::test_no_current_task_is_not_owner,
-        &display_owner::test_no_owner_is_not_owner,
-        &display_owner::test_non_owner_get_bounding_box_rejected,
-        &display_owner::test_transfer_display_not_owner,
-        &display_owner::test_transfer_display_no_current_task,
-        &display_owner::test_display_owner_atomic,
-
-        // GetModule tests
-        &get_module::test_init_task_module_exists,
-        &get_module::test_display_server_module_exists,
-        &get_module::test_nonexistent_module_missing,
-        &get_module::test_module_has_nonzero_size,
-
-        // Spawn tests
-        &spawn::test_spawn_error_invalid_elf,
-        &spawn::test_spawn_creates_task,
-        &spawn::test_spawn_child_arg,
-
-        // Scheduler tests
-        &scheduler::simple_task_creation,
-
-        // Scheduler handoff test — enables interrupts and never returns.
-        // MUST be the very last test. Exits QEMU with the result.
-        &user_mode::test_user_task_runs,
+        // Scheduler handoff — enables interrupts and never returns.
+        // MUST remain last in the list.
+        TestEntry { group: TestGroup::UserMode, test: &user_mode::test_user_task_runs },
     ]
 }
 
-pub fn run_tests() -> ! {
-    let tests = tests();
+pub fn run_tests(filter: Option<TestGroup>) -> ! {
+    let all_tests = tests();
 
-    log::info!("Running {} kernel tests", tests.len());
+    // When a group filter is active, skip the scheduler-handoff test unless it
+    // belongs to the requested group (it enables interrupts and never returns).
+    let filtered: Vec<&TestEntry> = all_tests
+        .iter()
+        .filter(|e| filter.map_or(true, |g| e.group == g))
+        .collect();
+
+    if let Some(group) = filter {
+        log::info!("Running {:?} tests ({} total)", group, filtered.len());
+    } else {
+        log::info!("Running all {} kernel tests", filtered.len());
+    }
+
     let mut failed = 0;
-
-    for test in tests {
-        let result = test.run();
+    for entry in &filtered {
+        let result = entry.test.run();
         match result {
-            TestResult::Ok => log::info!("{} [ok]", test.name()),
+            TestResult::Ok => log::info!("{} [ok]", entry.test.name()),
             TestResult::Failed(msg) => {
-                log::error!("{} [failed] - {}", test.name(), msg);
+                log::error!("{} [failed] - {}", entry.test.name(), msg);
                 failed += 1;
             }
         }
@@ -184,7 +211,7 @@ pub fn run_tests() -> ! {
         log::info!("All tests passed!");
         exit_qemu(QemuExitCode::Success);
     } else {
-        log::info!("{} kernel tests failed", failed);
+        log::error!("{} test(s) failed", failed);
         exit_qemu(QemuExitCode::Failed);
     }
 
@@ -207,12 +234,3 @@ pub fn exit_qemu(exit_code: QemuExitCode) {
     }
 }
 
-fn trivial_assertion() -> TestResult {
-    let a = 1;
-    let b = 1;
-    if a == b {
-        TestResult::Ok
-    } else {
-        TestResult::Failed(format!("{} != {}", a, b))
-    }
-}

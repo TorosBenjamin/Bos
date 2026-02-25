@@ -7,4 +7,13 @@ bindeps = true
 rustflags = ["-C", "relocation-model=static", "-C", "no-redzone"]
 
 [alias]
-ktest = "run -p runner --features kernel_test --"
+ktest            = "run -p runner --features kernel_test --"
+ktest-mem        = "run -p runner --features test_mem --"
+ktest-time       = "run -p runner --features test_time --"
+ktest-interrupts = "run -p runner --features test_interrupts --"
+ktest-graphics   = "run -p runner --features test_graphics --"
+ktest-usermode   = "run -p runner --features test_usermode --"
+ktest-keyboard   = "run -p runner --features test_keyboard --"
+ktest-ipc        = "run -p runner --features test_ipc --"
+ktest-display    = "run -p runner --features test_display --"
+ktest-scheduler  = "run -p runner --features test_scheduler --"

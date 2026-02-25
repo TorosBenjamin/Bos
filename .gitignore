@@ -6,3 +6,4 @@
 /.claude/
 /docs/combined_docs.md
 /limine-uefi-cd.bin
+/tools/runner/out_dir/

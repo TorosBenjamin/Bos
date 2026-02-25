@@ -2,7 +2,7 @@
 #![no_main]
 
 use kernel::graphics::display;
-use kernel::limine_requests::{FRAME_BUFFER_REQUEST, MEMORY_MAP_REQUEST, RSDP_REQUEST, MP_REQUEST};
+use kernel::limine_requests::{FRAME_BUFFER_REQUEST, KERNEL_FILE_REQUEST, MEMORY_MAP_REQUEST, MP_REQUEST, RSDP_REQUEST};
 use kernel::interrupt::nmi_handler_state;
 use kernel::{acpi, apic, gdt, interrupt, logger, time};
 
@@ -40,6 +40,11 @@ unsafe extern "C" fn kernel_main() -> ! {
 
     kernel::task::local_scheduler::init_run_queue();
 
-    // Call the generated test harness
-    tests::run_tests();
+    // Read the kernel cmdline from Limine to determine which test group to run.
+    let group_filter = KERNEL_FILE_REQUEST
+        .get_response()
+        .map(|r| tests::parse_test_group(r.file().string().to_bytes()))
+        .flatten();
+
+    tests::run_tests(group_filter);
 }

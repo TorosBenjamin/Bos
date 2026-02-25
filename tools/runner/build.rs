@@ -26,9 +26,39 @@ fn main() {
     let iso_dir = out_dir.join("iso_root");
     create_dir_all(&iso_dir).unwrap();
 
-    // Limine config will be in `limine.conf`
+    // Generate limine.conf, optionally with a test_suite cmdline for filtered runs.
+    let test_suite = if env::var("CARGO_FEATURE_TEST_MEM").is_ok() {
+        Some("mem")
+    } else if env::var("CARGO_FEATURE_TEST_TIME").is_ok() {
+        Some("time")
+    } else if env::var("CARGO_FEATURE_TEST_INTERRUPTS").is_ok() {
+        Some("interrupts")
+    } else if env::var("CARGO_FEATURE_TEST_GRAPHICS").is_ok() {
+        Some("graphics")
+    } else if env::var("CARGO_FEATURE_TEST_USERMODE").is_ok() {
+        Some("usermode")
+    } else if env::var("CARGO_FEATURE_TEST_KEYBOARD").is_ok() {
+        Some("keyboard")
+    } else if env::var("CARGO_FEATURE_TEST_IPC").is_ok() {
+        Some("ipc")
+    } else if env::var("CARGO_FEATURE_TEST_DISPLAY").is_ok() {
+        Some("display")
+    } else if env::var("CARGO_FEATURE_TEST_SCHEDULER").is_ok() {
+        Some("scheduler")
+    } else {
+        None
+    };
+
+    let cmdline_line = match test_suite {
+        Some(suite) => format!("    cmdline: test_suite={suite}\n"),
+        None => String::new(),
+    };
+
+    let limine_conf_content = format!(
+        "TIMEOUT 0\nDEFAULT_ENTRY 0\n\n/Bos\n    protocol: limine\n    kernel_path: boot():/kernel\n{cmdline_line}"
+    );
     let limine_conf = iso_dir.join("limine.conf");
-    ensure_symlink(runner_dir.join("limine.conf"), limine_conf).unwrap();
+    std::fs::write(&limine_conf, limine_conf_content).unwrap();
 
     let boot_dir = iso_dir.join("boot");
     create_dir_all(&boot_dir).unwrap();

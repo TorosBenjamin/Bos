@@ -3,8 +3,8 @@ use limine::BaseRevision;
 use limine::modules::InternalModule;
 use limine::mp::RequestFlags;
 use limine::request::{
-    FramebufferRequest, HhdmRequest, MemoryMapRequest, ModuleRequest, MpRequest, RequestsEndMarker,
-    RequestsStartMarker, RsdpRequest,
+    FramebufferRequest, HhdmRequest, KernelFileRequest, MemoryMapRequest, ModuleRequest, MpRequest,
+    RequestsEndMarker, RequestsStartMarker, RsdpRequest,
 };
 
 pub const INIT_TASK_PATH: &CStr = c"/init_task";
@@ -45,6 +45,10 @@ pub static MODULE_REQUEST: ModuleRequest =
         &InternalModule::new().with_path(BOUNCING_CUBE_1_PATH),
         &InternalModule::new().with_path(BOUNCING_CUBE_2_PATH),
     ]);
+
+#[used]
+#[unsafe(link_section = ".requests")]
+pub static KERNEL_FILE_REQUEST: KernelFileRequest = KernelFileRequest::new();
 
 #[used]
 #[unsafe(link_section = ".requests_start_marker")]
