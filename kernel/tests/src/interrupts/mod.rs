@@ -1,3 +1,5 @@
+pub mod timer;
+
 use crate::TestResult;
 use x86_64::registers::segmentation::{Segment, CS};
 use x86_64::instructions::tables::sidt;

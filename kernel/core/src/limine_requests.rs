@@ -2,10 +2,7 @@ use core::ffi::CStr;
 use limine::BaseRevision;
 use limine::modules::InternalModule;
 use limine::mp::RequestFlags;
-use limine::request::{
-    FramebufferRequest, HhdmRequest, KernelFileRequest, MemoryMapRequest, ModuleRequest, MpRequest,
-    RequestsEndMarker, RequestsStartMarker, RsdpRequest,
-};
+use limine::request::{ExecutableFileRequest, FramebufferRequest, HhdmRequest, MemoryMapRequest, ModuleRequest, MpRequest, RequestsEndMarker, RequestsStartMarker, RsdpRequest};
 
 pub const INIT_TASK_PATH: &CStr = c"/init_task";
 pub const DISPLAY_SERVER_PATH: &CStr = c"/display_server";
@@ -48,7 +45,7 @@ pub static MODULE_REQUEST: ModuleRequest =
 
 #[used]
 #[unsafe(link_section = ".requests")]
-pub static KERNEL_FILE_REQUEST: KernelFileRequest = KernelFileRequest::new();
+pub static KERNEL_FILE_REQUEST: ExecutableFileRequest = ExecutableFileRequest::new();
 
 #[used]
 #[unsafe(link_section = ".requests_start_marker")]

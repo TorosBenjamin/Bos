@@ -8,20 +8,15 @@ use core::panic::PanicInfo;
 use kernel::hlt_loop;
 
 pub mod panic_handler;
-pub mod physical_memory;
+pub mod memory;
 pub mod time;
-pub mod vaddr_allocator;
 pub mod interrupts;
 pub mod graphics;
-pub mod keyboard;
-pub mod mmap;
-pub mod scheduler;
-pub mod spawn;
-pub mod timer_interrupt;
-pub mod ipc;
 pub mod user_mode;
-pub mod display_owner;
-pub mod get_module;
+pub mod keyboard;
+pub mod ipc;
+pub mod display;
+pub mod scheduler;
 
 pub fn test_panic_handler(info: &PanicInfo) -> ! {
     log::error!("[failed]");
@@ -99,30 +94,30 @@ pub fn tests() -> &'static [TestEntry] {
         TestEntry { group: TestGroup::Time, test: &time::pit_sleep },
 
         // Memory — virtual address allocator
-        TestEntry { group: TestGroup::Memory, test: &vaddr_allocator::allocate_kernel_page },
-        TestEntry { group: TestGroup::Memory, test: &vaddr_allocator::allocate_user_page },
-        TestEntry { group: TestGroup::Memory, test: &vaddr_allocator::allocate_multiple_pages },
+        TestEntry { group: TestGroup::Memory, test: &memory::vaddr::allocate_kernel_page },
+        TestEntry { group: TestGroup::Memory, test: &memory::vaddr::allocate_user_page },
+        TestEntry { group: TestGroup::Memory, test: &memory::vaddr::allocate_multiple_pages },
 
         // Memory — mmap
-        TestEntry { group: TestGroup::Memory, test: &mmap::test_user_vaddr_allocate },
-        TestEntry { group: TestGroup::Memory, test: &mmap::test_user_vaddr_free },
-        TestEntry { group: TestGroup::Memory, test: &mmap::test_user_vaddr_no_overlap },
-        TestEntry { group: TestGroup::Memory, test: &mmap::test_mmap_flags_in_api },
+        TestEntry { group: TestGroup::Memory, test: &memory::mmap::test_user_vaddr_allocate },
+        TestEntry { group: TestGroup::Memory, test: &memory::mmap::test_user_vaddr_free },
+        TestEntry { group: TestGroup::Memory, test: &memory::mmap::test_user_vaddr_no_overlap },
+        TestEntry { group: TestGroup::Memory, test: &memory::mmap::test_mmap_flags_in_api },
 
         // Memory — physical frames
-        TestEntry { group: TestGroup::Memory, test: &physical_memory::alloc_one_frame },
-        TestEntry { group: TestGroup::Memory, test: &physical_memory::free_and_reuse_kernel_frame },
-        TestEntry { group: TestGroup::Memory, test: &physical_memory::frame_alignment },
-        TestEntry { group: TestGroup::Memory, test: &physical_memory::kernel_type },
-        TestEntry { group: TestGroup::Memory, test: &physical_memory::user_type },
-        TestEntry { group: TestGroup::Memory, test: &physical_memory::exhaustion },
-        TestEntry { group: TestGroup::Memory, test: &physical_memory::duplicate_allocation },
+        TestEntry { group: TestGroup::Memory, test: &memory::physical::alloc_one_frame },
+        TestEntry { group: TestGroup::Memory, test: &memory::physical::free_and_reuse_kernel_frame },
+        TestEntry { group: TestGroup::Memory, test: &memory::physical::frame_alignment },
+        TestEntry { group: TestGroup::Memory, test: &memory::physical::kernel_type },
+        TestEntry { group: TestGroup::Memory, test: &memory::physical::user_type },
+        TestEntry { group: TestGroup::Memory, test: &memory::physical::exhaustion },
+        TestEntry { group: TestGroup::Memory, test: &memory::physical::duplicate_allocation },
 
         // Interrupts
         TestEntry { group: TestGroup::Interrupts, test: &interrupts::gdt_loaded },
         TestEntry { group: TestGroup::Interrupts, test: &interrupts::idt_loaded },
         TestEntry { group: TestGroup::Interrupts, test: &interrupts::breakpoint_exception },
-        TestEntry { group: TestGroup::Interrupts, test: &timer_interrupt::timer_interrupt_fires },
+        TestEntry { group: TestGroup::Interrupts, test: &interrupts::timer::timer_interrupt_fires },
 
         // Graphics
         TestEntry { group: TestGroup::Graphics, test: &graphics::basic_draw },
@@ -156,22 +151,25 @@ pub fn tests() -> &'static [TestEntry] {
         TestEntry { group: TestGroup::Ipc, test: &ipc::test_fifo_order },
 
         // Display
-        TestEntry { group: TestGroup::Display, test: &display_owner::test_no_current_task_is_not_owner },
-        TestEntry { group: TestGroup::Display, test: &display_owner::test_no_owner_is_not_owner },
-        TestEntry { group: TestGroup::Display, test: &display_owner::test_non_owner_get_bounding_box_rejected },
-        TestEntry { group: TestGroup::Display, test: &display_owner::test_transfer_display_not_owner },
-        TestEntry { group: TestGroup::Display, test: &display_owner::test_transfer_display_no_current_task },
-        TestEntry { group: TestGroup::Display, test: &display_owner::test_display_owner_atomic },
-        TestEntry { group: TestGroup::Display, test: &get_module::test_init_task_module_exists },
-        TestEntry { group: TestGroup::Display, test: &get_module::test_display_server_module_exists },
-        TestEntry { group: TestGroup::Display, test: &get_module::test_nonexistent_module_missing },
-        TestEntry { group: TestGroup::Display, test: &get_module::test_module_has_nonzero_size },
+        TestEntry { group: TestGroup::Display, test: &display::owner::test_no_current_task_is_not_owner },
+        TestEntry { group: TestGroup::Display, test: &display::owner::test_no_owner_is_not_owner },
+        TestEntry { group: TestGroup::Display, test: &display::owner::test_non_owner_get_bounding_box_rejected },
+        TestEntry { group: TestGroup::Display, test: &display::owner::test_transfer_display_not_owner },
+        TestEntry { group: TestGroup::Display, test: &display::owner::test_transfer_display_no_current_task },
+        TestEntry { group: TestGroup::Display, test: &display::owner::test_display_owner_atomic },
+        TestEntry { group: TestGroup::Display, test: &display::modules::test_init_task_module_exists },
+        TestEntry { group: TestGroup::Display, test: &display::modules::test_display_server_module_exists },
+        TestEntry { group: TestGroup::Display, test: &display::modules::test_nonexistent_module_missing },
+        TestEntry { group: TestGroup::Display, test: &display::modules::test_module_has_nonzero_size },
 
         // Scheduler
-        TestEntry { group: TestGroup::Scheduler, test: &spawn::test_spawn_error_invalid_elf },
-        TestEntry { group: TestGroup::Scheduler, test: &spawn::test_spawn_creates_task },
-        TestEntry { group: TestGroup::Scheduler, test: &spawn::test_spawn_child_arg },
+        TestEntry { group: TestGroup::Scheduler, test: &scheduler::spawn::test_spawn_error_invalid_elf },
+        TestEntry { group: TestGroup::Scheduler, test: &scheduler::spawn::test_spawn_creates_task },
+        TestEntry { group: TestGroup::Scheduler, test: &scheduler::spawn::test_spawn_child_arg },
         TestEntry { group: TestGroup::Scheduler, test: &scheduler::simple_task_creation },
+        TestEntry { group: TestGroup::Scheduler, test: &scheduler::stack::test_context_switch_registers },
+        TestEntry { group: TestGroup::Scheduler, test: &scheduler::stack::test_stack_alignment },
+        TestEntry { group: TestGroup::Scheduler, test: &scheduler::stack::test_timer_stack_alignment },
 
         // Scheduler handoff — enables interrupts and never returns.
         // MUST remain last in the list.

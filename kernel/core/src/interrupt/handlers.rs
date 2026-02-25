@@ -6,11 +6,14 @@ use crate::task::task::{
     CTX_R8, CTX_R9, CTX_R10, CTX_R11, CTX_R12, CTX_R13, CTX_R14, CTX_R15,
     CTX_RIP, CTX_CS, CTX_RFLAGS, CTX_RSP, CTX_SS,
 };
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
 
 pub static TIMER_INTERRUPT_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Set to `true` by the timer interrupt inner handler once it fires with a
+/// properly 8-byte-aligned stack. Used by `test_timer_stack_alignment`.
+pub static TIMER_STACK_ALIGNMENT_OK: AtomicBool = AtomicBool::new(false);
 use crate::interrupt::nmi_handler_state::{NmiHandlerState, NMI_HANDLER_STATES};
 
 pub extern "x86-interrupt" fn page_fault_handler(
@@ -416,6 +419,18 @@ extern "C" fn timer_interrupt_handler_inner() -> *mut CpuContext {
     };
 
     TIMER_INTERRUPT_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    // Verify the interrupt handler was called with an 8-byte-aligned RSP (the
+    // x86-64 ABI guarantees RSP % 16 == 8 on function entry due to the return
+    // address push). Any misalignment here would indicate a broken interrupt
+    // entry path.
+    if !TIMER_STACK_ALIGNMENT_OK.load(Ordering::Relaxed) {
+        let rsp: u64;
+        unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nostack, nomem)) };
+        if rsp % 8 == 0 {
+            TIMER_STACK_ALIGNMENT_OK.store(true, Ordering::Release);
+        }
+    }
 
     crate::task::local_scheduler::schedule_from_interrupt(cpu)
 }

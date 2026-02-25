@@ -1,3 +1,7 @@
+pub mod context_switch;
+pub mod spawn;
+pub mod stack;
+
 use crate::{TestResult, exit_qemu, QemuExitCode};
 use kernel::task::task::{Task, TaskState};
 use kernel::task::global_scheduler::spawn_task;
