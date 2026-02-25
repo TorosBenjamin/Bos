@@ -100,15 +100,15 @@ pub extern "C" fn timer_interrupt_handler() {
     core::arch::naked_asm!(
         // Check if interrupted from ring 3 (CS RPL bits), swapgs if so.
         // At entry rsp points to the hardware-pushed iretq frame: [rip][cs][rflags][rsp][ss]
-        "mov r11, [rsp + 8]",   // CS from interrupt frame
+        // Save r11 first so we can use it as scratch without losing its value.
+        "push r11",
+        // After push, stack layout: [r11][rip][cs][rflags][rsp][ss]
+        // CS is now at rsp+16 (was rsp+8 before the push).
+        "mov r11, [rsp + 16]",  // CS from interrupt frame
         "test r11, 3",
         "jz 9f",                // RPL=0, from kernel, skip swapgs
         "swapgs",
         "9:",
-
-        // Use r11 as scratch to hold current context pointer
-        // (r11 is caller-saved so we can clobber it)
-        "push r11",
 
         // Load current_context_ptr from GS:[offset]
         "mov r11, gs:[{ctx_ptr_offset}]",

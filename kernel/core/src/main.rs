@@ -69,7 +69,7 @@ extern "sysv64" fn init_bsp() -> ! {
 
     ioapic::init(&acpi_tables);
     ioapic::enable_keyboard_irq(
-        u8::from(kernel::interrupt::InterruptVector::Keyboard),
+        u8::from(interrupt::InterruptVector::Keyboard),
         get_local().local_apic_id,
     );
 
@@ -84,8 +84,9 @@ extern "sysv64" fn init_bsp() -> ! {
 
     // Spawn user task from Limine module
     let user_task = user_task_from_elf::create_user_task_from_elf();
-    display::DISPLAY_OWNER.store(user_task.id.to_u64(), core::sync::atomic::Ordering::Relaxed);
+    display::DISPLAY_OWNER.store(user_task.id.to_u64(), Ordering::Relaxed);
     spawn_task(user_task);
+
 
     let mp_response = MP_REQUEST.get_response().unwrap();
     for cpu in mp_response.cpus() {
@@ -93,6 +94,7 @@ extern "sysv64" fn init_bsp() -> ! {
             cpu.goto_address.write(ap_entry);
         }
     }
+
 
     x86_64::instructions::interrupts::enable();
 

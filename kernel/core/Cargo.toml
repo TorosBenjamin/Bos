@@ -23,7 +23,7 @@ force-send-sync = "2.0.0"
 atomic_enum = "0.3.0"
 elf = {version = "0.8.0", default-features = false}
 bitflags = "2.10.0"
-kernel_api_types = {path = "../kernel_api_types"}
+kernel_api_types = {path = "../../shared/kernel_api_types"}
 x86 = "0.52.0"
 
 [[bin]]

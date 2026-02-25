@@ -134,8 +134,9 @@ unsafe extern "sysv64" fn syscall_handler(
     return_stack_pointer: u64,
 ) -> ! {
     // Handle Exit specially since it diverges (never returns to sysretq)
-    if input6 == SysCallNumber::Exit as u64 {
-        sys_exit(input0); // -> !, never returns
+    // input0 = rdi = syscall number; input1 = rsi = exit code
+    if input0 == SysCallNumber::Exit as u64 {
+        sys_exit(input1); // -> !, never returns
     }
 
     let inputs = [input1, input2, input3, input4, input5, input6];

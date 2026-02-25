@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 ulib = { path = "../ulib" }
-kernel_api_types = {path = "../kernel_api_types"}
+kernel_api_types = {path = "../../shared/kernel_api_types"}
 
 [[bin]]
 name = "init_task"

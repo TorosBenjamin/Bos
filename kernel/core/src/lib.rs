@@ -37,5 +37,5 @@ pub fn hlt_loop() -> ! {
 }
 
 pub fn project_version() -> &'static str {
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../VERSION")).trim()
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../VERSION")).trim()
 }
