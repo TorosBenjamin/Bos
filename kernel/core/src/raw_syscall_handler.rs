@@ -174,37 +174,11 @@ type SyscallFn = fn(u64, u64, u64, u64, u64, u64) -> u64;
 static mut SYS_CALL_TABLE: [Option<SyscallFn>; 256] = [None; 256];
 
 unsafe fn dispatch_syscall(syscall_number: u64, args: &[u64; 6]) -> u64 {
-    // Log syscall entry
-    let syscall_name = match syscall_number {
-        n if n == SysCallNumber::GetBoundingBox as u64 => "GetBoundingBox",
-        n if n == SysCallNumber::Exit as u64 => "Exit",
-        n if n == SysCallNumber::Spawn as u64 => "Spawn",
-        n if n == SysCallNumber::ReadKey as u64 => "ReadKey",
-        n if n == SysCallNumber::Yield as u64 => "Yield",
-        n if n == SysCallNumber::Mmap as u64 => "Mmap",
-        n if n == SysCallNumber::Munmap as u64 => "Munmap",
-        n if n == SysCallNumber::ChannelCreate as u64 => "ChannelCreate",
-        n if n == SysCallNumber::ChannelSend as u64 => "ChannelSend",
-        n if n == SysCallNumber::ChannelRecv as u64 => "ChannelRecv",
-        n if n == SysCallNumber::ChannelClose as u64 => "ChannelClose",
-        n if n == SysCallNumber::TransferDisplay as u64 => "TransferDisplay",
-        n if n == SysCallNumber::GetModule as u64 => "GetModule",
-        n if n == SysCallNumber::GetDisplayInfo as u64 => "GetDisplayInfo",
-        n if n == SysCallNumber::DebugLog as u64 => "DebugLog",
-        n if n == SysCallNumber::Waitpid as u64 => "Waitpid",
-        _ => "Unknown",
-    };
-
-    log::info!("SYSCALL: {} (#{}) args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x}]",
-        syscall_name, syscall_number, args[0], args[1], args[2], args[3], args[4], args[5]);
-
     unsafe {
         if let Some(f) = SYS_CALL_TABLE[syscall_number as usize] {
-            let ret = f(args[0], args[1], args[2], args[3], args[4], args[5]);
-            log::info!("SYSCALL: {} -> {:#x}", syscall_name, ret);
-            ret
+            f(args[0], args[1], args[2], args[3], args[4], args[5])
         } else {
-            log::error!("SYSCALL: Invalid syscall number {}", syscall_number);
+            log::error!("SYSCALL: unknown syscall number {}", syscall_number);
             0xFFFF_FFFF_FFFF_FFFF
         }
     }
@@ -222,6 +196,9 @@ pub fn init() {
     local
         .syscall_handler_stack_pointer
         .store(syscall_handler_stack.top().as_u64(), Ordering::Relaxed);
+    // Keep the stack mapped permanently — dropping it would unmap the pages,
+    // causing any SYSCALL entry to immediately page-fault.
+    core::mem::forget(syscall_handler_stack);
 
     // Enable syscall in IA32_EFER
     unsafe {

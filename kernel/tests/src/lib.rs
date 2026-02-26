@@ -17,6 +17,7 @@ pub mod keyboard;
 pub mod ipc;
 pub mod display;
 pub mod scheduler;
+pub mod elf;
 
 pub fn test_panic_handler(info: &PanicInfo) -> ! {
     log::error!("[failed]");
@@ -52,15 +53,18 @@ pub enum TestResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TestGroup {
-    Memory,     // physical_memory, vaddr_allocator, mmap
-    Time,       // time
-    Interrupts, // interrupts, timer_interrupt
-    Graphics,   // graphics
-    UserMode,   // user_mode (diagnostic + scheduler handoff)
-    Keyboard,   // keyboard
-    Ipc,        // ipc
-    Display,    // display_owner, get_module
-    Scheduler,  // scheduler, spawn
+    Memory,           // physical_memory, vaddr_allocator, mmap
+    Time,             // time
+    Interrupts,       // interrupts, timer_interrupt
+    Graphics,         // graphics
+    UserMode,         // user_mode (diagnostic + scheduler handoff)
+    Keyboard,         // keyboard
+    Ipc,              // ipc
+    Display,          // display_owner, get_module
+    Scheduler,        // scheduler, spawn
+    Elf,              // ELF parsing and mapping validation
+    SchedulerHandoff, // kernel-tasks-only scheduler handoff (diverges, exits QEMU)
+    SchedulerNoElf,   // like test_user_task_runs but no ELF — isolates user-mode vs ELF
 }
 
 pub struct TestEntry {
@@ -83,6 +87,9 @@ pub fn parse_test_group(cmdline: &[u8]) -> Option<TestGroup> {
         "ipc"        => Some(TestGroup::Ipc),
         "display"    => Some(TestGroup::Display),
         "scheduler"  => Some(TestGroup::Scheduler),
+        "elf"        => Some(TestGroup::Elf),
+        "sched"      => Some(TestGroup::SchedulerHandoff),
+        "sched-noelf" => Some(TestGroup::SchedulerNoElf),
         _            => None,
     }
 }
@@ -162,6 +169,25 @@ pub fn tests() -> &'static [TestEntry] {
         TestEntry { group: TestGroup::Display, test: &display::modules::test_nonexistent_module_missing },
         TestEntry { group: TestGroup::Display, test: &display::modules::test_module_has_nonzero_size },
 
+        // ELF parsing
+        TestEntry { group: TestGroup::Elf, test: &elf::test_elf_header_valid },
+        TestEntry { group: TestGroup::Elf, test: &elf::test_elf_has_load_segments },
+        TestEntry { group: TestGroup::Elf, test: &elf::test_elf_entry_in_load_segment },
+        TestEntry { group: TestGroup::Elf, test: &elf::test_elf_segment_file_bounds },
+        TestEntry { group: TestGroup::Elf, test: &elf::test_elf_load_segments_no_overlap },
+        TestEntry { group: TestGroup::Elf, test: &elf::test_spawn_rip_matches_elf_entry },
+        TestEntry { group: TestGroup::Elf, test: &elf::test_direct_elf_entry_matches },
+        TestEntry { group: TestGroup::Elf, test: &elf::test_spawn_data_integrity },
+        TestEntry { group: TestGroup::Elf, test: &elf::test_spawn_bss_zeroed },
+
+        // Kernel-only scheduler handoff — enables interrupts and never returns.
+        // Skipped when running all tests (cargo ktest); run via cargo ktest-sched.
+        TestEntry { group: TestGroup::SchedulerHandoff, test: &scheduler::test_kernel_tasks_run },
+
+        // Diagnostic: same structure as test_user_task_runs but 3 kernel tasks, no ELF.
+        // Skipped when running all tests; run via cargo ktest-sched-noelf.
+        TestEntry { group: TestGroup::SchedulerNoElf, test: &user_mode::test_user_task_runs_no_elf },
+
         // Scheduler
         TestEntry { group: TestGroup::Scheduler, test: &scheduler::spawn::test_spawn_error_invalid_elf },
         TestEntry { group: TestGroup::Scheduler, test: &scheduler::spawn::test_spawn_creates_task },
@@ -171,7 +197,7 @@ pub fn tests() -> &'static [TestEntry] {
         TestEntry { group: TestGroup::Scheduler, test: &scheduler::stack::test_stack_alignment },
         TestEntry { group: TestGroup::Scheduler, test: &scheduler::stack::test_timer_stack_alignment },
 
-        // Scheduler handoff — enables interrupts and never returns.
+        // Full scheduler handoff (kernel + user task) — enables interrupts and never returns.
         // MUST remain last in the list.
         TestEntry { group: TestGroup::UserMode, test: &user_mode::test_user_task_runs },
     ]
@@ -180,11 +206,17 @@ pub fn tests() -> &'static [TestEntry] {
 pub fn run_tests(filter: Option<TestGroup>) -> ! {
     let all_tests = tests();
 
-    // When a group filter is active, skip the scheduler-handoff test unless it
-    // belongs to the requested group (it enables interrupts and never returns).
+    // When a group filter is active, run only that group.
+    // When running all tests (no filter), skip SchedulerHandoff tests — they
+    // diverge (hand off to the scheduler and exit QEMU) and would prevent
+    // subsequent tests from running.
     let filtered: Vec<&TestEntry> = all_tests
         .iter()
-        .filter(|e| filter.map_or(true, |g| e.group == g))
+        .filter(|e| match filter {
+            Some(g) => e.group == g,
+            None => e.group != TestGroup::SchedulerHandoff
+                 && e.group != TestGroup::SchedulerNoElf,
+        })
         .collect();
 
     if let Some(group) = filter {
@@ -195,11 +227,12 @@ pub fn run_tests(filter: Option<TestGroup>) -> ! {
 
     let mut failed = 0;
     for entry in &filtered {
+        log::info!("{} ...", entry.test.name());
         let result = entry.test.run();
         match result {
-            TestResult::Ok => log::info!("{} [ok]", entry.test.name()),
+            TestResult::Ok => log::info!("[ok]"),
             TestResult::Failed(msg) => {
-                log::error!("{} [failed] - {}", entry.test.name(), msg);
+                log::error!("[failed] - {}", msg);
                 failed += 1;
             }
         }

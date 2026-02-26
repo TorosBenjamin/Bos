@@ -31,10 +31,15 @@ pub fn init() {
             idt[u8::from(InterruptVector::LocalApicTimer)]
                 .set_handler_addr(VirtAddr::new(timer_interrupt_handler as u64));
         }
-        idt[u8::from(InterruptVector::Keyboard)]
-            .set_handler_fn(keyboard_interrupt_handler);
-        idt[u8::from(InterruptVector::Reschedule)]
-            .set_handler_fn(reschedule_ipi_handler);
+        // Use set_handler_addr (not set_handler_fn) because these are naked
+        // functions — they need manual SS RPL fixup for the KVM quirk and do
+        // not use the compiler-generated x86-interrupt epilogue.
+        unsafe {
+            idt[u8::from(InterruptVector::Keyboard)]
+                .set_handler_addr(VirtAddr::new(keyboard_interrupt_handler as u64));
+            idt[u8::from(InterruptVector::Reschedule)]
+                .set_handler_addr(VirtAddr::new(reschedule_ipi_handler as u64));
+        }
         idt
     });
     idt.load();

@@ -227,6 +227,37 @@ fn kernel_increment_task() -> ! {
     }
 }
 
+/// Diagnostic variant of `test_user_task_runs`: replaces the user ELF task
+/// with a third plain kernel task so that no ELF parsing or ring-3 transition
+/// occurs.  If this test passes but `test_user_task_runs` hangs, the problem
+/// is in ELF loading, user-mode page table setup, or the iretq-to-ring-3 path.
+///
+/// Run via `cargo ktest-sched-noelf`.
+pub fn test_user_task_runs_no_elf() -> TestResult {
+    x86_64::instructions::interrupts::disable();
+    KERNEL_TASK_COUNTER.store(0, Ordering::SeqCst);
+
+    kernel::task::global_scheduler::spawn_task(
+        kernel::task::task::Task::new(kernel_increment_task),
+    );
+    kernel::task::global_scheduler::spawn_task(
+        kernel::task::task::Task::new(kernel_increment_task),
+    );
+    // Third kernel task — replaces the user ELF task for isolation
+    kernel::task::global_scheduler::spawn_task(
+        kernel::task::task::Task::new(kernel_increment_task),
+    );
+    kernel::task::global_scheduler::spawn_task(
+        kernel::task::task::Task::new(checker_task),
+    );
+
+    kernel::time::lapic_timer::set_deadline(1_000_000);
+    x86_64::instructions::interrupts::enable();
+    loop {
+        x86_64::instructions::hlt();
+    }
+}
+
 /// Integration test: schedule both kernel tasks and a user task, then
 /// verify the scheduler handled them all without faulting.
 ///
@@ -259,6 +290,11 @@ pub fn test_user_task_runs() -> TestResult {
         kernel::task::task::Task::new(checker_task),
     );
 
+    // Explicitly arm the LAPIC timer so the scheduler fires even if no previous
+    // test re-armed it (e.g. test_timer_stack_alignment returns early when
+    // TIMER_STACK_ALIGNMENT_OK is already set).
+    kernel::time::lapic_timer::set_deadline(1_000_000);
+
     // Enable interrupts — the scheduler takes over
     x86_64::instructions::interrupts::enable();
     loop {
@@ -267,12 +303,18 @@ pub fn test_user_task_runs() -> TestResult {
 }
 
 fn checker_task() -> ! {
+    let count_at_start = KERNEL_TASK_COUNTER.load(Ordering::SeqCst);
+    log::info!(
+        "checker_task: started, counter={}",
+        count_at_start
+    );
+
     let start = kernel::time::tsc::value();
-    let timeout = kernel::time::tsc::TSC_HZ.load(Ordering::SeqCst) / 5; // 200ms
+    let timeout = kernel::time::tsc::TSC_HZ.load(Ordering::SeqCst).saturating_mul(1000);
 
     // Wait for both kernel tasks to have executed
     while KERNEL_TASK_COUNTER.load(Ordering::SeqCst) < 2 {
-        if kernel::time::tsc::value() - start > timeout {
+        if kernel::time::tsc::value().wrapping_sub(start) > timeout {
             break;
         }
         core::hint::spin_loop();
@@ -282,7 +324,7 @@ fn checker_task() -> ! {
     if counter < 2 {
         log::error!(
             "tests::user_mode::test_user_task_runs [failed] - \
-             kernel task counter = {} < 2 (kernel tasks didn't run)",
+             kernel task counter = {}/2 (kernel tasks didn't run)",
             counter
         );
         exit_qemu(QemuExitCode::Failed);

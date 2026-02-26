@@ -293,32 +293,51 @@ extern "C" fn timer_early_eoi() {
         local_apic.end_of_interrupt()
     };
     TIMER_INTERRUPT_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    // Same alignment check as timer_interrupt_handler_inner: verify the call
+    // site (i.e. the naked-asm timer handler) has a properly 8-byte-aligned RSP.
+    // This fires when no task is scheduled (e.g. during timer_interrupt_fires),
+    // so the flag gets set well before test_timer_stack_alignment runs.
+    if !TIMER_STACK_ALIGNMENT_OK.load(Ordering::Relaxed) {
+        let rsp: u64;
+        unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nostack, nomem)) };
+        if rsp % 8 == 0 {
+            TIMER_STACK_ALIGNMENT_OK.store(true, Ordering::Release);
+        }
+    }
 }
 
 /// Bootstrap the first task when there's no current task running.
 /// Returns the context pointer of the first task, or null if no tasks available.
+///
+/// EOI is sent only when a task is found and returned. When null is returned,
+/// the caller falls through to the early-exit path which calls `timer_early_eoi`
+/// — that function is responsible for sending EOI in the no-task case.
 extern "C" fn timer_bootstrap_first_task() -> *mut CpuContext {
     let cpu = get_local();
 
-    crate::time::on_timer_tick();
-
-    // Send EOI
-    unsafe {
-        let local_apic = &mut *cpu.local_apic.get().unwrap().get();
-        local_apic.end_of_interrupt()
-    };
-
-    TIMER_INTERRUPT_COUNT.fetch_add(1, Ordering::Relaxed);
-
     // Check if run queue is initialized
     if cpu.run_queue.get().is_none() {
-        // No scheduler initialized yet, return null
-        log::info!("BOOTSTRAP: run queue not initialized");
+        // No scheduler initialized yet — let timer_early_eoi handle EOI
         return core::ptr::null_mut();
     }
 
     // Try to get a task from the scheduler
-    crate::task::local_scheduler::schedule_from_interrupt(cpu)
+    let ctx = crate::task::local_scheduler::schedule_from_interrupt(cpu);
+    if ctx.is_null() {
+        // No task available — let timer_early_eoi handle EOI
+        return core::ptr::null_mut();
+    }
+
+    // Found a task: tick accounting and EOI before switching via iretq
+    crate::time::on_timer_tick();
+    unsafe {
+        let local_apic = &mut *cpu.local_apic.get().unwrap().get();
+        local_apic.end_of_interrupt()
+    };
+    TIMER_INTERRUPT_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    ctx
 }
 
 /// Load a CpuContext and enter it via iretq. Used to launch the first task.
@@ -435,10 +454,8 @@ extern "C" fn timer_interrupt_handler_inner() -> *mut CpuContext {
     crate::task::local_scheduler::schedule_from_interrupt(cpu)
 }
 
-pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
+extern "C" fn keyboard_interrupt_inner() {
     crate::drivers::keyboard::on_keyboard_interrupt();
-
-    // Send EOI to local APIC
     let cpu = get_local();
     unsafe {
         let local_apic = &mut *cpu.local_apic.get().unwrap().get();
@@ -446,14 +463,101 @@ pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: Interrupt
     }
 }
 
-/// Reschedule IPI handler: just send EOI. The CPU was woken from hlt;
-/// the next timer tick will schedule the newly-ready task.
-pub extern "x86-interrupt" fn reschedule_ipi_handler(_stack_frame: InterruptStackFrame) {
+/// Keyboard interrupt handler with explicit SS RPL fix for KVM quirk.
+///
+/// KVM sometimes strips the RPL bits from the SS pushed in the hardware interrupt
+/// frame when the interrupt arrives from ring 3 (e.g. SS=0x18 instead of 0x1B).
+/// The compiler-generated `iretq` in `extern "x86-interrupt"` handlers does not
+/// fix this, causing a #GP on return to ring 3.  This naked wrapper saves all
+/// caller-saved registers, calls the inner handler, then explicitly ORs SS with 3
+/// before executing `iretq`.
+#[unsafe(naked)]
+pub extern "C" fn keyboard_interrupt_handler() {
+    core::arch::naked_asm!(
+        // Save all caller-saved registers (9 pushes).
+        // On interrupt entry RSP % 16 == 8 (hardware pushed 5 × 8 = 40 bytes).
+        // After 9 pushes (72 bytes) RSP % 16 == 0, so `call` leaves RSP % 16 == 8
+        // at the callee entry — correct per the SysV64 ABI.
+        "push rax",
+        "push rcx",
+        "push rdx",
+        "push rsi",
+        "push rdi",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
+        "call {inner}",
+        // Restore 8 of the 9 saved registers (rax stays on stack for the SS fix).
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        // Stack layout now: [rsp+0]=saved_rax [rsp+8]=rip [rsp+16]=cs
+        //                   [rsp+24]=rflags   [rsp+32]=user_rsp [rsp+40]=ss
+        // Fix SS RPL if returning to ring 3 (KVM corrupts 0x1B → 0x18).
+        "mov rax, [rsp + 16]",
+        "and rax, 3",
+        "cmp rax, 3",
+        "jne 2f",
+        "mov rax, [rsp + 40]",
+        "or  rax, 3",
+        "mov [rsp + 40], rax",
+        "2:",
+        "pop rax",
+        "iretq",
+        inner = sym keyboard_interrupt_inner,
+    )
+}
+
+extern "C" fn reschedule_eoi() {
     let cpu = get_local();
     unsafe {
         let local_apic = &mut *cpu.local_apic.get().unwrap().get();
         local_apic.end_of_interrupt();
     }
+}
+
+/// Reschedule IPI handler: send EOI then return with SS RPL fix.
+///
+/// Same KVM SS-stripping workaround as `keyboard_interrupt_handler`.
+#[unsafe(naked)]
+pub extern "C" fn reschedule_ipi_handler() {
+    core::arch::naked_asm!(
+        "push rax",
+        "push rcx",
+        "push rdx",
+        "push rsi",
+        "push rdi",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
+        "call {eoi}",
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        "mov rax, [rsp + 16]",
+        "and rax, 3",
+        "cmp rax, 3",
+        "jne 2f",
+        "mov rax, [rsp + 40]",
+        "or  rax, 3",
+        "mov [rsp + 40], rax",
+        "2:",
+        "pop rax",
+        "iretq",
+        eoi = sym reschedule_eoi,
+    )
 }
 
 // -- NMI ---

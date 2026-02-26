@@ -24,16 +24,28 @@ pub fn timer_interrupt_fires() -> TestResult {
     // Timeout after ~1000ms (1 second)
     let timeout_ticks = tsc_hz * 1000; 
 
-    while TIMER_INTERRUPT_COUNT.load(Ordering::SeqCst) <= initial_count {
+    let result;
+    loop {
+        if TIMER_INTERRUPT_COUNT.load(Ordering::SeqCst) > initial_count {
+            result = TestResult::Ok;
+            break;
+        }
         if tsc::value() - start_tsc > timeout_ticks {
-            return TestResult::Failed(alloc::format!(
+            result = TestResult::Failed(alloc::format!(
                 "Timer interrupt did not fire within timeout. Initial count: {}, Current count: {}",
                 initial_count,
                 TIMER_INTERRUPT_COUNT.load(Ordering::SeqCst)
             ));
+            break;
         }
-        x86_64::instructions::hlt();
+        core::hint::spin_loop();
     }
 
-    TestResult::Ok
+    // Restore interrupt state so subsequent tests are not affected by a
+    // continuous timer stream.
+    if !interrupts_enabled {
+        x86_64::instructions::interrupts::disable();
+    }
+
+    result
 }

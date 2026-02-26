@@ -39,15 +39,20 @@ pub fn init() {
     let local = get_local();
     let tss_cell = local.tss.call_once(|| {
         let mut tss = TaskStateSegment::new();
-        tss.interrupt_stack_table[u8::from(IstStackIndexes::Exception) as usize] =
-            GuardedStack::new_kernel(
-                EXCEPTION_HANDLER_STACK_SIZE,
-                StackId {
-                    _type: StackType::ExceptionHandler,
-                    cpu_id: local.kernel_id,
-                },
-            )
-            .top();
+        // Allocate the IST stack and intentionally leak it: it must remain mapped
+        // for the lifetime of this CPU.  Dropping it would unmap the pages,
+        // causing any page-fault or double-fault handler to triple-fault because
+        // the IDT entries for those exceptions use this IST stack.
+        let ist_stack = GuardedStack::new_kernel(
+            EXCEPTION_HANDLER_STACK_SIZE,
+            StackId {
+                _type: StackType::ExceptionHandler,
+                cpu_id: local.kernel_id,
+            },
+        );
+        let ist_top = ist_stack.top();
+        core::mem::forget(ist_stack); // keep pages mapped permanently
+        tss.interrupt_stack_table[u8::from(IstStackIndexes::Exception) as usize] = ist_top;
         UnsafeCell::new(tss)
     });
 

@@ -422,6 +422,7 @@ dependencies = [
 name = "tests"
 version = "0.1.0"
 dependencies = [
+ "elf",
  "embedded-graphics",
  "heapless",
  "kernel",

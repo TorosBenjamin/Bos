@@ -45,6 +45,12 @@ fn main() {
         Some("display")
     } else if env::var("CARGO_FEATURE_TEST_SCHEDULER").is_ok() {
         Some("scheduler")
+    } else if env::var("CARGO_FEATURE_TEST_ELF").is_ok() {
+        Some("elf")
+    } else if env::var("CARGO_FEATURE_TEST_SCHED").is_ok() {
+        Some("sched")
+    } else if env::var("CARGO_FEATURE_TEST_SCHED_NOELF").is_ok() {
+        Some("sched-noelf")
     } else {
         None
     };

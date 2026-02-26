@@ -95,16 +95,20 @@ extern "sysv64" fn init_bsp() -> ! {
         }
     }
 
-
+    log::info!("BSP: enabling interrupts");
     x86_64::instructions::interrupts::enable();
+    log::info!("BSP: in hlt_loop");
 
     hlt_loop();
 }
 
 /// AP - Application processor
 unsafe extern "C" fn ap_entry(_cpu: &limine::mp::Cpu) -> ! {
+    log::info!("AP entry (lapic_id={})", _cpu.lapic_id);
     unsafe { kernel::memory::init_ap() };
+    log::info!("AP (lapic_id={}): CR3 switched", _cpu.lapic_id);
     unsafe { kernel::memory::cpu_local_data::init_ap(_cpu) };
+    log::info!("AP (lapic_id={}): cpu_local_data initialized", _cpu.lapic_id);
 
     GuardedStack::new_kernel(
         NORMAL_STACK_SIZE,
@@ -119,9 +123,14 @@ unsafe extern "C" fn ap_entry(_cpu: &limine::mp::Cpu) -> ! {
 }
 
 extern "sysv64" fn init_ap() -> ! {
+    let cpu_id = get_local().kernel_id;
+    log::info!("AP {}: on new stack, calling gdt::init", cpu_id);
     gdt::init();
+    log::info!("AP {}: gdt done, calling idt::init", cpu_id);
     interrupt::idt::init();
+    log::info!("AP {}: idt done, calling apic::init_local_apic", cpu_id);
     apic::init_local_apic();
+    log::info!("AP {}: apic done", cpu_id);
 
     raw_syscall_handler::init();
     init_run_queue();
@@ -129,9 +138,10 @@ extern "sysv64" fn init_ap() -> ! {
     spawn_task(Task::new(idle_task));
 
     x86_64::instructions::interrupts::enable();
+    time::lapic_timer::init();
     time::lapic_timer::set_deadline(1_000_000);
 
-    log::info!("Initialized AP");
+    log::info!("Initialized AP {}", cpu_id);
 
     hlt_loop()
 }

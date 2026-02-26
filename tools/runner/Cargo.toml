@@ -22,6 +22,9 @@ test_keyboard  = ["kernel_test"]
 test_ipc       = ["kernel_test"]
 test_display   = ["kernel_test"]
 test_scheduler = ["kernel_test"]
+test_elf      = ["kernel_test"]
+test_sched         = ["kernel_test"]
+test_sched_noelf   = ["kernel_test"]
 
 [[bin]]
 name = "runner"
