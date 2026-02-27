@@ -463,17 +463,27 @@ extern "C" fn keyboard_interrupt_inner() {
     }
 }
 
-/// Keyboard interrupt handler with explicit SS RPL fix for KVM quirk.
+/// Keyboard interrupt handler with swapgs and SS RPL fix.
 ///
-/// KVM sometimes strips the RPL bits from the SS pushed in the hardware interrupt
-/// frame when the interrupt arrives from ring 3 (e.g. SS=0x18 instead of 0x1B).
-/// The compiler-generated `iretq` in `extern "x86-interrupt"` handlers does not
-/// fix this, causing a #GP on return to ring 3.  This naked wrapper saves all
-/// caller-saved registers, calls the inner handler, then explicitly ORs SS with 3
-/// before executing `iretq`.
+/// Two issues handled:
+/// 1. swapgs: with a real KernelGsBase/GsBase split, any interrupt from ring 3
+///    must swapgs on entry (GsBase=0 → kernel ptr) and on exit (kernel ptr → 0).
+/// 2. SS RPL stripping: KVM sometimes strips RPL bits from the pushed SS value
+///    (0x1B → 0x18), causing a #GP on iretq back to ring 3.
 #[unsafe(naked)]
 pub extern "C" fn keyboard_interrupt_handler() {
     core::arch::naked_asm!(
+        // --- Entry swapgs ---
+        // Use r11 as scratch to inspect the interrupted CS without touching rax yet.
+        // After one push, CS is at [rsp+16].
+        "push r11",
+        "mov r11, [rsp + 16]",  // CS from iretq frame
+        "test r11, 3",
+        "jz 4f",                // RPL=0 → kernel mode, skip swapgs
+        "swapgs",
+        "4:",
+        "pop r11",
+
         // Save all caller-saved registers (9 pushes).
         // On interrupt entry RSP % 16 == 8 (hardware pushed 5 × 8 = 40 bytes).
         // After 9 pushes (72 bytes) RSP % 16 == 0, so `call` leaves RSP % 16 == 8
@@ -508,6 +518,12 @@ pub extern "C" fn keyboard_interrupt_handler() {
         "or  rax, 3",
         "mov [rsp + 40], rax",
         "2:",
+        // --- Exit swapgs ---
+        "mov rax, [rsp + 16]",  // CS
+        "test rax, 3",
+        "jz 5f",                // RPL=0 → kernel mode, skip swapgs
+        "swapgs",
+        "5:",
         "pop rax",
         "iretq",
         inner = sym keyboard_interrupt_inner,
@@ -522,12 +538,21 @@ extern "C" fn reschedule_eoi() {
     }
 }
 
-/// Reschedule IPI handler: send EOI then return with SS RPL fix.
+/// Reschedule IPI handler: send EOI then return with swapgs and SS RPL fix.
 ///
-/// Same KVM SS-stripping workaround as `keyboard_interrupt_handler`.
+/// Same swapgs + KVM SS-stripping workarounds as `keyboard_interrupt_handler`.
 #[unsafe(naked)]
 pub extern "C" fn reschedule_ipi_handler() {
     core::arch::naked_asm!(
+        // --- Entry swapgs ---
+        "push r11",
+        "mov r11, [rsp + 16]",  // CS from iretq frame (after 1 push)
+        "test r11, 3",
+        "jz 4f",
+        "swapgs",
+        "4:",
+        "pop r11",
+
         "push rax",
         "push rcx",
         "push rdx",
@@ -546,6 +571,9 @@ pub extern "C" fn reschedule_ipi_handler() {
         "pop rsi",
         "pop rdx",
         "pop rcx",
+        // Stack layout: [rsp+0]=saved_rax [rsp+8]=rip [rsp+16]=cs
+        //               [rsp+24]=rflags   [rsp+32]=user_rsp [rsp+40]=ss
+        // Fix SS RPL if returning to ring 3.
         "mov rax, [rsp + 16]",
         "and rax, 3",
         "cmp rax, 3",
@@ -554,6 +582,12 @@ pub extern "C" fn reschedule_ipi_handler() {
         "or  rax, 3",
         "mov [rsp + 40], rax",
         "2:",
+        // --- Exit swapgs ---
+        "mov rax, [rsp + 16]",  // CS
+        "test rax, 3",
+        "jz 5f",
+        "swapgs",
+        "5:",
         "pop rax",
         "iretq",
         eoi = sym reschedule_eoi,

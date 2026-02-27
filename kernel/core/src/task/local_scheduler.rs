@@ -31,6 +31,7 @@ pub fn add(cpu: &CpuLocalData, task: Arc<Task>) {
     interrupts::without_interrupts(|| {
         let mut rq = cpu.run_queue.get().unwrap().lock();
         rq.ready.push_back(task);
+        cpu.ready_count.fetch_add(1, Ordering::Relaxed);
     });
 }
 
@@ -46,22 +47,34 @@ pub fn add(cpu: &CpuLocalData, task: Arc<Task>) {
 /// This function only locks the per-CPU run queue — it never touches TASK_TABLE,
 /// so it cannot deadlock with code that holds TASK_TABLE when interrupted.
 pub fn schedule_from_interrupt(cpu: &CpuLocalData) -> *mut CpuContext {
+    // Fast path: nothing queued — skip lock acquisition entirely.
+    // ready_count is a hint (another CPU may add a task between this check and the
+    // lock), so a missed tick is fine; the task will be picked up next time.
+    if cpu.ready_count.load(Ordering::Relaxed) == 0 {
+        return cpu.current_context_ptr.load(Ordering::Relaxed);
+    }
+
     let mut rq = cpu.run_queue.get().unwrap().lock();
 
     // Get pointer to current context (saved by timer handler)
     let current_ctx_ptr = cpu.current_context_ptr.load(Ordering::Relaxed);
 
     let next_task = match rq.ready.pop_front() {
-        Some(task) => task,
+        Some(task) => {
+            cpu.ready_count.fetch_sub(1, Ordering::Relaxed);
+            task
+        }
         None => {
-            // No task to switch to - return current context
+            // ready_count was non-zero but the queue is empty — a concurrent steal
+            // or pop raced with us. Nothing to switch to.
             return current_ctx_ptr;
         }
     };
 
     // Re-queue the current task if it's still runnable
     if let Some(prev_task) = rq.current_task.take() {
-        // Context is already saved by timer handler - no need to save RSP
+        // Charge one quantum to the outgoing task
+        prev_task.cpu_ticks.fetch_add(1, Ordering::Relaxed);
 
         match prev_task.state.load(Ordering::Relaxed) {
             // Zombie: being cleaned up by scheduler drop
@@ -70,6 +83,7 @@ pub fn schedule_from_interrupt(cpu: &CpuLocalData) -> *mut CpuContext {
             _ => {
                 prev_task.state.store(TaskState::Ready, Ordering::Relaxed);
                 rq.ready.push_back(prev_task);
+                cpu.ready_count.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
@@ -82,14 +96,6 @@ pub fn schedule_from_interrupt(cpu: &CpuLocalData) -> *mut CpuContext {
     let next_ctx_ptr = &mut next_inner.context as *mut CpuContext;
 
     drop(next_inner);
-
-    // Debug: check if kernel stack is in framebuffer physical range
-    let hhdm = crate::memory::hhdm_offset::hhdm_offset().as_u64();
-    let stack_phys = next_kernel_stack_top - hhdm;
-    if stack_phys >= 0x80000000 && stack_phys < 0x80400000 {
-        panic!("KERNEL STACK OVERLAPS FRAMEBUFFER! stack_top={:#x} phys={:#x}",
-            next_kernel_stack_top, stack_phys);
-    }
 
     // Switch address space if needed
     let next_cr3 = next_task.cr3;
@@ -104,7 +110,9 @@ pub fn schedule_from_interrupt(cpu: &CpuLocalData) -> *mut CpuContext {
     // Update TSS.RSP0 so interrupts from ring 3 land on this task's kernel stack
     unsafe { cpu.set_tss_rsp0(next_kernel_stack_top) };
 
-    // Verify the context is valid
+    // Verify the context is valid (debug only — panicking inside an ISR with a
+    // corrupt context risks a double fault in release builds)
+    #[cfg(debug_assertions)]
     {
         let ctx = unsafe { &*next_ctx_ptr };
         // CS should be 0x08 (kernel) or 0x23 (user)

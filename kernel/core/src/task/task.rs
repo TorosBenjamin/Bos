@@ -213,6 +213,8 @@ pub struct Task {
     pub exit_code: AtomicU64,
     /// Task waiting for this task to exit (set by sys_waitpid).
     pub exit_waiter: Mutex<Option<(Arc<Task>, u32)>>,
+    /// Number of scheduler quanta this task has consumed. One tick ≈ 1 ms.
+    pub cpu_ticks: AtomicU64,
 }
 
 impl Task {
@@ -263,6 +265,7 @@ impl Task {
             cr3,
             exit_code: AtomicU64::new(0),
             exit_waiter: Mutex::new(None),
+            cpu_ticks: AtomicU64::new(0),
         }
     }
 
@@ -322,6 +325,7 @@ impl Task {
             cr3,
             exit_code: AtomicU64::new(0),
             exit_waiter: Mutex::new(None),
+            cpu_ticks: AtomicU64::new(0),
         }
     }
 

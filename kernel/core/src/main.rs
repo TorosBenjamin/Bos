@@ -137,9 +137,9 @@ extern "sysv64" fn init_ap() -> ! {
 
     spawn_task(Task::new(idle_task));
 
-    x86_64::instructions::interrupts::enable();
     time::lapic_timer::init();
     time::lapic_timer::set_deadline(1_000_000);
+    x86_64::instructions::interrupts::enable();
 
     log::info!("Initialized AP {}", cpu_id);
 

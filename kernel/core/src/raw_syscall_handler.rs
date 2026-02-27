@@ -1,5 +1,4 @@
-use crate::memory::cpu_local_data::{CpuLocalData, IN_SYSCALL_HANDLER_OFFSET, CURRENT_CONTEXT_PTR_OFFSET, get_local};
-use crate::memory::guarded_stack::{GuardedStack, StackId, StackType};
+use crate::memory::cpu_local_data::{CpuLocalData, IN_SYSCALL_HANDLER_OFFSET, CURRENT_CONTEXT_PTR_OFFSET, CURRENT_TASK_KERNEL_STACK_TOP_OFFSET, get_local};
 use crate::syscall_handlers::{sys_channel_close, sys_channel_create, sys_channel_recv, sys_channel_send, sys_debug_log, sys_exit, sys_get_bounding_box, sys_get_display_info, sys_get_module, sys_mmap, sys_munmap, sys_read_key, sys_spawn, sys_transfer_display, sys_waitpid, sys_yield};
 use crate::task::task::{
     CTX_RAX, CTX_RBP, CTX_RBX, CTX_RCX, CTX_RDI, CTX_RDX, CTX_RSI,
@@ -24,8 +23,8 @@ unsafe extern "sysv64" fn raw_syscall_handler() -> ! {
 
             // Save the user mode stack pointer
             mov gs:[{scratch_offset}], rsp
-            // Switch to the kernel stack pointer
-            mov rsp, gs:[{stack_ptr_offset}]
+            // Switch to the current task's kernel stack (same stack TSS.RSP0 points to)
+            mov rsp, gs:[{kernel_stack_top_offset}]
 
             // --- Save user state to CpuContext ---
             // Push rax (syscall number) to free it as scratch
@@ -94,7 +93,7 @@ unsafe extern "sysv64" fn raw_syscall_handler() -> ! {
             call {syscall_handler}
         ",
         scratch_offset = const offset_of!(CpuLocalData, syscall_handler_scratch),
-        stack_ptr_offset = const offset_of!(CpuLocalData, syscall_handler_stack_pointer),
+        kernel_stack_top_offset = const CURRENT_TASK_KERNEL_STACK_TOP_OFFSET,
         ctx_ptr_offset = const CURRENT_CONTEXT_PTR_OFFSET,
         in_syscall_offset = const IN_SYSCALL_HANDLER_OFFSET,
         syscall_handler = sym syscall_handler,
@@ -140,7 +139,7 @@ unsafe extern "sysv64" fn syscall_handler(
     }
 
     let inputs = [input1, input2, input3, input4, input5, input6];
-    let ret = unsafe { dispatch_syscall(input0, &inputs) };
+    let ret = dispatch_syscall(input0, &inputs);
 
     // Clear in_syscall flag before returning to user mode
     get_local().in_syscall_handler.store(0, Ordering::Relaxed);
@@ -171,35 +170,19 @@ unsafe extern "sysv64" fn syscall_handler(
 }
 
 type SyscallFn = fn(u64, u64, u64, u64, u64, u64) -> u64;
-static mut SYS_CALL_TABLE: [Option<SyscallFn>; 256] = [None; 256];
+static SYSCALL_TABLE: spin::Once<[Option<SyscallFn>; 256]> = spin::Once::new();
 
-unsafe fn dispatch_syscall(syscall_number: u64, args: &[u64; 6]) -> u64 {
-    unsafe {
-        if let Some(f) = SYS_CALL_TABLE[syscall_number as usize] {
-            f(args[0], args[1], args[2], args[3], args[4], args[5])
-        } else {
-            log::error!("SYSCALL: unknown syscall number {}", syscall_number);
-            0xFFFF_FFFF_FFFF_FFFF
-        }
+fn dispatch_syscall(syscall_number: u64, args: &[u64; 6]) -> u64 {
+    let table = SYSCALL_TABLE.get().expect("syscall table not initialized");
+    if let Some(f) = table[syscall_number as usize] {
+        f(args[0], args[1], args[2], args[3], args[4], args[5])
+    } else {
+        log::error!("SYSCALL: unknown syscall number {}", syscall_number);
+        0xFFFF_FFFF_FFFF_FFFF
     }
 }
 
 pub fn init() {
-    let local = get_local();
-    let syscall_handler_stack = GuardedStack::new_kernel(
-        64 * 0x400,
-        StackId {
-            _type: StackType::SyscallHandler,
-            cpu_id: local.kernel_id,
-        },
-    );
-    local
-        .syscall_handler_stack_pointer
-        .store(syscall_handler_stack.top().as_u64(), Ordering::Relaxed);
-    // Keep the stack mapped permanently — dropping it would unmap the pages,
-    // causing any SYSCALL entry to immediately page-fault.
-    core::mem::forget(syscall_handler_stack);
-
     // Enable syscall in IA32_EFER
     unsafe {
         Efer::update(|flags| {
@@ -215,25 +198,27 @@ pub fn init() {
     // SYSRET:  SS = (0x10+8)|3 = 0x1B, CS = (0x10+16)|3 = 0x23 (user data/code)
     unsafe { Star::write_raw(0x10, 0x08) };
 
-    // Mask IF during SYSCALL to prevent timer from firing on the per-CPU
-    // syscall handler stack (which has no iretq frame and would corrupt state)
+    // Mask IF during SYSCALL to prevent the timer from firing before we've
+    // finished switching to the kernel stack and saving user context.
     SFMask::write(RFlags::INTERRUPT_FLAG);
 
-    unsafe {
-        SYS_CALL_TABLE[SysCallNumber::GetBoundingBox as usize] = Some(sys_get_bounding_box);
-        SYS_CALL_TABLE[SysCallNumber::GetDisplayInfo as usize] = Some(sys_get_display_info);
-        SYS_CALL_TABLE[SysCallNumber::ReadKey as usize] = Some(sys_read_key);
-        SYS_CALL_TABLE[SysCallNumber::Yield as usize] = Some(sys_yield);
-        SYS_CALL_TABLE[SysCallNumber::Spawn as usize] = Some(sys_spawn);
-        SYS_CALL_TABLE[SysCallNumber::Mmap as usize] = Some(sys_mmap);
-        SYS_CALL_TABLE[SysCallNumber::Munmap as usize] = Some(sys_munmap);
-        SYS_CALL_TABLE[SysCallNumber::ChannelCreate as usize] = Some(sys_channel_create);
-        SYS_CALL_TABLE[SysCallNumber::ChannelSend as usize] = Some(sys_channel_send);
-        SYS_CALL_TABLE[SysCallNumber::ChannelRecv as usize] = Some(sys_channel_recv);
-        SYS_CALL_TABLE[SysCallNumber::ChannelClose as usize] = Some(sys_channel_close);
-        SYS_CALL_TABLE[SysCallNumber::TransferDisplay as usize] = Some(sys_transfer_display);
-        SYS_CALL_TABLE[SysCallNumber::GetModule as usize] = Some(sys_get_module);
-        SYS_CALL_TABLE[SysCallNumber::DebugLog as usize] = Some(sys_debug_log);
-        SYS_CALL_TABLE[SysCallNumber::Waitpid as usize] = Some(sys_waitpid);
-    }
+    SYSCALL_TABLE.call_once(|| {
+        let mut table = [None::<SyscallFn>; 256];
+        table[SysCallNumber::GetBoundingBox as usize] = Some(sys_get_bounding_box);
+        table[SysCallNumber::GetDisplayInfo as usize] = Some(sys_get_display_info);
+        table[SysCallNumber::ReadKey as usize] = Some(sys_read_key);
+        table[SysCallNumber::Yield as usize] = Some(sys_yield);
+        table[SysCallNumber::Spawn as usize] = Some(sys_spawn);
+        table[SysCallNumber::Mmap as usize] = Some(sys_mmap);
+        table[SysCallNumber::Munmap as usize] = Some(sys_munmap);
+        table[SysCallNumber::ChannelCreate as usize] = Some(sys_channel_create);
+        table[SysCallNumber::ChannelSend as usize] = Some(sys_channel_send);
+        table[SysCallNumber::ChannelRecv as usize] = Some(sys_channel_recv);
+        table[SysCallNumber::ChannelClose as usize] = Some(sys_channel_close);
+        table[SysCallNumber::TransferDisplay as usize] = Some(sys_transfer_display);
+        table[SysCallNumber::GetModule as usize] = Some(sys_get_module);
+        table[SysCallNumber::DebugLog as usize] = Some(sys_debug_log);
+        table[SysCallNumber::Waitpid as usize] = Some(sys_waitpid);
+        table
+    });
 }

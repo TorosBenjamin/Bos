@@ -12,8 +12,8 @@ pub static TASK_TABLE: Mutex<BTreeMap<TaskId, Arc<Task>>> = Mutex::new(BTreeMap:
 static NEXT_SPAWN_CPU: AtomicUsize = AtomicUsize::new(0);
 
 pub fn spawn_task(task: Task) {
-    interrupts::without_interrupts(|| {
-        let task_id = task.id;
+    let task_id = task.id;
+    let target_id = interrupts::without_interrupts(|| {
         task.state.store(TaskState::Ready, Ordering::Relaxed);
         let arc_task = Arc::new(task);
 
@@ -39,17 +39,19 @@ pub fn spawn_task(task: Task) {
             });
         crate::task::local_scheduler::add(target_cpu, arc_task);
 
-        log::info!(
-            "Task {:?} scheduled on CPU {} and pushed to ready queue",
-            task_id,
-            target_id
-        );
-
         // If target is a different CPU, send reschedule IPI to wake it from hlt
         let local = get_local();
         if target_id as u32 != local.kernel_id {
             let apic_id = local_apic_id_of(target_id as u32);
             crate::apic::send_fixed_ipi(apic_id, u8::from(InterruptVector::Reschedule));
         }
+
+        target_id
     });
+
+    log::info!(
+        "Task {:?} scheduled on CPU {} and pushed to ready queue",
+        task_id,
+        target_id
+    );
 }
