@@ -1,0 +1,35 @@
+[package]
+name = "runner"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[build-dependencies]
+kernel = { path = "../../kernel/core", artifact = "bin", target = "x86_64-unknown-none" }
+tests = { path = "../../kernel/tests", artifact = "bin", target = "x86_64-unknown-none" }
+init_task = {path = "../../userspace/init_task", artifact = "bin", target = "x86_64-unknown-none"}
+display_server = {path = "../../userspace/display_server", artifact = "bin", target = "x86_64-unknown-none"}
+user_land = {path = "../../userspace/user_land", artifact = "bin", target = "x86_64-unknown-none"}
+utest = { path = "../../userspace/utest", artifact = "bin", target = "x86_64-unknown-none", optional = true }
+
+[features]
+kernel_test = []
+userspace_test = ["dep:utest"]
+test_mem       = ["kernel_test"]
+test_time      = ["kernel_test"]
+test_interrupts = ["kernel_test"]
+test_graphics  = ["kernel_test"]
+test_usermode  = ["kernel_test"]
+test_keyboard  = ["kernel_test"]
+test_ipc       = ["kernel_test"]
+test_display   = ["kernel_test"]
+test_scheduler = ["kernel_test"]
+test_elf      = ["kernel_test"]
+test_sched         = ["kernel_test"]
+test_sched_noelf   = ["kernel_test"]
+
+[[bin]]
+name = "runner"
+path = "src/main.rs"
+test = false
+bench = false

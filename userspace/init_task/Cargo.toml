@@ -1,0 +1,14 @@
+[package]
+name="init_task"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ulib = { path = "../ulib" }
+kernel_api_types = {path = "../../shared/kernel_api_types"}
+
+[[bin]]
+name = "init_task"
+test = false
+bench = false

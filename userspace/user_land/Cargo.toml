@@ -1,0 +1,23 @@
+[package]
+name = "user_land"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ulib = { path = "../ulib" }
+kernel_api_types = { path = "../../shared/kernel_api_types" }
+embedded-graphics = "0.8.1"
+
+[[bin]]
+name = "bouncing_cube_1"
+path = "src/bin/bouncing_cube_1.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "bouncing_cube_2"
+path = "src/bin/bouncing_cube_2.rs"
+test = false
+bench = false
+

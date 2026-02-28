@@ -1,0 +1,15 @@
+[package]
+name = "utest"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ulib = { path = "../ulib" }
+kernel_api_types = { path = "../../shared/kernel_api_types" }
+embedded-graphics = "0.8.1"
+
+[[bin]]
+name = "utest"
+test = false
+bench = false

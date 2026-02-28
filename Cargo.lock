@@ -92,6 +92,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f8a2ca5ac02d09563609681103aada9e1777d54fc57a5acd7a41404f9c93b6e"
 
 [[package]]
+name = "display_server"
+version = "0.1.0"
+dependencies = [
+ "embedded-graphics",
+ "kernel_api_types",
+ "ulib",
+]
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -124,15 +133,6 @@ checksum = "ba9ecd261f991856250d2207f6d8376946cd9f412a2165d3b75bc87a0bc7a044"
 dependencies = [
  "az",
  "byteorder",
-]
-
-[[package]]
-name = "ez_paging"
-version = "0.1.0"
-source = "git+https://github.com/ChocolateLoverRaj/ez_paging#00f8ff45e3d25660f10fc8c05234fd51bd85285a"
-dependencies = [
- "raw-cpuid 11.6.0",
- "x86_64 0.15.2",
 ]
 
 [[package]]
@@ -170,6 +170,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "init_task"
+version = "0.1.0"
+dependencies = [
+ "kernel_api_types",
+ "ulib",
+]
+
+[[package]]
 name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -187,7 +195,6 @@ dependencies = [
  "bitflags 2.10.0",
  "elf",
  "embedded-graphics",
- "ez_paging",
  "force-send-sync",
  "kernel_api_types",
  "limine",
@@ -201,6 +208,7 @@ dependencies = [
  "uart_16550",
  "unicode-segmentation",
  "x2apic",
+ "x86",
  "x86_64 0.15.2",
 ]
 
@@ -341,8 +349,12 @@ dependencies = [
 name = "runner"
 version = "0.1.0"
 dependencies = [
+ "display_server",
+ "init_task",
  "kernel",
+ "tests",
  "user_land",
+ "utest",
 ]
 
 [[package]]
@@ -408,6 +420,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tests"
+version = "0.1.0"
+dependencies = [
+ "elf",
+ "embedded-graphics",
+ "heapless",
+ "kernel",
+ "kernel_api_types",
+ "log",
+ "nodit",
+ "x86_64 0.15.4",
+]
+
+[[package]]
 name = "uart_16550"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -416,6 +442,14 @@ dependencies = [
  "bitflags 2.10.0",
  "rustversion",
  "x86",
+]
+
+[[package]]
+name = "ulib"
+version = "0.1.0"
+dependencies = [
+ "embedded-graphics",
+ "kernel_api_types",
 ]
 
 [[package]]
@@ -435,9 +469,17 @@ name = "user_land"
 version = "0.1.0"
 dependencies = [
  "embedded-graphics",
- "heapless",
  "kernel_api_types",
- "owo-colors",
+ "ulib",
+]
+
+[[package]]
+name = "utest"
+version = "0.1.0"
+dependencies = [
+ "embedded-graphics",
+ "kernel_api_types",
+ "ulib",
 ]
 
 [[package]]
