@@ -8,6 +8,7 @@ use embedded_graphics::prelude::OriginDimensions;
 use embedded_graphics::primitives::{Primitive, Rectangle, PrimitiveStyle};
 use embedded_graphics::Drawable;
 use ulib::sys_yield;
+use kernel_api_types::SVC_ERR_NOT_FOUND;
 
 #[panic_handler]
 fn rust_panic(_info: &core::panic::PanicInfo) -> ! {
@@ -19,16 +20,15 @@ fn rust_panic(_info: &core::panic::PanicInfo) -> ! {
 const CUBE_SIZE: u32 = 20;
 
 #[unsafe(no_mangle)]
-unsafe extern "sysv64" fn entry_point(arg: u64) -> ! {
-    // arg is the display_server send endpoint
-    let display_server_ep = arg;
-
-    if display_server_ep == 0 {
-        // No endpoint, can't create window
-        loop {
-            sys_yield();
+unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
+    // Wait for the display service to register itself
+    let display_server_ep = loop {
+        let ep = ulib::sys_lookup_service(b"display");
+        if ep != SVC_ERR_NOT_FOUND {
+            break ep;
         }
-    }
+        sys_yield();
+    };
 
     // Create a window (200x200 at position 10,10)
     let mut window = match Window::new(display_server_ep, 200, 200, 10, 10) {

@@ -73,6 +73,11 @@ extern "sysv64" fn init_bsp() -> ! {
         u8::from(interrupt::InterruptVector::Keyboard),
         get_local().local_apic_id,
     );
+    ioapic::enable_mouse_irq(
+        u8::from(interrupt::InterruptVector::Mouse),
+        get_local().local_apic_id,
+    );
+    kernel::drivers::mouse::init();
 
     time::tsc::calibrate();
     time::lapic_timer::init();

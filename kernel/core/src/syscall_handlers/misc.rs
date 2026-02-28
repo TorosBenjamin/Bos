@@ -46,6 +46,38 @@ pub fn sys_read_key(key_event_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u
     }
 }
 
+/// Syscall: read a mouse event (blocking).
+///
+/// Registers the current task as the mouse waiter, sets it Sleeping,
+/// enables interrupts, and halts. The mouse ISR wakes it when a packet arrives.
+pub fn sys_read_mouse(mouse_event_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    if !validate_user_ptr(mouse_event_out_ptr, core::mem::size_of::<kernel_api_types::MouseEvent>() as u64) {
+        return 1;
+    }
+    let out = mouse_event_out_ptr as *mut kernel_api_types::MouseEvent;
+
+    loop {
+        if let Some(event) = crate::drivers::mouse::try_read_mouse() {
+            unsafe { core::ptr::write(out, event) };
+            return 0;
+        }
+
+        let ctx_ptr = get_local().current_context_ptr.load(Ordering::Relaxed);
+        if !ctx_ptr.is_null() {
+            unsafe { (*ctx_ptr).rax = 1; }
+        }
+
+        if let Some((task, cpu_id)) = current_task_and_cpu() {
+            *crate::drivers::mouse::MOUSE_WAITER.lock() = Some((task.clone(), cpu_id));
+            task.state.store(TaskState::Sleeping, Ordering::Release);
+        }
+
+        x86_64::instructions::interrupts::enable();
+        x86_64::instructions::hlt();
+        x86_64::instructions::interrupts::disable();
+    }
+}
+
 /// Syscall: load a Limine boot module by name.
 ///
 /// Arguments: name_ptr, name_len, buf_ptr, buf_cap

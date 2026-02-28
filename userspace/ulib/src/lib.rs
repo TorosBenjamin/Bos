@@ -4,7 +4,7 @@ pub mod display;
 pub mod window;
 
 use core::arch::asm;
-use kernel_api_types::SysCallNumber;
+use kernel_api_types::{SysCallNumber, SVC_ERR_NOT_FOUND, SVC_OK};
 use kernel_api_types::graphics::{DisplayInfo, GraphicsResult, Rect};
 
 pub fn syscall(inputs_and_ouputs: &mut [u64; 7]) {
@@ -52,6 +52,17 @@ pub fn sys_get_display_info() -> DisplayInfo {
     syscall(&mut args);
 
     info
+}
+
+pub fn sys_read_mouse() -> kernel_api_types::MouseEvent {
+    let mut event = kernel_api_types::MouseEvent::EMPTY;
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::ReadMouse as u64;
+    args[1] = &mut event as *mut kernel_api_types::MouseEvent as u64;
+
+    syscall(&mut args);
+
+    event
 }
 
 pub fn sys_read_key() -> kernel_api_types::KeyEvent {
@@ -168,6 +179,35 @@ pub fn sys_get_module(name: &str, buf: *mut u8, buf_cap: u64) -> u64 {
     args[4] = buf_cap;
     syscall(&mut args);
     args[6]
+}
+
+/// Register a send endpoint under a human-readable service name.
+/// Returns `SVC_OK` on success or a `SVC_ERR_*` code on failure.
+pub fn sys_register_service(name: &[u8], send_ep: u64) -> u64 {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::RegisterService as u64;
+    args[1] = name.as_ptr() as u64;
+    args[2] = name.len() as u64;
+    args[3] = send_ep;
+    syscall(&mut args);
+    args[6]
+}
+
+/// Look up a service by name.
+/// Returns the send endpoint ID on success, or `SVC_ERR_NOT_FOUND` if not yet registered.
+pub fn sys_lookup_service(name: &[u8]) -> u64 {
+    let mut ep_out: u64 = 0;
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::LookupService as u64;
+    args[1] = name.as_ptr() as u64;
+    args[2] = name.len() as u64;
+    args[3] = &mut ep_out as *mut u64 as u64;
+    syscall(&mut args);
+    if args[6] == SVC_OK {
+        ep_out
+    } else {
+        SVC_ERR_NOT_FOUND
+    }
 }
 
 pub fn default_panic(_info: &core::panic::PanicInfo) -> ! {

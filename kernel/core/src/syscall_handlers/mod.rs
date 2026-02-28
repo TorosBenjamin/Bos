@@ -3,12 +3,14 @@ mod memory;
 mod ipc;
 mod graphics;
 mod misc;
+mod service;
 
 pub use task::{sys_exit, sys_yield, sys_spawn, sys_waitpid};
 pub use memory::{sys_mmap, sys_munmap};
 pub use ipc::{sys_channel_create, sys_channel_send, sys_channel_recv, sys_channel_close};
 pub use graphics::{sys_get_bounding_box, sys_get_display_info, sys_transfer_display};
-pub use misc::{sys_debug_log, sys_read_key, sys_get_module};
+pub use misc::{sys_debug_log, sys_read_key, sys_read_mouse, sys_get_module};
+pub use service::{sys_register_service, sys_lookup_service};
 
 use alloc::sync::Arc;
 use crate::memory::cpu_local_data::{get_cpu, get_local, local_apic_id_of};

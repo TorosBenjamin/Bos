@@ -319,17 +319,12 @@ impl Compositor {
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "sysv64" fn entry_point(arg: u64) -> ! {
-    // arg contains the receive endpoint from init_task
-    let recv_endpoint = arg;
+unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
+    // Create our own IPC channel and self-register under "display"
+    let (send_ep, recv_ep) = ulib::sys_channel_create(16);
+    ulib::sys_register_service(b"display", send_ep);
 
-    if recv_endpoint == 0 {
-        loop {
-            ulib::sys_yield();
-        }
-    }
-
-    let mut compositor = Compositor::new(recv_endpoint);
+    let mut compositor = Compositor::new(recv_ep);
     compositor.run()
 }
 

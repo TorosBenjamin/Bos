@@ -12,4 +12,5 @@ pub enum InterruptVector {
     LocalApicError,       // 0x22
     Keyboard = 0x23,
     Reschedule = 0x24,
+    Mouse = 0x25,
 }

@@ -26,6 +26,11 @@ pub fn sys_exit(exit_code: u64) -> ! {
         let _ = crate::ipc::close_endpoint(ep);
     }
 
+    // 2b. Unregister any services this task registered
+    if let Some(task) = &task_arc {
+        crate::service_registry::unregister_all_for_task(task.id);
+    }
+
     // 3. Set exit code + Zombie, wake waiter or detach
     if let Some(task) = task_arc {
         task.exit_code.store(exit_code, Ordering::Release);

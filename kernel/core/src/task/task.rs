@@ -125,6 +125,8 @@ pub struct TaskInner {
     pub user_vaddr_set: NoditSet<u64, Interval<u64>>,
     /// IPC endpoint IDs owned by this task; closed on exit.
     pub owned_endpoints: Vec<u64>,
+    /// Service names registered by this task; removed from the registry on exit.
+    pub registered_services: Vec<[u8; 64]>,
 }
 
 /// Walk L4 entries 0..256 (user space) and free all page table frames and data frames.
@@ -258,6 +260,7 @@ impl Task {
                 user_page_table: None,
                 user_vaddr_set: NoditSet::default(),
                 owned_endpoints: Vec::new(),
+                registered_services: Vec::new(),
             }),
             id: TaskId::new(),
             state: AtomicTaskState::new(TaskState::Initializing),
@@ -318,6 +321,7 @@ impl Task {
                 user_page_table: Some(page_table),
                 user_vaddr_set,
                 owned_endpoints: Vec::new(),
+                registered_services: Vec::new(),
             }),
             id: TaskId::new(),
             state: AtomicTaskState::new(TaskState::Initializing),

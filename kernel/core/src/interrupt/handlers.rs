@@ -530,6 +530,62 @@ pub extern "C" fn keyboard_interrupt_handler() {
     )
 }
 
+extern "C" fn mouse_interrupt_inner() {
+    crate::drivers::mouse::on_mouse_interrupt();
+    let cpu = get_local();
+    unsafe {
+        let local_apic = &mut *cpu.local_apic.get().unwrap().get();
+        local_apic.end_of_interrupt();
+    }
+}
+
+#[unsafe(naked)]
+pub extern "C" fn mouse_interrupt_handler() {
+    core::arch::naked_asm!(
+        "push r11",
+        "mov r11, [rsp + 16]",
+        "test r11, 3",
+        "jz 4f",
+        "swapgs",
+        "4:",
+        "pop r11",
+        "push rax",
+        "push rcx",
+        "push rdx",
+        "push rsi",
+        "push rdi",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
+        "call {inner}",
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        "mov rax, [rsp + 16]",
+        "and rax, 3",
+        "cmp rax, 3",
+        "jne 2f",
+        "mov rax, [rsp + 40]",
+        "or  rax, 3",
+        "mov [rsp + 40], rax",
+        "2:",
+        "mov rax, [rsp + 16]",
+        "test rax, 3",
+        "jz 5f",
+        "swapgs",
+        "5:",
+        "pop rax",
+        "iretq",
+        inner = sym mouse_interrupt_inner,
+    )
+}
+
 extern "C" fn reschedule_eoi() {
     let cpu = get_local();
     unsafe {

@@ -25,6 +25,7 @@ pub mod time;
 
 pub mod logger;
 pub mod consts;
+pub mod service_registry;
 
 pub mod reexports {
     pub use x86_64;

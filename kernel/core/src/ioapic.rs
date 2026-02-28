@@ -227,3 +227,50 @@ pub fn enable_keyboard_irq(vector: u8, dest_apic_id: u32) {
         dest_apic_id,
     );
 }
+
+/// Route ISA IRQ12 (PS/2 mouse) to the specified APIC vector on the given destination APIC.
+///
+/// Handles ACPI interrupt source overrides (ISA IRQ12 may be remapped to a different GSI).
+pub fn enable_mouse_irq(vector: u8, dest_apic_id: u32) {
+    let state = IOAPIC.get().expect("IOAPIC not initialized");
+
+    // Check for interrupt source override for ISA IRQ 12
+    let (gsi, polarity, trigger_mode) = state
+        .interrupt_source_overrides
+        .iter()
+        .find(|iso| iso.isa_source == 12)
+        .map(|iso| (iso.global_system_interrupt, iso.polarity, iso.trigger_mode))
+        .unwrap_or((12, Polarity::SameAsBus, TriggerMode::SameAsBus));
+
+    // Calculate the IOAPIC pin from the GSI
+    let pin = (gsi - state.info.gsi_base) as u8;
+
+    // Build the redirection table entry
+    let mut entry_low: u32 = vector as u32;
+
+    match polarity {
+        Polarity::ActiveLow => entry_low |= 1 << 13,
+        _ => {}
+    }
+
+    match trigger_mode {
+        TriggerMode::Level => entry_low |= 1 << 15,
+        _ => {}
+    }
+
+    let entry_high: u32 = (dest_apic_id & 0xFF) << 24;
+
+    let reg_low = IOREDTBL_BASE + pin * 2;
+    let reg_high = reg_low + 1;
+
+    write_register(state.info.base, reg_high, entry_high);
+    write_register(state.info.base, reg_low, entry_low);
+
+    log::info!(
+        "IOAPIC: Mouse IRQ12 -> GSI {} -> pin {} -> vector {:#x}, dest APIC {}",
+        gsi,
+        pin,
+        vector,
+        dest_apic_id,
+    );
+}

@@ -99,10 +99,20 @@ impl Window {
             return None;
         }
 
-        // Wait for response (block until display_server replies)
+        // Wait for response (block until display_server replies).
+        // sys_channel_recv has EINTR semantics: if the timer fires while the task
+        // is sleeping inside the syscall, it returns IPC_ERR_CHANNEL_FULL to user
+        // space (via the in_syscall_handler / CpuContext fallback rax mechanism).
+        // We must retry on that code until real data arrives.
         let mut response_buf = [0u8; core::mem::size_of::<CreateWindowResponse>()];
-        let (recv_result, bytes_read) =
-            crate::sys_channel_recv(our_recv, &mut response_buf);
+        let (recv_result, bytes_read) = loop {
+            let (res, len) = crate::sys_channel_recv(our_recv, &mut response_buf);
+            if res == kernel_api_types::IPC_ERR_CHANNEL_FULL {
+                crate::sys_yield();
+                continue;
+            }
+            break (res, len);
+        };
 
         crate::sys_channel_close(our_send);
         crate::sys_channel_close(our_recv);

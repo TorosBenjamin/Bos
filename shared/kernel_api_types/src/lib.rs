@@ -22,6 +22,28 @@ pub enum SysCallNumber {
     GetDisplayInfo = 15,
     DebugLog = 16,
     Waitpid = 17,
+    RegisterService = 18,
+    LookupService = 19,
+    ReadMouse = 20,
+}
+
+pub const MAX_SERVICE_NAME_LEN: usize = 64;
+
+pub const MOUSE_LEFT:   u8 = 1 << 0;
+pub const MOUSE_RIGHT:  u8 = 1 << 1;
+pub const MOUSE_MIDDLE: u8 = 1 << 2;
+
+/// A PS/2 mouse event passed between kernel and userland.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct MouseEvent {
+    pub dx:      i16,
+    pub dy:      i16,
+    pub buttons: u8,
+}
+
+impl MouseEvent {
+    pub const EMPTY: Self = Self { dx: 0, dy: 0, buttons: 0 };
 }
 
 // IPC error codes
@@ -32,6 +54,12 @@ pub const IPC_ERR_PEER_CLOSED: u64 = 3;
 pub const IPC_ERR_CHANNEL_FULL: u64 = 4;
 pub const IPC_ERR_INVALID_ARGS: u64 = 5;
 pub const IPC_ERR_MSG_TOO_LARGE: u64 = 6;
+
+// Service registry error codes
+pub const SVC_OK: u64 = 0;
+pub const SVC_ERR_NOT_FOUND: u64 = 10;
+pub const SVC_ERR_ALREADY_REGISTERED: u64 = 11;
+pub const SVC_ERR_INVALID_ARGS: u64 = 12;
 
 pub const MMAP_WRITE: u64 = 1 << 0;
 pub const MMAP_EXEC: u64 = 1 << 1;
