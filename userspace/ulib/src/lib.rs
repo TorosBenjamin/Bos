@@ -2,6 +2,7 @@
 
 pub mod display;
 pub mod window;
+pub mod test_framework;
 
 use core::arch::asm;
 use kernel_api_types::{SysCallNumber, SVC_ERR_NOT_FOUND, SVC_OK};
@@ -54,7 +55,7 @@ pub fn sys_get_display_info() -> DisplayInfo {
     info
 }
 
-pub fn sys_read_mouse() -> kernel_api_types::MouseEvent {
+pub fn sys_read_mouse() -> Option<kernel_api_types::MouseEvent> {
     let mut event = kernel_api_types::MouseEvent::EMPTY;
     let mut args = [0u64; 7];
     args[0] = SysCallNumber::ReadMouse as u64;
@@ -62,7 +63,7 @@ pub fn sys_read_mouse() -> kernel_api_types::MouseEvent {
 
     syscall(&mut args);
 
-    event
+    if args[6] == 0 { Some(event) } else { None }
 }
 
 pub fn sys_read_key() -> kernel_api_types::KeyEvent {
@@ -208,6 +209,14 @@ pub fn sys_lookup_service(name: &[u8]) -> u64 {
     } else {
         SVC_ERR_NOT_FOUND
     }
+}
+
+pub fn sys_shutdown(exit_code: u64) -> ! {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::Shutdown as u64;
+    args[1] = exit_code;
+    syscall(&mut args);
+    loop {}
 }
 
 pub fn default_panic(_info: &core::panic::PanicInfo) -> ! {

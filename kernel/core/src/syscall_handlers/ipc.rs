@@ -78,7 +78,7 @@ pub fn sys_channel_send(endpoint_id: u64, msg_ptr: u64, msg_len: u64, _: u64, _:
                 }
                 // Register as send waiter and sleep
                 if let Some((task, cpu_id)) = current_task_and_cpu() {
-                    *channel_arc.send_waiter.lock() = Some((task.clone(), cpu_id));
+                    channel_arc.send_waiters.lock().push_back((task.clone(), cpu_id));
                     task.state.store(TaskState::Sleeping, Ordering::Release);
                 }
                 x86_64::instructions::interrupts::enable();
@@ -126,7 +126,7 @@ pub fn sys_channel_recv(endpoint_id: u64, buf_ptr: u64, buf_cap: u64, bytes_read
                 }
                 // Register as recv waiter and sleep
                 if let Some((task, cpu_id)) = current_task_and_cpu() {
-                    *channel_arc.recv_waiter.lock() = Some((task.clone(), cpu_id));
+                    channel_arc.recv_waiters.lock().push_back((task.clone(), cpu_id));
                     task.state.store(TaskState::Sleeping, Ordering::Release);
                 }
                 x86_64::instructions::interrupts::enable();

@@ -1,5 +1,8 @@
 #![no_std]
 
+#[cfg(test)]
+extern crate std;
+
 pub mod graphics;
 pub mod window;
 
@@ -25,6 +28,7 @@ pub enum SysCallNumber {
     RegisterService = 18,
     LookupService = 19,
     ReadMouse = 20,
+    Shutdown = 21,
 }
 
 pub const MAX_SERVICE_NAME_LEN: usize = 64;

@@ -107,6 +107,58 @@ impl Display {
         self.expand_dirty(x0, y0, clipped_w, y1 - y0);
     }
 
+    /// Blit a two-layer bitmask cursor sprite into the back buffer.
+    ///
+    /// `mask[row]`  — bit=1 (MSB=col 0) means the pixel is opaque.
+    /// `image[row]` — among opaque pixels, bit=1 → `white`, bit=0 → `black`.
+    ///
+    /// `black` and `white` must already be in the native framebuffer pixel format
+    /// (build them once with `DisplayInfo::build_pixel`).
+    pub fn blit_cursor(
+        &mut self,
+        cx: i32,
+        cy: i32,
+        mask: &[u16],
+        image: &[u16],
+        w: u32,
+        h: u32,
+        black: u32,
+        white: u32,
+    ) {
+        let sw = self.width as i32;
+        let sh = self.height as i32;
+
+        // Expand dirty to the cursor's clipped bounding rect upfront (one call, not per pixel).
+        let x0 = cx.max(0) as u32;
+        let y0 = cy.max(0) as u32;
+        let x1 = ((cx + w as i32).max(0)).min(sw) as u32;
+        let y1 = ((cy + h as i32).max(0)).min(sh) as u32;
+        if x0 < x1 && y0 < y1 {
+            self.expand_dirty(x0, y0, x1 - x0, y1 - y0);
+        }
+
+        for row in 0..h as i32 {
+            let sy = cy + row;
+            if sy < 0 || sy >= sh {
+                continue;
+            }
+            let row_mask = mask[row as usize];
+            let row_image = image[row as usize];
+            for col in 0..w as i32 {
+                if (row_mask >> (15 - col)) & 1 == 0 {
+                    continue; // transparent
+                }
+                let sx = cx + col;
+                if sx < 0 || sx >= sw {
+                    continue;
+                }
+                let pixel = if (row_image >> (15 - col)) & 1 == 1 { white } else { black };
+                let off = sy as usize * self.width as usize + sx as usize;
+                self.back_buffer[off] = pixel;
+            }
+        }
+    }
+
     fn expand_dirty(&mut self, x: u32, y: u32, w: u32, h: u32) {
         match &mut self.dirty {
             Some(d) => d.expand(x, y, w, h),

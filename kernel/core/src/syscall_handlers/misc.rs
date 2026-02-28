@@ -1,4 +1,14 @@
 use crate::limine_requests::MODULE_REQUEST;
+
+/// Syscall: write to the isa-debug-exit port and halt (exits QEMU).
+///
+/// Arguments: exit_code — written directly to port 0xf4.
+/// QEMU exits with code `(exit_code << 1) | 1`.
+/// Convention: 0x10 = all tests passed (exit 33), 0x11 = any failure (exit 35).
+pub fn sys_shutdown(exit_code: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    unsafe { x86::io::outb(0xf4, exit_code as u8) }
+    loop {}
+}
 use crate::memory::cpu_local_data::get_local;
 use crate::task::task::TaskState;
 use core::sync::atomic::Ordering;
@@ -46,35 +56,21 @@ pub fn sys_read_key(key_event_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u
     }
 }
 
-/// Syscall: read a mouse event (blocking).
+/// Syscall: try to read a mouse event (non-blocking).
 ///
-/// Registers the current task as the mouse waiter, sets it Sleeping,
-/// enables interrupts, and halts. The mouse ISR wakes it when a packet arrives.
+/// Returns 0 and writes the event if one is available, or 1 if the buffer is empty.
 pub fn sys_read_mouse(mouse_event_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
     if !validate_user_ptr(mouse_event_out_ptr, core::mem::size_of::<kernel_api_types::MouseEvent>() as u64) {
         return 1;
     }
     let out = mouse_event_out_ptr as *mut kernel_api_types::MouseEvent;
 
-    loop {
-        if let Some(event) = crate::drivers::mouse::try_read_mouse() {
+    match crate::drivers::mouse::try_read_mouse() {
+        Some(event) => {
             unsafe { core::ptr::write(out, event) };
-            return 0;
+            0
         }
-
-        let ctx_ptr = get_local().current_context_ptr.load(Ordering::Relaxed);
-        if !ctx_ptr.is_null() {
-            unsafe { (*ctx_ptr).rax = 1; }
-        }
-
-        if let Some((task, cpu_id)) = current_task_and_cpu() {
-            *crate::drivers::mouse::MOUSE_WAITER.lock() = Some((task.clone(), cpu_id));
-            task.state.store(TaskState::Sleeping, Ordering::Release);
-        }
-
-        x86_64::instructions::interrupts::enable();
-        x86_64::instructions::hlt();
-        x86_64::instructions::interrupts::disable();
+        None => 1,
     }
 }
 

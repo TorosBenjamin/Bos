@@ -1,0 +1,14 @@
+[package]
+name = "mouse_reader"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ulib = { path = "../ulib" }
+kernel_api_types = { path = "../../shared/kernel_api_types" }
+
+[[bin]]
+name = "mouse_reader"
+test = false
+bench = false

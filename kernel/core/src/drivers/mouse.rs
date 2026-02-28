@@ -1,8 +1,5 @@
-use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, Ordering};
 use kernel_api_types::{MouseEvent, MOUSE_LEFT, MOUSE_MIDDLE, MOUSE_RIGHT};
 use spin::Mutex;
-use crate::task::task::{Task, TaskState};
 
 const MOUSE_BUFFER_SIZE: usize = 64;
 
@@ -44,39 +41,17 @@ impl MouseBuffer {
 
 static MOUSE_BUFFER: Mutex<MouseBuffer> = Mutex::new(MouseBuffer::new());
 
-/// Set when a mouse event is available (used to wake sleeping tasks)
-static MOUSE_AVAILABLE: AtomicBool = AtomicBool::new(false);
-
-/// Task sleeping on mouse input: (task_arc, cpu_kernel_id)
-pub static MOUSE_WAITER: Mutex<Option<(Arc<Task>, u32)>> = Mutex::new(None);
-
 /// 3-byte PS/2 packet accumulator
 static PACKET: Mutex<[u8; 3]> = Mutex::new([0u8; 3]);
 static PACKET_IDX: Mutex<u8> = Mutex::new(0);
 
 fn push_event(event: MouseEvent) {
     MOUSE_BUFFER.lock().push(event);
-    MOUSE_AVAILABLE.store(true, Ordering::Release);
-    if let Some((task, cpu_id)) = MOUSE_WAITER.lock().take() {
-        task.state.store(TaskState::Ready, Ordering::Release);
-        crate::task::local_scheduler::add(crate::memory::cpu_local_data::get_cpu(cpu_id), task);
-        let local_kernel_id = crate::memory::cpu_local_data::get_local().kernel_id;
-        if cpu_id != local_kernel_id {
-            let apic_id = crate::memory::cpu_local_data::local_apic_id_of(cpu_id);
-            crate::apic::send_fixed_ipi(apic_id, u8::from(crate::interrupt::InterruptVector::Reschedule));
-        }
-    }
 }
 
 /// Try to pop a mouse event from the buffer. Returns None if empty.
 pub fn try_read_mouse() -> Option<MouseEvent> {
-    let result = MOUSE_BUFFER.lock().pop();
-    if result.is_some() {
-        if MOUSE_BUFFER.lock().count == 0 {
-            MOUSE_AVAILABLE.store(false, Ordering::Release);
-        }
-    }
-    result
+    MOUSE_BUFFER.lock().pop()
 }
 
 /// Called from the mouse interrupt handler. Reads one byte from port 0x60,
@@ -86,6 +61,13 @@ pub fn on_mouse_interrupt() {
 
     let mut idx = PACKET_IDX.lock();
     let mut pkt = PACKET.lock();
+
+    // PS/2 status byte always has bit 3 set. If we receive a byte at position 0
+    // that doesn't have bit 3 set, it's not a valid status byte — we're out of sync.
+    // Discard it and wait for a real status byte to re-synchronise.
+    if *idx == 0 && (byte & 0x08 == 0) {
+        return;
+    }
 
     pkt[*idx as usize] = byte;
     *idx += 1;
@@ -166,6 +148,14 @@ pub fn init() {
         x86::io::outb(0x64, 0xD4);
         ps2_wait_write();
         x86::io::outb(0x60, 0xF4);
+
+        // The mouse responds to 0xF4 with ACK (0xFA). We must drain it here
+        // via polling, before interrupts are enabled (STI fires later in main.rs).
+        // If we don't, the pending IRQ12 fires on the first STI and on_mouse_interrupt()
+        // reads 0xFA as pkt[0], permanently misaligning the 3-byte packet accumulator.
+        ps2_wait_read();
+        let ack = x86::io::inb(0x60);
+        log::info!("PS/2 mouse: drained ACK byte {:#04x}", ack);
     }
 
     log::info!("PS/2 mouse initialized");
