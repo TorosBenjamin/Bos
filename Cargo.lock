@@ -247,14 +247,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3c8dda44ff03a2f238717214da50f65d5a53b45cd213a7370424ffdb6fae815"
 
 [[package]]
-name = "mouse_reader"
-version = "0.1.0"
-dependencies = [
- "kernel_api_types",
- "ulib",
-]
-
-[[package]]
 name = "nodit"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -360,7 +352,6 @@ dependencies = [
  "display_server",
  "init_task",
  "kernel",
- "mouse_reader",
  "tests",
  "user_land",
  "utest",

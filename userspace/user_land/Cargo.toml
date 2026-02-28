@@ -21,8 +21,3 @@ path = "src/bin/bouncing_cube_2.rs"
 test = false
 bench = false
 
-[[bin]]
-name = "user_init_task"
-path = "src/bin/init_task.rs"
-test = false
-bench = false

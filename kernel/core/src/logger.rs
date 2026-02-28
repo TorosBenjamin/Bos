@@ -66,9 +66,7 @@ impl Log for KernelLogger {
         inner.write_with_color(Color::Default, "\n");
     }
 
-    fn flush(&self) {
-        todo!()
-    }
+    fn flush(&self) {}
 }
 
 pub fn init() -> Result<(), log::SetLoggerError> {

@@ -62,9 +62,6 @@ mod tests {
 /// Clients send WindowMessage requests to the display_server via IPC channels,
 /// and the server responds with WindowResponse messages.
 
-/// Maximum window buffer size that can be sent via IPC (1MB)
-pub const MAX_WINDOW_BUFFER_SIZE: usize = 1024 * 1024;
-
 /// Window ID assigned by the display server
 pub type WindowId = u64;
 
@@ -86,8 +83,6 @@ pub enum WindowMessageType {
     RaiseWindow = 5,
     /// Send window to back (change z-order)
     LowerWindow = 6,
-    /// Mouse movement/button event forwarded by the mouse_reader task
-    MouseInput = 7,
 }
 
 /// Create window request
@@ -149,16 +144,6 @@ pub struct RaiseWindowRequest {
 #[derive(Clone, Copy, Debug)]
 pub struct LowerWindowRequest {
     pub window_id: WindowId,
-}
-
-/// Mouse input message sent by the mouse_reader task to the display server.
-/// dx/dy are relative movement deltas in PS/2 coordinates (positive dy = mouse moved up).
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct MouseInputMessage {
-    pub dx: i16,
-    pub dy: i16,
-    pub buttons: u8,
 }
 
 /// Server-to-client response codes

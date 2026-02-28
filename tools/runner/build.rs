@@ -91,13 +91,6 @@ fn main() {
     let display_server_executable_file = env::var("CARGO_BIN_FILE_DISPLAY_SERVER").unwrap();
     ensure_symlink(display_server_executable_file, iso_dir.join("display_server")).unwrap();
 
-    // User Land binaries - check all env vars to find the right names
-    for (key, value) in env::vars() {
-        if key.starts_with("CARGO_BIN_FILE") && key.contains("USER_LAND") {
-            eprintln!("Found user_land env var: {} = {}", key, value);
-        }
-    }
-
     // User Land: Bouncing Cube 1
     let bouncing_cube_1_executable_file = env::var("CARGO_BIN_FILE_USER_LAND_BOUNCING_CUBE_1")
         .or_else(|_| env::var("CARGO_BIN_FILE_USER_LAND_bouncing_cube_1"))
