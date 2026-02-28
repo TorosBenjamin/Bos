@@ -41,7 +41,7 @@ impl Window {
         })
     }
 
-    /// Update a region of this window's buffer from incoming pixel data
+    /// Update a region of this window's buffer from incoming pixel data (as raw bytes)
     fn update_region(
         &mut self,
         _buffer_width: u32,
@@ -49,27 +49,27 @@ impl Window {
         dirty_y: u32,
         dirty_width: u32,
         dirty_height: u32,
-        pixels: &[u32],
+        pixels: &[u8],
     ) -> bool {
         // Validate dimensions
         if dirty_x + dirty_width > self.width || dirty_y + dirty_height > self.height {
             return false;
         }
 
-        if pixels.len() < (dirty_width * dirty_height) as usize {
+        if pixels.len() < (dirty_width * dirty_height * 4) as usize {
             return false;
         }
 
-        // Copy pixels into window buffer
+        // Copy pixels into window buffer as bytes to avoid alignment issues
         unsafe {
             for row in 0..dirty_height {
-                let src_offset = (row * dirty_width) as usize;
+                let src_offset = (row * dirty_width * 4) as usize;
                 let dest_offset = ((dirty_y + row) * self.width + dirty_x) as usize;
 
                 core::ptr::copy_nonoverlapping(
                     pixels.as_ptr().add(src_offset),
-                    self.buffer.add(dest_offset),
-                    dirty_width as usize,
+                    self.buffer.add(dest_offset) as *mut u8,
+                    (dirty_width * 4) as usize,
                 );
             }
         }
@@ -93,6 +93,7 @@ impl Window {
 
 struct Compositor {
     display: Display,
+    #[allow(dead_code)]
     display_info: kernel_api_types::graphics::DisplayInfo,
     windows: [Option<Window>; MAX_WINDOWS],
     next_window_id: WindowId,
@@ -151,8 +152,6 @@ impl Compositor {
                     window_id,
                 };
                 self.send_response(reply_ep, &response);
-                // Don't composite here — window is initially black, nothing to show.
-                // Compositing happens on UpdateWindow when the client sends pixels.
             }
             None => {
                 let response = CreateWindowResponse {
@@ -164,20 +163,13 @@ impl Compositor {
         }
     }
 
-    fn handle_update_window(&mut self, header: &UpdateWindowRequest, pixels: &[u32]) {
-        // Diagnostic: log that we received an UpdateWindow
-        ulib::sys_debug_log(header.window_id, 0xA001); // tag A001 = UpdateWindow received, value = window_id
-        ulib::sys_debug_log(header.dirty_width as u64 | ((header.dirty_height as u64) << 32), 0xA002); // A002 = dirty WxH
-
+    fn handle_update_window(&mut self, header: &UpdateWindowRequest, pixels: &[u8]) {
         // Find the window
         let window = match self.windows.iter_mut()
             .filter_map(|w| w.as_mut())
             .find(|w| w.id == header.window_id) {
             Some(w) => w,
-            None => {
-                ulib::sys_debug_log(header.window_id, 0xA003); // A003 = window not found
-                return;
-            }
+            None => return,
         };
 
         // Update the window's buffer
@@ -189,26 +181,18 @@ impl Compositor {
             header.dirty_height,
             pixels,
         );
-        ulib::sys_debug_log(ok as u64, 0xA004); // A004 = update_region result (1=ok, 0=fail)
         if ok {
-            // Composite and present
             self.composite_all();
         }
     }
 
     fn handle_close_window(&mut self, req: &CloseWindowRequest) {
-        // Find and remove the window
         for slot in self.windows.iter_mut() {
             if let Some(window) = slot {
                 if window.id == req.window_id {
-                    // Free window buffer
                     let buf_size = (window.width as u64) * (window.height as u64) * 4;
                     ulib::sys_munmap(window.buffer as *mut u8, buf_size);
-
-                    // Remove window
                     *slot = None;
-
-                    // Re-composite without this window
                     self.composite_all();
                     return;
                 }
@@ -229,19 +213,12 @@ impl Compositor {
 
     /// Composite all windows onto the display and present
     fn composite_all(&mut self) {
-        ulib::sys_debug_log(0, 0xB001); // B001 = composite_all start
-        // Blit each window directly (no full-screen clear — windows are opaque)
         for window_slot in &self.windows {
             if let Some(window) = window_slot {
-                ulib::sys_debug_log(window.id, 0xB002); // B002 = blitting window id
                 window.composite_to_display(&mut self.display);
             }
         }
-
-        ulib::sys_debug_log(0, 0xB003); // B003 = calling present
-        // Present only the dirty region to framebuffer
         self.display.present();
-        ulib::sys_debug_log(0, 0xB004); // B004 = present done
     }
 
     fn process_message(&mut self, msg: &[u8]) {
@@ -280,24 +257,20 @@ impl Compositor {
                     return;
                 }
 
+                // Use read_unaligned: header starts at offset 1 (not 8-byte aligned)
                 let header: UpdateWindowRequest = unsafe {
-                    core::ptr::read(msg.as_ptr().add(1) as *const UpdateWindowRequest)
+                    core::ptr::read_unaligned(msg.as_ptr().add(1) as *const UpdateWindowRequest)
                 };
 
-                // Extract pixel data
+                // Extract pixel data as bytes to avoid unaligned *const u32 at offset 33
                 let pixel_offset = 1 + core::mem::size_of::<UpdateWindowRequest>();
-                let pixel_count = header.buffer_size as usize;
+                let pixel_byte_count = header.buffer_size as usize * 4;
 
-                if msg.len() < pixel_offset + pixel_count * 4 {
+                if msg.len() < pixel_offset + pixel_byte_count {
                     return;
                 }
 
-                let pixels = unsafe {
-                    core::slice::from_raw_parts(
-                        msg.as_ptr().add(pixel_offset) as *const u32,
-                        pixel_count,
-                    )
-                };
+                let pixels = &msg[pixel_offset..pixel_offset + pixel_byte_count];
 
                 self.handle_update_window(&header, pixels);
             }
@@ -319,21 +292,16 @@ impl Compositor {
     }
 
     fn run(&mut self) -> ! {
-        ulib::sys_debug_log(self.recv_endpoint, 0xC001); // C001 = display_server run() started, value = recv_ep
-
         // Allocate message buffer
         let msg_buf = ulib::sys_mmap(MAX_MSG_SIZE as u64, MMAP_WRITE);
         if msg_buf.is_null() {
-            ulib::sys_debug_log(0, 0xC002); // C002 = msg_buf alloc failed
             loop {
                 ulib::sys_yield();
             }
         }
 
-        ulib::sys_debug_log(msg_buf as u64, 0xC003); // C003 = msg_buf addr
-
         loop {
-            // Receive a message
+            // Receive a message (blocking)
             let msg_slice = unsafe {
                 core::slice::from_raw_parts_mut(msg_buf, MAX_MSG_SIZE)
             };
@@ -341,8 +309,6 @@ impl Compositor {
             let (result, bytes_read) = ulib::sys_channel_recv(self.recv_endpoint, msg_slice);
 
             if result == IPC_OK && bytes_read > 0 {
-                ulib::sys_debug_log(bytes_read, 0xC004); // C004 = message received, value = bytes
-                ulib::sys_debug_log(msg_slice[0] as u64, 0xC005); // C005 = message type byte
                 let msg = &msg_slice[..bytes_read as usize];
                 self.process_message(msg);
             }
@@ -358,7 +324,6 @@ unsafe extern "sysv64" fn entry_point(arg: u64) -> ! {
     let recv_endpoint = arg;
 
     if recv_endpoint == 0 {
-        // No endpoint provided, can't function
         loop {
             ulib::sys_yield();
         }

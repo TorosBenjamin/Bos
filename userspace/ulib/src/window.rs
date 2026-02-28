@@ -99,17 +99,10 @@ impl Window {
             return None;
         }
 
-        // Wait for response (retry until display_server replies)
+        // Wait for response (block until display_server replies)
         let mut response_buf = [0u8; core::mem::size_of::<CreateWindowResponse>()];
-        let (recv_result, bytes_read) = loop {
-            let (res, len) = crate::sys_channel_recv(our_recv, &mut response_buf);
-            if res == kernel_api_types::IPC_ERR_CHANNEL_FULL {
-                // Channel empty — display_server hasn't replied yet, yield and retry
-                crate::sys_yield();
-                continue;
-            }
-            break (res, len);
-        };
+        let (recv_result, bytes_read) =
+            crate::sys_channel_recv(our_recv, &mut response_buf);
 
         crate::sys_channel_close(our_send);
         crate::sys_channel_close(our_recv);
@@ -184,15 +177,15 @@ impl Window {
                     core::mem::size_of::<UpdateWindowRequest>(),
                 );
 
-                // Copy dirty region pixels
-                let pixel_dest = msg_buf.add(1 + core::mem::size_of::<UpdateWindowRequest>()) as *mut u32;
+                // Copy dirty region pixels as bytes (offset 33 is not u32-aligned)
+                let pixel_bytes = msg_buf.add(1 + core::mem::size_of::<UpdateWindowRequest>());
                 for row in 0..dirty.h {
                     let src_row = (dirty.y + row) * self.width + dirty.x;
                     let dest_row = row * dirty.w;
                     core::ptr::copy_nonoverlapping(
-                        self.buffer.add(src_row as usize),
-                        pixel_dest.add(dest_row as usize),
-                        dirty.w as usize,
+                        self.buffer.add(src_row as usize) as *const u8,
+                        pixel_bytes.add((dest_row * 4) as usize),
+                        (dirty.w * 4) as usize,
                     );
                 }
 

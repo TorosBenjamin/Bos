@@ -7,6 +7,7 @@ use core::cell::UnsafeCell;
 use core::default::Default;
 use core::mem::offset_of;
 use core::ptr::NonNull;
+use atomic_enum::atomic_enum;
 use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicU8};
 use force_send_sync::SendSync;
 use limine::mp::Cpu;
@@ -17,6 +18,18 @@ use x86_64::VirtAddr;
 use x86_64::registers::model_specific::{GsBase, KernelGsBase};
 use x86_64::structures::idt::InterruptDescriptorTable;
 use x86_64::structures::tss::TaskStateSegment;
+
+#[atomic_enum]
+#[derive(PartialEq)]
+pub enum CpuState {
+    /// Hardware init in progress (GDT/IDT/APIC/run-queue not all done yet).
+    Initializing,
+    /// Fully initialized — timer armed, interrupts about to be / are enabled.
+    /// Tasks may be dispatched to this CPU.
+    Ready,
+    /// This CPU has panicked and should be ignored by the scheduler.
+    Crashed,
+}
 
 pub struct CpuLocalData {
     pub kernel_id: u32,
@@ -41,6 +54,8 @@ pub struct CpuLocalData {
     /// Number of tasks currently in the ready queue (not counting the running task).
     /// Updated without holding the run queue lock so other CPUs can read it cheaply.
     pub ready_count: core::sync::atomic::AtomicUsize,
+    /// Lifecycle state — guards task dispatch and crash handling.
+    pub state: AtomicCpuState,
 }
 
 /// Offset of current_context_ptr in CpuLocalData for assembly access
@@ -107,6 +122,7 @@ fn init_cpu(kernel_id: u32, local_apic_id: u32) {
             current_context_ptr: AtomicPtr::new(core::ptr::null_mut()),
             in_syscall_handler: AtomicU8::new(0),
             ready_count: core::sync::atomic::AtomicUsize::new(0),
+            state: AtomicCpuState::new(CpuState::Initializing),
         }),
     )
 }
@@ -136,12 +152,24 @@ pub fn get_cpu(id: u32) -> &'static CpuLocalData {
     CPU_LOCAL_DATA[id as usize].get().unwrap()
 }
 
-/// Returns None if the CPU with the given kernel_id has not been initialized yet
-/// or its run queue is not yet set up.
+/// Mark the current CPU as fully initialized and ready to accept tasks.
+pub fn mark_current_cpu_ready() {
+    get_local().state.store(CpuState::Ready, core::sync::atomic::Ordering::Release);
+}
+
+/// Mark the current CPU as crashed so the scheduler stops dispatching to it.
+pub fn mark_current_cpu_crashed() {
+    if let Some(cpu) = try_get_local() {
+        cpu.state.store(CpuState::Crashed, core::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Returns `Some` only if the CPU is fully initialized and accepting tasks.
 pub fn try_get_ready_cpu(id: u32) -> Option<&'static CpuLocalData> {
     let cpu = CPU_LOCAL_DATA.get(id as usize)?.get()?;
-    // Only consider a CPU "ready" if its run queue is initialized
-    cpu.run_queue.get()?;
+    if cpu.state.load(core::sync::atomic::Ordering::Acquire) != CpuState::Ready {
+        return None;
+    }
     Some(cpu)
 }
 

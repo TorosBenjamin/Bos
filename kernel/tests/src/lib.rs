@@ -18,6 +18,7 @@ pub mod ipc;
 pub mod display;
 pub mod scheduler;
 pub mod elf;
+pub mod syscalls;
 
 pub fn test_panic_handler(info: &PanicInfo) -> ! {
     log::error!("[failed]");
@@ -63,6 +64,7 @@ pub enum TestGroup {
     Display,          // display_owner, get_module
     Scheduler,        // scheduler, spawn
     Elf,              // ELF parsing and mapping validation
+    Syscalls,         // syscall handler API tests
     SchedulerHandoff, // kernel-tasks-only scheduler handoff (diverges, exits QEMU)
     SchedulerNoElf,   // like test_user_task_runs but no ELF — isolates user-mode vs ELF
 }
@@ -88,6 +90,7 @@ pub fn parse_test_group(cmdline: &[u8]) -> Option<TestGroup> {
         "display"    => Some(TestGroup::Display),
         "scheduler"  => Some(TestGroup::Scheduler),
         "elf"        => Some(TestGroup::Elf),
+        "syscalls"   => Some(TestGroup::Syscalls),
         "sched"      => Some(TestGroup::SchedulerHandoff),
         "sched-noelf" => Some(TestGroup::SchedulerNoElf),
         _            => None,
@@ -179,6 +182,23 @@ pub fn tests() -> &'static [TestEntry] {
         TestEntry { group: TestGroup::Elf, test: &elf::test_direct_elf_entry_matches },
         TestEntry { group: TestGroup::Elf, test: &elf::test_spawn_data_integrity },
         TestEntry { group: TestGroup::Elf, test: &elf::test_spawn_bss_zeroed },
+
+        // Syscall handler API
+        TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_debug_log_always_ok },
+        TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_channel_create_null_send_ptr },
+        TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_channel_create_null_recv_ptr },
+        TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_channel_send_invalid_endpoint },
+        TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_channel_send_too_large },
+        TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_channel_recv_null_ptr },
+        TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_channel_close_invalid_endpoint },
+        TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_mmap_zero_size },
+        TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_munmap_unaligned },
+        TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_channel_wrong_direction },
+        TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_channel_create_returns_endpoints },
+        TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_mmap_returns_valid_addr },
+        TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_mmap_write_and_read },
+        TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_channel_send_recv_roundtrip },
+        TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_get_display_info_success },
 
         // Kernel-only scheduler handoff — enables interrupts and never returns.
         // Skipped when running all tests (cargo ktest); run via cargo ktest-sched.

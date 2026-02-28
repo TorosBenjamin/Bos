@@ -59,7 +59,7 @@ pub fn init() {
         // map X2APIC timer to the `LocalApicTimer` interrupt handler in the IDT
         wrmsr(IA32_X2APIC_LVT_TIMER, u8::from(InterruptVector::LocalApicTimer) as u64 | APIC_TIMER_MODE_TSC_DEADLINE as u64);
 
-        wrmsr(IA32_X2APIC_LVT_THERMAL, 0);
+        wrmsr(IA32_X2APIC_LVT_THERMAL, 1 << 16); // masked — vector 0 would fire as #DE
         wrmsr(IA32_X2APIC_ESR, 0);
     }
 }

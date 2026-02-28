@@ -11,14 +11,15 @@ use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, Ordering};
 use embedded_graphics::geometry::Point;
 use embedded_graphics::pixelcolor::{Rgb888, RgbColor};
-use kernel::graphics::display::{self, DISPLAY};
+use kernel::graphics::display::{self, DISPLAY, DISPLAY_OWNER};
 use kernel::graphics::writer::Writer;
 use kernel::limine_requests::{BASE_REVISION, MP_REQUEST, RSDP_REQUEST};
-use kernel::memory::cpu_local_data::get_local;
+use kernel::user_task_from_elf::create_user_task_from_elf;
+use kernel::memory::cpu_local_data::{get_local, mark_current_cpu_crashed, mark_current_cpu_ready};
 use kernel::memory::guarded_stack::{GuardedStack, StackId, StackType, NORMAL_STACK_SIZE};
-use kernel::{acpi, apic, gdt, hlt_loop, interrupt, ioapic, logger, project_version, raw_syscall_handler, time, user_task_from_elf};
+use kernel::{acpi, apic, gdt, hlt_loop, interrupt, ioapic, logger, project_version, raw_syscall_handler, time};
 use kernel::interrupt::nmi_handler_state;
-use kernel::task::global_scheduler::spawn_task;
+use kernel::task::global_scheduler::{spawn_task, spawn_local_task};
 use kernel::task::local_scheduler::init_run_queue;
 use kernel::task::task::Task;
 
@@ -80,13 +81,10 @@ extern "sysv64" fn init_bsp() -> ! {
     raw_syscall_handler::init();
     init_run_queue();
 
-    spawn_task(Task::new(idle_task));
-
-    // Spawn user task from Limine module
-    let user_task = user_task_from_elf::create_user_task_from_elf();
-    display::DISPLAY_OWNER.store(user_task.id.to_u64(), Ordering::Relaxed);
-    spawn_task(user_task);
-
+    spawn_local_task(Task::new(idle_task));
+    let init_task = create_user_task_from_elf();
+    DISPLAY_OWNER.store(init_task.id.to_u64(), core::sync::atomic::Ordering::SeqCst);
+    spawn_task(init_task);
 
     let mp_response = MP_REQUEST.get_response().unwrap();
     for cpu in mp_response.cpus() {
@@ -95,6 +93,7 @@ extern "sysv64" fn init_bsp() -> ! {
         }
     }
 
+    mark_current_cpu_ready();
     log::info!("BSP: enabling interrupts");
     x86_64::instructions::interrupts::enable();
     log::info!("BSP: in hlt_loop");
@@ -135,10 +134,12 @@ extern "sysv64" fn init_ap() -> ! {
     raw_syscall_handler::init();
     init_run_queue();
 
-    spawn_task(Task::new(idle_task));
-
     time::lapic_timer::init();
     time::lapic_timer::set_deadline(1_000_000);
+    mark_current_cpu_ready();
+
+    spawn_local_task(Task::new(idle_task));
+
     x86_64::instructions::interrupts::enable();
 
     log::info!("Initialized AP {}", cpu_id);
@@ -156,6 +157,7 @@ static DID_PANIC: AtomicBool = AtomicBool::new(false);
 
 #[panic_handler]
 fn rust_panic(_info: &core::panic::PanicInfo) -> ! {
+    mark_current_cpu_crashed();
     if !DID_PANIC.swap(true, Ordering::Relaxed) {
         log::error!("{_info}");
 

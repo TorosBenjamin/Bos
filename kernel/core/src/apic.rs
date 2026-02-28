@@ -91,6 +91,9 @@ pub fn init_local_apic() {
 
                 let mut local_apic = builder.build().unwrap();
                 unsafe { local_apic.enable() }
+                // The builder arms a Periodic timer (initial=10M, unmasked) by default.
+                // Mask it immediately so no stray interrupt fires before lapic_timer::init().
+                unsafe { local_apic.disable_timer() }
                 local_apic
             };
             unsafe { SendSync::new(local_apic) }

@@ -55,3 +55,30 @@ pub fn spawn_task(task: Task) {
         target_id
     );
 }
+
+/// Spawn a task pinned to the calling CPU's run queue.
+///
+/// Unlike `spawn_task`, this bypasses round-robin dispatch and always places
+/// the task on the local CPU. Used for idle tasks so each CPU gets its own.
+pub fn spawn_local_task(task: Task) {
+    let task_id = task.id;
+    let cpu = get_local();
+    interrupts::without_interrupts(|| {
+        task.state.store(TaskState::Ready, Ordering::Relaxed);
+        let arc_task = Arc::new(task);
+
+        let mut tasks = TASK_TABLE.lock();
+        if tasks.insert(task_id, arc_task.clone()).is_some() {
+            panic!("Task with the same ID already exists");
+        }
+        drop(tasks);
+
+        crate::task::local_scheduler::add(cpu, arc_task);
+    });
+
+    log::info!(
+        "Task {:?} pinned to local CPU {}",
+        task_id,
+        cpu.kernel_id
+    );
+}
