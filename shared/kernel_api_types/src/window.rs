@@ -100,20 +100,16 @@ pub struct CreateWindowRequest {
     pub y: i32,
 }
 
-/// Update window request - includes dirty rectangle
+/// Update window request — dirty-rect notification only (no pixel data).
+/// Pixels live in the shared buffer mapped at window creation time.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct UpdateWindowRequest {
     pub window_id: WindowId,
-    /// Width of the pixel buffer (in pixels, not bytes)
-    pub buffer_width: u32,
-    /// Dirty rectangle to update
     pub dirty_x: u32,
     pub dirty_y: u32,
     pub dirty_width: u32,
     pub dirty_height: u32,
-    /// Number of pixels in the buffer that follows this header
-    pub buffer_size: u32,
 }
 
 /// Close window request
@@ -201,4 +197,7 @@ impl WindowResult {
 pub struct CreateWindowResponse {
     pub result: WindowResult,
     pub window_id: WindowId,
+    /// Opaque shared-buffer ID — client passes this to sys_map_shared_buf
+    /// to get a writable pointer to the window's pixel backing store.
+    pub shared_buf_id: u64,
 }

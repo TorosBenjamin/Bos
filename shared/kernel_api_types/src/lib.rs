@@ -29,6 +29,9 @@ pub enum SysCallNumber {
     LookupService = 19,
     ReadMouse = 20,
     Shutdown = 21,
+    CreateSharedBuf = 22,
+    MapSharedBuf = 23,
+    DestroySharedBuf = 24,
 }
 
 pub const MAX_SERVICE_NAME_LEN: usize = 64;

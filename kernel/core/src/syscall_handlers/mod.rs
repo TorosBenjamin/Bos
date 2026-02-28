@@ -6,7 +6,7 @@ mod misc;
 mod service;
 
 pub use task::{sys_exit, sys_yield, sys_spawn, sys_waitpid};
-pub use memory::{sys_mmap, sys_munmap};
+pub use memory::{sys_mmap, sys_munmap, sys_create_shared_buf, sys_map_shared_buf, sys_destroy_shared_buf};
 pub use ipc::{sys_channel_create, sys_channel_send, sys_channel_recv, sys_channel_close};
 pub use graphics::{sys_get_bounding_box, sys_get_display_info, sys_transfer_display};
 pub use misc::{sys_debug_log, sys_read_key, sys_read_mouse, sys_get_module, sys_shutdown};

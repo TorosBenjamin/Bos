@@ -137,6 +137,65 @@ pub fn sys_munmap(addr: u64, size: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
     0
 }
 
+/// Syscall: allocate a shared physical buffer and map it into the caller's address space.
+///
+/// Arguments: size (bytes), vaddr_out_ptr
+/// Returns: SharedBufId, or u64::MAX on failure.
+/// Writes the mapped virtual address to `vaddr_out_ptr`.
+pub fn sys_create_shared_buf(size: u64, vaddr_out_ptr: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    if size == 0 || !super::validate_user_ptr(vaddr_out_ptr, 8) {
+        return u64::MAX;
+    }
+
+    let n_pages = size.div_ceil(Size4KiB::SIZE);
+
+    let cpu = get_local();
+    let task = {
+        let rq = cpu.run_queue.get().unwrap().lock();
+        match &rq.current_task {
+            Some(t) if t.kind == TaskKind::User => t.clone(),
+            _ => return u64::MAX,
+        }
+    };
+
+    match crate::shared_buf::create_shared_buf(&task, n_pages) {
+        Some((id, vaddr)) => {
+            unsafe { core::ptr::write(vaddr_out_ptr as *mut u64, vaddr) };
+            id
+        }
+        None => u64::MAX,
+    }
+}
+
+/// Syscall: map an existing shared buffer into the caller's address space.
+///
+/// Arguments: shared_buf_id
+/// Returns: start virtual address, or 0 on failure.
+pub fn sys_map_shared_buf(id: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    let cpu = get_local();
+    let task = {
+        let rq = cpu.run_queue.get().unwrap().lock();
+        match &rq.current_task {
+            Some(t) if t.kind == TaskKind::User => t.clone(),
+            _ => return 0,
+        }
+    };
+
+    match crate::shared_buf::map_shared_buf(id, &task) {
+        Some(vaddr) => vaddr,
+        None => 0,
+    }
+}
+
+/// Syscall: free the physical pages backing a shared buffer.
+///
+/// Arguments: shared_buf_id
+/// Returns: 0 (always succeeds; no-op if ID unknown).
+pub fn sys_destroy_shared_buf(id: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    crate::shared_buf::destroy_shared_buf(id);
+    0
+}
+
 fn rollback_mmap(
     mapper: &mut OffsetPageTable,
     physical_memory: &mut PhysicalMemory,

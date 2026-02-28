@@ -1,7 +1,8 @@
 /// Client-side window abstraction for communicating with the display_server.
 ///
-/// This provides a high-level API for creating windows and sending pixel buffers
-/// to the display server compositor via IPC channels.
+/// The pixel backing store lives in shared physical memory allocated by the
+/// display server. The client maps those same pages and writes pixels directly;
+/// present() sends only a tiny dirty-rect notification (no pixel copy).
 
 use core::convert::Infallible;
 use embedded_graphics::draw_target::DrawTarget;
@@ -15,23 +16,23 @@ use kernel_api_types::window::{
     WindowResult, WindowId, RaiseWindowRequest, LowerWindowRequest, MoveWindowRequest,
 };
 pub use kernel_api_types::window::DirtyRect;
-use kernel_api_types::MMAP_WRITE;
 
-/// A client window that composites to the display_server via IPC
+/// A client window backed by shared physical memory.
 pub struct Window {
     /// Window ID assigned by display_server
     window_id: WindowId,
     /// IPC send endpoint to display_server
     send_endpoint: u64,
-    /// Local pixel buffer
+    /// Pointer into the shared buffer (same physical pages as the server's copy)
     buffer: *mut u32,
+    /// Shared buffer ID (needed for cleanup)
+    shared_buf_id: u64,
+    /// Size of the buffer in bytes
+    buf_size: u64,
     width: u32,
     height: u32,
     info: DisplayInfo,
     dirty: Option<DirtyRect>,
-    /// Pre-allocated IPC message buffer (worst-case: full window update)
-    msg_buf: *mut u8,
-    msg_buf_cap: usize,
 }
 
 impl Window {
@@ -43,9 +44,6 @@ impl Window {
     /// * `height` - Window height in pixels
     /// * `x` - Initial x position
     /// * `y` - Initial y position
-    ///
-    /// # Returns
-    /// `Some(Window)` on success, `None` if window creation failed
     pub fn new(
         display_server_send_ep: u64,
         width: u32,
@@ -53,11 +51,8 @@ impl Window {
         x: i32,
         y: i32,
     ) -> Option<Self> {
-        // Create a channel to receive the response (needed before sending request)
         let (our_send, our_recv) = crate::sys_channel_create(1);
 
-        // Build create window message: [type][CreateWindowRequest][reply_send_ep]
-        // The display_server expects all three in a single message.
         const MSG_SIZE: usize = 1 + core::mem::size_of::<CreateWindowRequest>() + 8;
         let mut msg = [0u8; MSG_SIZE];
         msg[0] = WindowMessageType::CreateWindow as u8;
@@ -71,11 +66,9 @@ impl Window {
             );
         }
 
-        // Append reply endpoint
         let ep_offset = 1 + core::mem::size_of::<CreateWindowRequest>();
         msg[ep_offset..ep_offset + 8].copy_from_slice(&our_send.to_le_bytes());
 
-        // Send combined create window request
         let result = crate::sys_channel_send(display_server_send_ep, &msg);
         if result != kernel_api_types::IPC_OK {
             crate::sys_channel_close(our_send);
@@ -83,11 +76,6 @@ impl Window {
             return None;
         }
 
-        // Wait for response (block until display_server replies).
-        // sys_channel_recv has EINTR semantics: if the timer fires while the task
-        // is sleeping inside the syscall, it returns IPC_ERR_CHANNEL_FULL to user
-        // space (via the in_syscall_handler / CpuContext fallback rax mechanism).
-        // We must retry on that code until real data arrives.
         let mut response_buf = [0u8; core::mem::size_of::<CreateWindowResponse>()];
         let (recv_result, bytes_read) = loop {
             let (res, len) = crate::sys_channel_recv(our_recv, &mut response_buf);
@@ -102,11 +90,11 @@ impl Window {
         crate::sys_channel_close(our_recv);
 
         if recv_result != kernel_api_types::IPC_OK
-            || bytes_read != core::mem::size_of::<CreateWindowResponse>() as u64 {
+            || bytes_read != core::mem::size_of::<CreateWindowResponse>() as u64
+        {
             return None;
         }
 
-        // Parse response
         let response: CreateWindowResponse = unsafe {
             core::ptr::read(response_buf.as_ptr() as *const CreateWindowResponse)
         };
@@ -115,36 +103,25 @@ impl Window {
             return None;
         }
 
-        // Allocate local pixel buffer
+        // Map the shared buffer the server created — zero-copy backing store.
         let buf_size = (width as u64) * (height as u64) * 4;
-        let buffer = crate::sys_mmap(buf_size, MMAP_WRITE) as *mut u32;
+        let buffer = crate::sys_map_shared_buf(response.shared_buf_id) as *mut u32;
         if buffer.is_null() {
             return None;
         }
 
-        // Pre-allocate worst-case IPC message buffer: one full-window UpdateWindow message.
-        let msg_buf_cap = 1
-            + core::mem::size_of::<UpdateWindowRequest>()
-            + (width as usize) * (height as usize) * 4;
-        let msg_buf = crate::sys_mmap(msg_buf_cap as u64, MMAP_WRITE);
-        if msg_buf.is_null() {
-            crate::sys_munmap(buffer as *mut u8, buf_size);
-            return None;
-        }
-
-        // Get display info for pixel format
         let info = crate::sys_get_display_info();
 
         Some(Window {
             window_id: response.window_id,
             send_endpoint: display_server_send_ep,
             buffer,
+            shared_buf_id: response.shared_buf_id,
+            buf_size,
             width,
             height,
             info,
             dirty: None,
-            msg_buf,
-            msg_buf_cap,
         })
     }
 
@@ -196,55 +173,28 @@ impl Window {
         crate::sys_channel_send(self.send_endpoint, &buf);
     }
 
-    /// Send the dirty region to the display server for compositing
+    /// Notify the display server of the dirty region — no pixel data is sent.
+    /// Pixels were already written directly into the shared buffer.
     pub fn present(&mut self) {
         if let Some(dirty) = self.dirty.take() {
-            // Build update message header
             let header = UpdateWindowRequest {
                 window_id: self.window_id,
-                buffer_width: self.width,
                 dirty_x: dirty.x,
                 dirty_y: dirty.y,
                 dirty_width: dirty.w,
                 dirty_height: dirty.h,
-                buffer_size: dirty.w * dirty.h,
             };
-
-            let dirty_pixels = (dirty.w * dirty.h) as usize;
-            let msg_size = 1 + core::mem::size_of::<UpdateWindowRequest>() + dirty_pixels * 4;
-
-            // msg_buf_cap is always >= msg_size (worst case is the full window)
-            debug_assert!(msg_size <= self.msg_buf_cap);
-
+            const MSG_SIZE: usize = 1 + core::mem::size_of::<UpdateWindowRequest>();
+            let mut msg = [0u8; MSG_SIZE];
+            msg[0] = WindowMessageType::UpdateWindow as u8;
             unsafe {
-                let msg_buf = self.msg_buf;
-
-                // Write message type
-                *msg_buf = WindowMessageType::UpdateWindow as u8;
-
-                // Write header (unaligned write — offset 1 is not UpdateWindowRequest-aligned)
                 core::ptr::copy_nonoverlapping(
                     &header as *const UpdateWindowRequest as *const u8,
-                    msg_buf.add(1),
+                    msg.as_mut_ptr().add(1),
                     core::mem::size_of::<UpdateWindowRequest>(),
                 );
-
-                // Copy dirty region pixels as bytes (offset 33 is not u32-aligned)
-                let pixel_bytes = msg_buf.add(1 + core::mem::size_of::<UpdateWindowRequest>());
-                for row in 0..dirty.h {
-                    let src_row = (dirty.y + row) * self.width + dirty.x;
-                    let dest_row = row * dirty.w;
-                    core::ptr::copy_nonoverlapping(
-                        self.buffer.add(src_row as usize) as *const u8,
-                        pixel_bytes.add((dest_row * 4) as usize),
-                        (dirty.w * 4) as usize,
-                    );
-                }
-
-                // Send via IPC
-                let msg_slice = core::slice::from_raw_parts(msg_buf, msg_size);
-                crate::sys_channel_send(self.send_endpoint, msg_slice);
             }
+            crate::sys_channel_send(self.send_endpoint, &msg);
         }
     }
 
@@ -297,7 +247,6 @@ impl DrawTarget for Window {
     ) -> Result<(), Self::Error> {
         let pixel = self.info.build_pixel(color.r(), color.g(), color.b());
 
-        // Clamp to window bounds
         let x0 = (area.top_left.x.max(0) as u32).min(self.width);
         let y0 = (area.top_left.y.max(0) as u32).min(self.height);
         let x1 = ((area.top_left.x + area.size.width as i32).max(0) as u32).min(self.width);

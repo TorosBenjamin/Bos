@@ -208,6 +208,7 @@ impl Compositor {
             self.send_response(reply_ep, &CreateWindowResponse {
                 result: WindowResult::ErrorInvalidDimensions,
                 window_id: 0,
+                shared_buf_id: 0,
             });
             return;
         }
@@ -218,6 +219,7 @@ impl Compositor {
                 self.send_response(reply_ep, &CreateWindowResponse {
                     result: WindowResult::ErrorOutOfMemory,
                     window_id: 0,
+                    shared_buf_id: 0,
                 });
                 return;
             }
@@ -228,11 +230,13 @@ impl Compositor {
 
         match Window::new(window_id, req.x, req.y, req.width, req.height) {
             Some(window) => {
+                let shared_buf_id = window.shared_buf_id;
                 self.windows[slot_idx] = Some(window);
                 self.z_push(window_id);
                 self.send_response(reply_ep, &CreateWindowResponse {
                     result: WindowResult::Ok,
                     window_id,
+                    shared_buf_id,
                 });
                 self.composite_all();
             }
@@ -240,12 +244,13 @@ impl Compositor {
                 self.send_response(reply_ep, &CreateWindowResponse {
                     result: WindowResult::ErrorOutOfMemory,
                     window_id: 0,
+                    shared_buf_id: 0,
                 });
             }
         }
     }
 
-    fn handle_update_window(&mut self, header: &UpdateWindowRequest, pixels: &[u8]) {
+    fn handle_update_window(&mut self, header: &UpdateWindowRequest) {
         let pos = {
             let window = match self.windows.iter_mut()
                 .filter_map(|w| w.as_mut())
@@ -254,13 +259,11 @@ impl Compositor {
                 Some(w) => w,
                 None => return,
             };
-            let ok = window.update_region(
-                header.buffer_width,
-                header.dirty_x, header.dirty_y,
-                header.dirty_width, header.dirty_height,
-                pixels,
-            );
-            if !ok { return; }
+            if header.dirty_x + header.dirty_width > window.width
+                || header.dirty_y + header.dirty_height > window.height
+            {
+                return;
+            }
             (window.x, window.y, window.width, window.height)
         };
 
@@ -273,11 +276,14 @@ impl Compositor {
         for slot in self.windows.iter_mut() {
             if let Some(window) = slot {
                 if window.id == req.window_id {
-                    let buf_size = (window.width as u64) * (window.height as u64) * 4;
-                    ulib::sys_munmap(window.buffer as *mut u8, buf_size);
+                    // Unmap the server's own mapping (won't free the SharedBuffer frames).
+                    ulib::sys_munmap(window.buffer as *mut u8, window.buf_size);
                     let id = window.id;
+                    let shared_buf_id = window.shared_buf_id;
                     *slot = None;
                     self.z_remove(id);
+                    // Now free the physical pages — client must have already unmapped its side.
+                    ulib::sys_destroy_shared_buf(shared_buf_id);
                     self.composite_all();
                     return;
                 }
@@ -391,13 +397,7 @@ impl Compositor {
                 let header: UpdateWindowRequest = unsafe {
                     core::ptr::read_unaligned(msg.as_ptr().add(1) as *const UpdateWindowRequest)
                 };
-                let pixel_offset = 1 + core::mem::size_of::<UpdateWindowRequest>();
-                let pixel_byte_count = header.buffer_size as usize * 4;
-                if msg.len() < pixel_offset + pixel_byte_count {
-                    return;
-                }
-                let pixels = &msg[pixel_offset..pixel_offset + pixel_byte_count];
-                self.handle_update_window(&header, pixels);
+                self.handle_update_window(&header);
             }
             t if t == WindowMessageType::CloseWindow as u8 => {
                 if msg.len() < 1 + core::mem::size_of::<CloseWindowRequest>() {

@@ -211,6 +211,37 @@ pub fn sys_lookup_service(name: &[u8]) -> u64 {
     }
 }
 
+/// Allocate a shared physical buffer of `size` bytes and map it into the caller's address space.
+/// Returns `(shared_buf_id, ptr)`. On failure `shared_buf_id` is `u64::MAX` and `ptr` is null.
+pub fn sys_create_shared_buf(size: u64) -> (u64, *mut u8) {
+    let mut vaddr_out: u64 = 0;
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::CreateSharedBuf as u64;
+    args[1] = size;
+    args[2] = &mut vaddr_out as *mut u64 as u64;
+    syscall(&mut args);
+    (args[6], vaddr_out as *mut u8)
+}
+
+/// Map a shared buffer (created by another task) into the caller's address space.
+/// Returns a writable pointer to the region, or null on failure.
+pub fn sys_map_shared_buf(id: u64) -> *mut u8 {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::MapSharedBuf as u64;
+    args[1] = id;
+    syscall(&mut args);
+    args[6] as *mut u8
+}
+
+/// Free the physical pages backing a shared buffer.
+/// Should be called by the creator after all other mappings have been removed.
+pub fn sys_destroy_shared_buf(id: u64) {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::DestroySharedBuf as u64;
+    args[1] = id;
+    syscall(&mut args);
+}
+
 pub fn sys_shutdown(exit_code: u64) -> ! {
     let mut args = [0u64; 7];
     args[0] = SysCallNumber::Shutdown as u64;

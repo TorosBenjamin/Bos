@@ -20,6 +20,11 @@ pub enum MemoryType {
     UsedByLimine,
     UsedByKernel(KernelMemoryUsageType),
     UsedByUserMode,
+    /// Physical pages backing a shared buffer (owned by SHARED_BUF_REGISTRY, not by any
+    /// single task's page table). `free_user_address_space` silently skips these frames
+    /// because `free_frame(..., UsedByUserMode)` returns `WrongMemoryType` for them.
+    /// Only `destroy_shared_buf` frees them explicitly.
+    SharedBuffer,
 }
 
 #[derive(Debug)]
