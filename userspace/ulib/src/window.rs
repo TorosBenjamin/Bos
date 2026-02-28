@@ -12,8 +12,9 @@ use embedded_graphics::Pixel;
 use kernel_api_types::graphics::DisplayInfo;
 use kernel_api_types::window::{
     CreateWindowRequest, CreateWindowResponse, UpdateWindowRequest, WindowMessageType,
-    WindowResult, WindowId,
+    WindowResult, WindowId, RaiseWindowRequest, LowerWindowRequest, MoveWindowRequest,
 };
+pub use kernel_api_types::window::DirtyRect;
 use kernel_api_types::MMAP_WRITE;
 
 /// A client window that composites to the display_server via IPC
@@ -28,26 +29,9 @@ pub struct Window {
     height: u32,
     info: DisplayInfo,
     dirty: Option<DirtyRect>,
-}
-
-pub struct DirtyRect {
-    pub x: u32,
-    pub y: u32,
-    pub w: u32,
-    pub h: u32,
-}
-
-impl DirtyRect {
-    pub(crate) fn expand(&mut self, x: u32, y: u32, w: u32, h: u32) {
-        let x2 = self.x + self.w;
-        let y2 = self.y + self.h;
-        let new_x2 = (x + w).max(x2);
-        let new_y2 = (y + h).max(y2);
-        self.x = self.x.min(x);
-        self.y = self.y.min(y);
-        self.w = new_x2 - self.x;
-        self.h = new_y2 - self.y;
-    }
+    /// Pre-allocated IPC message buffer (worst-case: full window update)
+    msg_buf: *mut u8,
+    msg_buf_cap: usize,
 }
 
 impl Window {
@@ -138,6 +122,16 @@ impl Window {
             return None;
         }
 
+        // Pre-allocate worst-case IPC message buffer: one full-window UpdateWindow message.
+        let msg_buf_cap = 1
+            + core::mem::size_of::<UpdateWindowRequest>()
+            + (width as usize) * (height as usize) * 4;
+        let msg_buf = crate::sys_mmap(msg_buf_cap as u64, MMAP_WRITE);
+        if msg_buf.is_null() {
+            crate::sys_munmap(buffer as *mut u8, buf_size);
+            return None;
+        }
+
         // Get display info for pixel format
         let info = crate::sys_get_display_info();
 
@@ -149,7 +143,57 @@ impl Window {
             height,
             info,
             dirty: None,
+            msg_buf,
+            msg_buf_cap,
         })
+    }
+
+    /// Raise this window to the top of the z-order (fire-and-forget).
+    pub fn raise(&self) {
+        const MSG_SIZE: usize = 1 + core::mem::size_of::<RaiseWindowRequest>();
+        let mut buf = [0u8; MSG_SIZE];
+        buf[0] = WindowMessageType::RaiseWindow as u8;
+        let req = RaiseWindowRequest { window_id: self.window_id };
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                &req as *const RaiseWindowRequest as *const u8,
+                buf.as_mut_ptr().add(1),
+                core::mem::size_of::<RaiseWindowRequest>(),
+            );
+        }
+        crate::sys_channel_send(self.send_endpoint, &buf);
+    }
+
+    /// Lower this window to the bottom of the z-order (fire-and-forget).
+    pub fn lower(&self) {
+        const MSG_SIZE: usize = 1 + core::mem::size_of::<LowerWindowRequest>();
+        let mut buf = [0u8; MSG_SIZE];
+        buf[0] = WindowMessageType::LowerWindow as u8;
+        let req = LowerWindowRequest { window_id: self.window_id };
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                &req as *const LowerWindowRequest as *const u8,
+                buf.as_mut_ptr().add(1),
+                core::mem::size_of::<LowerWindowRequest>(),
+            );
+        }
+        crate::sys_channel_send(self.send_endpoint, &buf);
+    }
+
+    /// Move this window to `(x, y)` (fire-and-forget).
+    pub fn move_to(&self, x: i32, y: i32) {
+        const MSG_SIZE: usize = 1 + core::mem::size_of::<MoveWindowRequest>();
+        let mut buf = [0u8; MSG_SIZE];
+        buf[0] = WindowMessageType::MoveWindow as u8;
+        let req = MoveWindowRequest { window_id: self.window_id, x, y };
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                &req as *const MoveWindowRequest as *const u8,
+                buf.as_mut_ptr().add(1),
+                core::mem::size_of::<MoveWindowRequest>(),
+            );
+        }
+        crate::sys_channel_send(self.send_endpoint, &buf);
     }
 
     /// Send the dirty region to the display server for compositing
@@ -166,21 +210,19 @@ impl Window {
                 buffer_size: dirty.w * dirty.h,
             };
 
-            // Calculate dirty buffer size
             let dirty_pixels = (dirty.w * dirty.h) as usize;
             let msg_size = 1 + core::mem::size_of::<UpdateWindowRequest>() + dirty_pixels * 4;
 
-            // Allocate message buffer (TODO: reuse across frames)
-            let msg_buf = crate::sys_mmap(msg_size as u64, MMAP_WRITE);
-            if msg_buf.is_null() {
-                return;
-            }
+            // msg_buf_cap is always >= msg_size (worst case is the full window)
+            debug_assert!(msg_size <= self.msg_buf_cap);
 
             unsafe {
+                let msg_buf = self.msg_buf;
+
                 // Write message type
                 *msg_buf = WindowMessageType::UpdateWindow as u8;
 
-                // Write header
+                // Write header (unaligned write — offset 1 is not UpdateWindowRequest-aligned)
                 core::ptr::copy_nonoverlapping(
                     &header as *const UpdateWindowRequest as *const u8,
                     msg_buf.add(1),
@@ -202,9 +244,6 @@ impl Window {
                 // Send via IPC
                 let msg_slice = core::slice::from_raw_parts(msg_buf, msg_size);
                 crate::sys_channel_send(self.send_endpoint, msg_slice);
-
-                // Free message buffer
-                crate::sys_munmap(msg_buf, msg_size as u64);
             }
         }
     }
