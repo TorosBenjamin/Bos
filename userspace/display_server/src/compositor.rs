@@ -17,12 +17,21 @@ pub struct Compositor {
     n_windows: usize,
     /// Pre-rendered gradient background (width × height pixels, native fb format)
     background_buf: *mut u32,
+    /// Off-screen composite: background + all windows blended, no cursor.
+    /// Cursor movement reads only this buffer — never touches window shared memory
+    /// mid-render, eliminating tearing.
+    scene_buf: *mut u32,
     /// Current cursor position (hot spot, clamped to screen)
     cursor_x: i32,
     cursor_y: i32,
     /// Cursor colours pre-built in native framebuffer pixel format
     cursor_black: u32,
     cursor_white: u32,
+    /// Damage accumulated this loop iteration from IPC messages (requires scene update)
+    pending_damage: Option<DirtyRect>,
+    pending_scene_update: bool,
+    /// True when a full redraw is needed (window add/remove/reorder)
+    pending_full_redraw: bool,
 }
 
 impl Compositor {
@@ -34,9 +43,10 @@ impl Compositor {
 
         let width = display_info.width as usize;
         let height = display_info.height as usize;
+        let screen_pixels = width * height;
 
         // Pre-render gradient background
-        let bg_bytes = (width * height * 4) as u64;
+        let bg_bytes = (screen_pixels * 4) as u64;
         let background_buf = ulib::sys_mmap(bg_bytes, MMAP_WRITE) as *mut u32;
 
         if !background_buf.is_null() {
@@ -54,6 +64,12 @@ impl Compositor {
             }
         }
 
+        // Allocate scene buffer (same size as framebuffer); initialise with background.
+        let scene_buf = ulib::sys_mmap(bg_bytes, MMAP_WRITE) as *mut u32;
+        if !scene_buf.is_null() && !background_buf.is_null() {
+            unsafe { core::ptr::copy_nonoverlapping(background_buf, scene_buf, screen_pixels) };
+        }
+
         let cursor_black = display_info.build_pixel(0, 0, 0);
         let cursor_white = display_info.build_pixel(255, 255, 255);
 
@@ -66,10 +82,14 @@ impl Compositor {
             z_order: [0; MAX_WINDOWS],
             n_windows: 0,
             background_buf,
+            scene_buf,
             cursor_x: display_info.width as i32 / 2,
             cursor_y: display_info.height as i32 / 2,
             cursor_black,
             cursor_white,
+            pending_damage: None,
+            pending_scene_update: false,
+            pending_full_redraw: false,
         }
     }
 
@@ -107,7 +127,7 @@ impl Compositor {
         }
     }
 
-    // --- Damage helpers ---
+    // --- Damage / pending state helpers ---
 
     fn screen_rect(&self, x: i32, y: i32, w: u32, h: u32) -> Option<DirtyRect> {
         let x0 = x.max(0) as u32;
@@ -125,71 +145,127 @@ impl Compositor {
         self.screen_rect(self.cursor_x, self.cursor_y, CURSOR_W, CURSOR_H)
     }
 
-    // --- Compositing ---
+    fn expand_pending(&mut self, rect: DirtyRect) {
+        match &mut self.pending_damage {
+            Some(d) => d.expand(rect.x, rect.y, rect.w, rect.h),
+            None => self.pending_damage = Some(rect),
+        }
+    }
 
-    /// Blit windows in z-order that overlap `damage` (or all windows if `damage` is None).
-    fn blit_windows(&mut self, damage: Option<DirtyRect>) {
-        for i in 0..self.n_windows {
-            let id = self.z_order[i];
-            if let Some(window) = self.windows.iter()
-                .filter_map(|w| w.as_ref())
-                .find(|w| w.id == id)
-            {
-                if let Some(d) = damage {
-                    let wx1 = window.x + window.width as i32;
-                    let wy1 = window.y + window.height as i32;
-                    let dx1 = d.x as i32 + d.w as i32;
-                    let dy1 = d.y as i32 + d.h as i32;
-                    if window.x >= dx1 || wx1 <= d.x as i32
-                        || window.y >= dy1 || wy1 <= d.y as i32
-                    {
-                        continue;
-                    }
-                }
-                window.composite_to_display(&mut self.display);
+    fn mark_full_redraw(&mut self) {
+        self.pending_full_redraw = true;
+        self.pending_scene_update = true;
+        self.pending_damage = None;
+    }
+
+    fn mark_damage(&mut self, rect: DirtyRect) {
+        self.expand_pending(rect);
+        self.pending_scene_update = true;
+    }
+
+    // --- Scene buffer compositing ---
+
+    /// Blit raw pixels from `src` into `scene_buf` (same clipping logic as Display::blit_raw).
+    fn blit_to_scene(&mut self, src: *const u32, src_width: u32, dst_x: i32, dst_y: i32, w: u32, h: u32) {
+        if self.scene_buf.is_null() {
+            return;
+        }
+        let screen_w = self.display_info.width as usize;
+        let screen_h = self.display_info.height as usize;
+
+        let x0 = dst_x.max(0) as usize;
+        let y0 = dst_y.max(0) as usize;
+        let x1 = ((dst_x + w as i32).max(0) as usize).min(screen_w);
+        let y1 = ((dst_y + h as i32).max(0) as usize).min(screen_h);
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        let clipped_w = x1 - x0;
+        let src_x_off = (x0 as i32 - dst_x).max(0) as usize;
+        let src_y_off = (y0 as i32 - dst_y).max(0) as usize;
+
+        for row in 0..(y1 - y0) {
+            let src_off = (src_y_off + row) * src_width as usize + src_x_off;
+            let dst_off = (y0 + row) * screen_w + x0;
+            unsafe {
+                core::ptr::copy_nonoverlapping(src.add(src_off), self.scene_buf.add(dst_off), clipped_w);
             }
         }
     }
 
-    /// Full composite: entire background + all windows + cursor → present.
-    pub fn composite_all(&mut self) {
+    /// Update scene_buf for `damage` region: blit background then all overlapping windows.
+    fn update_scene_region(&mut self, damage: DirtyRect) {
+        // Background
         if !self.background_buf.is_null() {
-            self.display.blit_raw(
-                self.background_buf, self.display_info.width,
-                0, 0, self.display_info.width, self.display_info.height,
-            );
+            let screen_w = self.display_info.width;
+            let src = unsafe {
+                self.background_buf.add(damage.y as usize * screen_w as usize + damage.x as usize)
+            };
+            self.blit_to_scene(src, screen_w, damage.x as i32, damage.y as i32, damage.w, damage.h);
         }
-        self.blit_windows(None);
-        self.display.blit_cursor(
-            self.cursor_x, self.cursor_y,
-            &CURSOR_MASK, &CURSOR_IMAGE,
-            CURSOR_W, CURSOR_H,
-            self.cursor_black, self.cursor_white,
-        );
-        self.display.present();
+
+        // Windows in z-order (only those overlapping damage)
+        for i in 0..self.n_windows {
+            let id = self.z_order[i];
+            // Collect fields to avoid borrow conflict with blit_to_scene(&mut self)
+            let info = self.windows.iter()
+                .filter_map(|w| w.as_ref())
+                .find(|w| w.id == id)
+                .map(|w| (w.x, w.y, w.width, w.height, w.buffer as *const u32));
+
+            if let Some((wx, wy, ww, wh, wbuf)) = info {
+                let wx1 = wx + ww as i32;
+                let wy1 = wy + wh as i32;
+                let dx1 = damage.x as i32 + damage.w as i32;
+                let dy1 = damage.y as i32 + damage.h as i32;
+                if wx >= dx1 || wx1 <= damage.x as i32 || wy >= dy1 || wy1 <= damage.y as i32 {
+                    continue;
+                }
+                self.blit_to_scene(wbuf, ww, wx, wy, ww, wh);
+            }
+        }
     }
 
-    /// Damage-region composite: repaints only `damage` rect → present.
-    fn composite_damage(&mut self, damage: DirtyRect) {
-        if !self.background_buf.is_null() {
-            let screen_w = self.display_info.width as usize;
-            let src = unsafe {
-                self.background_buf
-                    .add(damage.y as usize * screen_w + damage.x as usize)
-            };
-            self.display.blit_raw(
-                src, self.display_info.width,
-                damage.x as i32, damage.y as i32, damage.w, damage.h,
-            );
+    /// Rebuild the entire scene_buf from background + all windows.
+    fn update_scene_full(&mut self) {
+        if self.scene_buf.is_null() {
+            return;
         }
-        self.blit_windows(Some(damage));
-        // Cursor is always on top — blit it if it overlaps the damage rect.
+        // Copy background
+        if !self.background_buf.is_null() {
+            let n = self.display_info.width as usize * self.display_info.height as usize;
+            unsafe { core::ptr::copy_nonoverlapping(self.background_buf, self.scene_buf, n) };
+        }
+        // Blit all windows in z-order
+        for i in 0..self.n_windows {
+            let id = self.z_order[i];
+            let info = self.windows.iter()
+                .filter_map(|w| w.as_ref())
+                .find(|w| w.id == id)
+                .map(|w| (w.x, w.y, w.width, w.height, w.buffer as *const u32));
+
+            if let Some((wx, wy, ww, wh, wbuf)) = info {
+                self.blit_to_scene(wbuf, ww, wx, wy, ww, wh);
+            }
+        }
+    }
+
+    /// Blit `damage` region from scene_buf into the display back buffer, draw cursor
+    /// on top if it overlaps, then present.
+    fn present_region(&mut self, damage: DirtyRect) {
+        if !self.scene_buf.is_null() {
+            let screen_w = self.display_info.width;
+            let src = unsafe {
+                self.scene_buf.add(damage.y as usize * screen_w as usize + damage.x as usize)
+            };
+            self.display.blit_raw(src, screen_w, damage.x as i32, damage.y as i32, damage.w, damage.h);
+        }
+
+        // Cursor is always on top — draw it if it overlaps the damage rect
         if let Some(cr) = self.cursor_rect() {
             let dx1 = damage.x + damage.w;
             let dy1 = damage.y + damage.h;
-            let cx1 = cr.x + cr.w;
-            let cy1 = cr.y + cr.h;
-            if cr.x < dx1 && cx1 > damage.x && cr.y < dy1 && cy1 > damage.y {
+            if cr.x < dx1 && cr.x + cr.w > damage.x && cr.y < dy1 && cr.y + cr.h > damage.y {
                 self.display.blit_cursor(
                     self.cursor_x, self.cursor_y,
                     &CURSOR_MASK, &CURSOR_IMAGE,
@@ -198,7 +274,27 @@ impl Compositor {
                 );
             }
         }
+
         self.display.present();
+    }
+
+    /// Flush all pending damage: update scene if needed, then present.
+    fn flush(&mut self) {
+        if self.pending_full_redraw {
+            self.pending_full_redraw = false;
+            self.pending_scene_update = false;
+            self.pending_damage = None;
+            self.update_scene_full();
+            let w = self.display_info.width;
+            let h = self.display_info.height;
+            self.present_region(DirtyRect { x: 0, y: 0, w, h });
+        } else if let Some(damage) = self.pending_damage.take() {
+            if self.pending_scene_update {
+                self.pending_scene_update = false;
+                self.update_scene_region(damage);
+            }
+            self.present_region(damage);
+        }
     }
 
     // --- Window handlers ---
@@ -238,7 +334,7 @@ impl Compositor {
                     window_id,
                     shared_buf_id,
                 });
-                self.composite_all();
+                self.mark_full_redraw();
             }
             None => {
                 self.send_response(reply_ep, &CreateWindowResponse {
@@ -267,8 +363,8 @@ impl Compositor {
             (window.x, window.y, window.width, window.height)
         };
 
-        if let Some(damage) = self.screen_rect(pos.0, pos.1, pos.2, pos.3) {
-            self.composite_damage(damage);
+        if let Some(rect) = self.screen_rect(pos.0, pos.1, pos.2, pos.3) {
+            self.mark_damage(rect);
         }
     }
 
@@ -276,15 +372,13 @@ impl Compositor {
         for slot in self.windows.iter_mut() {
             if let Some(window) = slot {
                 if window.id == req.window_id {
-                    // Unmap the server's own mapping (won't free the SharedBuffer frames).
                     ulib::sys_munmap(window.buffer as *mut u8, window.buf_size);
                     let id = window.id;
                     let shared_buf_id = window.shared_buf_id;
                     *slot = None;
                     self.z_remove(id);
-                    // Now free the physical pages — client must have already unmapped its side.
                     ulib::sys_destroy_shared_buf(shared_buf_id);
-                    self.composite_all();
+                    self.mark_full_redraw();
                     return;
                 }
             }
@@ -311,45 +405,19 @@ impl Compositor {
                 }
             }
             if let Some(d) = damage {
-                self.composite_damage(d);
+                self.mark_damage(d);
             }
         }
     }
 
     fn handle_raise_window(&mut self, req: &RaiseWindowRequest) {
         self.z_raise(req.window_id);
-        self.composite_all();
+        self.mark_full_redraw();
     }
 
     fn handle_lower_window(&mut self, req: &LowerWindowRequest) {
         self.z_lower(req.window_id);
-        self.composite_all();
-    }
-
-    /// Move cursor by the given accumulated delta and composite the affected region once.
-    fn move_cursor(&mut self, dx: i32, dy: i32) {
-        if dx == 0 && dy == 0 {
-            return;
-        }
-        let old_rect = self.cursor_rect();
-
-        self.cursor_x = (self.cursor_x + dx)
-            .clamp(0, self.display_info.width as i32 - 1);
-        self.cursor_y = (self.cursor_y + dy)
-            .clamp(0, self.display_info.height as i32 - 1);
-
-        let new_rect = self.cursor_rect();
-
-        let damage = match (old_rect, new_rect) {
-            (Some(mut a), Some(b)) => { a.expand(b.x, b.y, b.w, b.h); Some(a) }
-            (Some(a), None) => Some(a),
-            (None, Some(b)) => Some(b),
-            (None, None) => None,
-        };
-
-        if let Some(d) = damage {
-            self.composite_damage(d);
-        }
+        self.mark_full_redraw();
     }
 
     fn send_response<T>(&self, reply_ep: u64, response: &T) {
@@ -445,23 +513,52 @@ impl Compositor {
             loop { ulib::sys_yield(); }
         }
 
+        // Initial full composite
+        self.mark_full_redraw();
+
         loop {
-            let msg_slice = unsafe {
-                core::slice::from_raw_parts_mut(msg_buf, MAX_MSG_SIZE)
-            };
-            let (result, bytes_read) = ulib::sys_channel_recv(self.recv_endpoint, msg_slice);
-            if result == IPC_OK && bytes_read > 0 {
-                let msg = &msg_slice[..bytes_read as usize];
+            // Drain all pending IPC messages before compositing.
+            loop {
+                let msg_slice = unsafe { core::slice::from_raw_parts_mut(msg_buf, MAX_MSG_SIZE) };
+                let (result, bytes_read) = ulib::sys_channel_recv(self.recv_endpoint, msg_slice);
+                if result != IPC_OK || bytes_read == 0 {
+                    break;
+                }
+                let msg = unsafe { core::slice::from_raw_parts(msg_buf, bytes_read as usize) };
                 self.process_message(msg);
             }
-            // Drain all pending mouse events, accumulate into one delta, composite once.
+
+            // Drain all pending mouse events; accumulate into a single cursor move.
             let mut total_dx = 0i32;
             let mut total_dy = 0i32;
             while let Some(ev) = ulib::sys_read_mouse() {
                 total_dx += ev.dx as i32;
                 total_dy += ev.dy as i32;
             }
-            self.move_cursor(total_dx, total_dy);
+            if total_dx != 0 || total_dy != 0 {
+                let old_rect = self.cursor_rect();
+                self.cursor_x = (self.cursor_x + total_dx)
+                    .clamp(0, self.display_info.width as i32 - 1);
+                self.cursor_y = (self.cursor_y + total_dy)
+                    .clamp(0, self.display_info.height as i32 - 1);
+                let new_rect = self.cursor_rect();
+
+                // Expand pending damage to cover old and new cursor positions.
+                // No scene update needed — cursor lives above scene_buf.
+                let cursor_damage = match (old_rect, new_rect) {
+                    (Some(mut a), Some(b)) => { a.expand(b.x, b.y, b.w, b.h); Some(a) }
+                    (Some(a), None) => Some(a),
+                    (None, Some(b)) => Some(b),
+                    (None, None) => None,
+                };
+                if let Some(cd) = cursor_damage {
+                    self.expand_pending(cd);
+                }
+            }
+
+            // Single composite for everything accumulated this iteration.
+            self.flush();
+
             ulib::sys_yield();
         }
     }

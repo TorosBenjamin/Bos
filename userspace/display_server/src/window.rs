@@ -1,5 +1,4 @@
 use kernel_api_types::window::WindowId;
-use ulib::display::Display;
 
 pub struct Window {
     pub id: WindowId,
@@ -34,7 +33,4 @@ impl Window {
         })
     }
 
-    pub fn composite_to_display(&self, display: &mut Display) {
-        display.blit_raw(self.buffer, self.width, self.x, self.y, self.width, self.height);
-    }
 }
