@@ -111,6 +111,30 @@ pub fn sys_spawn(elf_ptr: u64, elf_len: u64, child_arg: u64, _: u64, _: u64, _: 
     }
 }
 
+/// Syscall: sleep the current task for at least `ms` milliseconds.
+///
+/// Returns 0 on success, 1 if called from a non-user context.
+pub fn sys_sleep_ms(ms: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    if ms == 0 {
+        return 0;
+    }
+    let tsc_hz = crate::time::tsc::TSC_HZ.load(Ordering::Relaxed);
+    let wake_tsc = crate::time::tsc::value() + ms * tsc_hz;
+
+    let (task, cpu_id) = match current_task_and_cpu() {
+        Some(t) => t,
+        None => return 1,
+    };
+
+    crate::time::sleep_queue::enqueue(task.clone(), cpu_id, wake_tsc);
+    task.state.store(TaskState::Sleeping, Ordering::Release);
+
+    x86_64::instructions::interrupts::enable();
+    x86_64::instructions::hlt();
+    x86_64::instructions::interrupts::disable();
+    0
+}
+
 /// Syscall: create a new thread sharing the caller's address space.
 ///
 /// Arguments: entry_rip, stack_top, arg

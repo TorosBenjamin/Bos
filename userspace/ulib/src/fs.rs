@@ -18,7 +18,7 @@ pub fn fs_lookup() -> u64 {
         if ep != SVC_ERR_NOT_FOUND {
             return ep;
         }
-        crate::sys_yield();
+        crate::sys_sleep_ms(1);
     }
 }
 
@@ -76,7 +76,7 @@ fn send_request_raw<Req: Sized>(
             crate::sys_channel_close(our_recv);
             return 0;
         }
-        crate::sys_yield();
+        crate::sys_sleep_ms(1);
     }
 }
 

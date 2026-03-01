@@ -84,6 +84,14 @@ pub fn sys_yield() {
     syscall(&mut args);
 }
 
+/// Sleep for at least `ms` milliseconds.
+pub fn sys_sleep_ms(ms: u64) {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::SleepMs as u64;
+    args[1] = ms;
+    syscall(&mut args);
+}
+
 pub fn sys_mmap(size: u64, flags: u64) -> *mut u8 {
     let mut args = [0u64; 7];
     args[0] = SysCallNumber::Mmap as u64;

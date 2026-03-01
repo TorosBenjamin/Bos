@@ -67,8 +67,8 @@ unsafe extern "sysv64" fn entry_point() -> ! {
         }
     }
 
-    // Init task stays alive, yielding forever
+    // Init task stays alive, sleeping to avoid burning CPU
     loop {
-        ulib::sys_yield();
+        ulib::sys_sleep_ms(10);
     }
 }

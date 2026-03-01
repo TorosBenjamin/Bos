@@ -80,7 +80,7 @@ impl Window {
         let (recv_result, bytes_read) = loop {
             let (res, len) = crate::sys_channel_recv(our_recv, &mut response_buf);
             if res == kernel_api_types::IPC_ERR_CHANNEL_FULL {
-                crate::sys_yield();
+                crate::sys_sleep_ms(1);
                 continue;
             }
             break (res, len);

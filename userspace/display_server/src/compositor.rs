@@ -510,7 +510,7 @@ impl Compositor {
     pub fn run(&mut self) -> ! {
         let msg_buf = ulib::sys_mmap(MAX_MSG_SIZE as u64, MMAP_WRITE);
         if msg_buf.is_null() {
-            loop { ulib::sys_yield(); }
+            loop { ulib::sys_sleep_ms(100); }
         }
 
         // Initial full composite
@@ -559,7 +559,7 @@ impl Compositor {
             // Single composite for everything accumulated this iteration.
             self.flush();
 
-            ulib::sys_yield();
+            ulib::sys_sleep_ms(1);
         }
     }
 }

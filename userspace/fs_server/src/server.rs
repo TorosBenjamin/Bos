@@ -29,13 +29,13 @@ pub fn run(recv_ep: u64) -> ! {
         }
         None => {
             ulib::sys_debug_log(0, 0xFA32_DEAD); // "fatfs: mount failed"
-            loop { ulib::sys_yield(); }
+            loop { ulib::sys_sleep_ms(100); }
         }
     };
 
     let msg_buf = ulib::sys_mmap(MAX_MSG_SIZE as u64, MMAP_WRITE);
     if msg_buf.is_null() {
-        loop { ulib::sys_yield(); }
+        loop { ulib::sys_sleep_ms(100); }
     }
 
     loop {
@@ -43,7 +43,7 @@ pub fn run(recv_ep: u64) -> ! {
         let (result, bytes_read) = ulib::sys_channel_recv(recv_ep, msg_slice);
 
         if result != IPC_OK || bytes_read == 0 {
-            ulib::sys_yield();
+            ulib::sys_sleep_ms(1);
             continue;
         }
 
