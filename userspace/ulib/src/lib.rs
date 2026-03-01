@@ -78,6 +78,29 @@ pub fn sys_read_key() -> kernel_api_types::KeyEvent {
     event
 }
 
+pub fn sys_try_read_key() -> Option<kernel_api_types::KeyEvent> {
+    let mut event = kernel_api_types::KeyEvent::EMPTY;
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::TryReadKey as u64;
+    args[1] = &mut event as *mut kernel_api_types::KeyEvent as u64;
+
+    syscall(&mut args);
+
+    if args[6] == 0 { Some(event) } else { None }
+}
+
+pub fn sys_try_channel_recv(endpoint_id: u64, buf: &mut [u8]) -> (u64, u64) {
+    let mut bytes_read: u64 = 0;
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::TryChannelRecv as u64;
+    args[1] = endpoint_id;
+    args[2] = buf.as_mut_ptr() as u64;
+    args[3] = buf.len() as u64;
+    args[4] = &mut bytes_read as *mut u64 as u64;
+    syscall(&mut args);
+    (args[6], bytes_read)
+}
+
 pub fn sys_yield() {
     let mut args = [0u64; 7];
     args[0] = SysCallNumber::Yield as u64;

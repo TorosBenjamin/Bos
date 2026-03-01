@@ -138,6 +138,29 @@ pub fn sys_channel_recv(endpoint_id: u64, buf_ptr: u64, buf_cap: u64, bytes_read
     }
 }
 
+/// Syscall: try to receive a message from a channel endpoint (non-blocking).
+///
+/// Returns IPC_OK and writes the message if one is available,
+/// or IPC_ERR_CHANNEL_FULL immediately if the channel is empty.
+pub fn sys_try_channel_recv(endpoint_id: u64, buf_ptr: u64, buf_cap: u64, bytes_read_out_ptr: u64, _: u64, _: u64) -> u64 {
+    if !validate_user_ptr(buf_ptr, buf_cap) || !validate_user_ptr(bytes_read_out_ptr, 8) {
+        return kernel_api_types::IPC_ERR_INVALID_ARGS;
+    }
+
+    match crate::ipc::try_recv(endpoint_id) {
+        Ok(msg) => {
+            let copy_len = msg.len().min(buf_cap as usize);
+            unsafe {
+                core::ptr::copy_nonoverlapping(msg.as_ptr(), buf_ptr as *mut u8, copy_len);
+                core::ptr::write(bytes_read_out_ptr as *mut u64, copy_len as u64);
+            }
+            kernel_api_types::IPC_OK
+        }
+        Err(crate::ipc::IpcError::WouldBlock) => kernel_api_types::IPC_ERR_CHANNEL_FULL,
+        Err(e) => ipc_error_to_code(e),
+    }
+}
+
 /// Syscall: close a channel endpoint.
 ///
 /// Arguments: endpoint_id

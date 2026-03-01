@@ -1,10 +1,17 @@
 use crate::cursor::{CURSOR_H, CURSOR_IMAGE, CURSOR_MASK, CURSOR_W};
 use crate::window::Window;
 use kernel_api_types::window::*;
-use kernel_api_types::{IPC_OK, MMAP_WRITE};
+use kernel_api_types::{IPC_OK, MMAP_WRITE, MOUSE_LEFT};
 
 pub const MAX_WINDOWS: usize = 32;
 const MAX_MSG_SIZE: usize = 4096;
+
+/// Pixels between a window edge and the screen / available-area boundary.
+const OUTER_GAP: u32 = 8;
+/// Pixels between two adjacent tiled windows.
+const INNER_GAP: u32 = 8;
+/// Width of the colored border drawn around each Toplevel window (in the gap area).
+const BORDER_WIDTH: i32 = 2;
 
 pub struct Compositor {
     display: ulib::display::Display,
@@ -18,8 +25,6 @@ pub struct Compositor {
     /// Pre-rendered gradient background (width × height pixels, native fb format)
     background_buf: *mut u32,
     /// Off-screen composite: background + all windows blended, no cursor.
-    /// Cursor movement reads only this buffer — never touches window shared memory
-    /// mid-render, eliminating tearing.
     scene_buf: *mut u32,
     /// Current cursor position (hot spot, clamped to screen)
     cursor_x: i32,
@@ -32,6 +37,14 @@ pub struct Compositor {
     pending_scene_update: bool,
     /// True when a full redraw is needed (window add/remove/reorder)
     pending_full_redraw: bool,
+    /// Currently focused window (receives keyboard events)
+    focused_window: Option<WindowId>,
+    /// Mouse button state from the previous frame
+    prev_mouse_buttons: u8,
+    /// Border colour for the focused window (native fb pixel format)
+    border_focused: u32,
+    /// Border colour for unfocused windows (native fb pixel format)
+    border_unfocused: u32,
 }
 
 impl Compositor {
@@ -72,6 +85,9 @@ impl Compositor {
 
         let cursor_black = display_info.build_pixel(0, 0, 0);
         let cursor_white = display_info.build_pixel(255, 255, 255);
+        // Catppuccin Macchiato: blue #8aadf4 for focused, surface0 #363a4f for unfocused
+        let border_focused   = display_info.build_pixel(138, 173, 244);
+        let border_unfocused = display_info.build_pixel(54,  58,  79);
 
         Compositor {
             display,
@@ -90,6 +106,10 @@ impl Compositor {
             pending_damage: None,
             pending_scene_update: false,
             pending_full_redraw: false,
+            focused_window: None,
+            prev_mouse_buttons: 0,
+            border_focused,
+            border_unfocused,
         }
     }
 
@@ -111,9 +131,45 @@ impl Compositor {
         }
     }
 
+    /// Push a Toplevel window above other Toplevels but below all Panels.
+    fn z_push_toplevel(&mut self, id: WindowId) {
+        // Find the index of the first panel in z_order (panels live above toplevels)
+        let panel_start = (0..self.n_windows).find(|&i| {
+            let zid = self.z_order[i];
+            self.windows.iter()
+                .filter_map(|w| w.as_ref())
+                .find(|w| w.id == zid)
+                .map(|w| w.is_panel)
+                .unwrap_or(false)
+        });
+
+        match panel_start {
+            Some(pos) => {
+                if self.n_windows < MAX_WINDOWS {
+                    for i in (pos..self.n_windows).rev() {
+                        self.z_order[i + 1] = self.z_order[i];
+                    }
+                    self.z_order[pos] = id;
+                    self.n_windows += 1;
+                }
+            }
+            None => self.z_push(id),
+        }
+    }
+
     fn z_raise(&mut self, id: WindowId) {
+        let is_panel = self.windows.iter()
+            .filter_map(|w| w.as_ref())
+            .find(|w| w.id == id)
+            .map(|w| w.is_panel)
+            .unwrap_or(false);
+
         self.z_remove(id);
-        self.z_push(id);
+        if is_panel {
+            self.z_push(id);
+        } else {
+            self.z_push_toplevel(id);
+        }
     }
 
     fn z_lower(&mut self, id: WindowId) {
@@ -163,9 +219,249 @@ impl Compositor {
         self.pending_scene_update = true;
     }
 
+    // --- Tiling layout ---
+
+    fn count_toplevels(&self) -> usize {
+        self.windows.iter()
+            .filter_map(|w| w.as_ref())
+            .filter(|w| !w.is_panel)
+            .count()
+    }
+
+    /// Returns `(x, y, w, h)` — the screen area available to Toplevels after panels claim their edges.
+    fn available_area(&self) -> (i32, i32, u32, u32) {
+        let mut ax = 0i32;
+        let mut ay = 0i32;
+        let mut aw = self.display_info.width;
+        let mut ah = self.display_info.height;
+
+        for slot in &self.windows {
+            if let Some(w) = slot {
+                if !w.is_panel {
+                    continue;
+                }
+                match w.anchor {
+                    0 => { // Top
+                        let zone = w.exclusive_zone.min(ah);
+                        ay += zone as i32;
+                        ah -= zone;
+                    }
+                    1 => { // Bottom
+                        ah -= w.exclusive_zone.min(ah);
+                    }
+                    2 => { // Left
+                        let zone = w.exclusive_zone.min(aw);
+                        ax += zone as i32;
+                        aw -= zone;
+                    }
+                    3 => { // Right
+                        aw -= w.exclusive_zone.min(aw);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        (ax, ay, aw, ah)
+    }
+
+    /// Redistribute horizontal tile space among all Toplevels. Sends Configure events to
+    /// any window whose buffer dimensions change.
+    fn recalculate_toplevel_layout(&mut self) {
+        let n = self.count_toplevels();
+        if n == 0 {
+            return;
+        }
+
+        let (ax, ay, aw, ah) = self.available_area();
+        // Distribute gaps: OUTER_GAP on every side, INNER_GAP between adjacent windows.
+        let total_h_gaps = 2 * OUTER_GAP + (n as u32 - 1) * INNER_GAP;
+        let usable_w = aw.saturating_sub(total_h_gaps);
+        let usable_h = ah.saturating_sub(2 * OUTER_GAP);
+        let tile_w = usable_w / n as u32;
+
+        // Collect (event_send_ep, ConfigureEvent) for windows that need a new buffer.
+        // Use a fixed-size array since we're no_std.
+        let mut pending: [(u64, ConfigureEvent); MAX_WINDOWS] = [(0, ConfigureEvent {
+            event_type: WindowEventType::Configure as u8,
+            _pad: [0; 3],
+            width: 0,
+            height: 0,
+            shared_buf_id: 0,
+        }); MAX_WINDOWS];
+        let mut n_pending = 0usize;
+
+        let mut i = 0usize;
+        for slot in &mut self.windows {
+            if let Some(window) = slot {
+                if window.is_panel {
+                    continue;
+                }
+                let new_x = ax + OUTER_GAP as i32 + (i as u32 * (tile_w + INNER_GAP)) as i32;
+                let new_y = ay + OUTER_GAP as i32;
+                // Last toplevel gets any remaining pixels so rounding doesn't leave a sliver
+                let new_w = if i == n - 1 { usable_w - tile_w * i as u32 } else { tile_w };
+                let new_h = usable_h;
+
+                let reconfigured = window.reconfigure(new_x, new_y, new_w, new_h);
+                if reconfigured && n_pending < MAX_WINDOWS {
+                    pending[n_pending] = (
+                        window.event_send_ep,
+                        ConfigureEvent {
+                            event_type: WindowEventType::Configure as u8,
+                            _pad: [0; 3],
+                            width: new_w,
+                            height: new_h,
+                            shared_buf_id: window.shared_buf_id,
+                        },
+                    );
+                    n_pending += 1;
+                }
+                i += 1;
+            }
+        }
+
+        for j in 0..n_pending {
+            let (ep, ref ev) = pending[j];
+            send_event(ep, ev);
+        }
+
+        self.mark_full_redraw();
+    }
+
+    // --- Focus management ---
+
+    /// Hit-test (x, y) against Toplevels in z-order (top-to-bottom). Panels are skipped.
+    fn hit_test(&self, x: i32, y: i32) -> Option<WindowId> {
+        for i in (0..self.n_windows).rev() {
+            let id = self.z_order[i];
+            if let Some(w) = self.windows.iter().filter_map(|w| w.as_ref()).find(|w| w.id == id) {
+                if w.is_panel {
+                    continue;
+                }
+                if x >= w.x && x < w.x + w.width as i32
+                    && y >= w.y && y < w.y + w.height as i32
+                {
+                    return Some(id);
+                }
+            }
+        }
+        None
+    }
+
+    fn set_focus(&mut self, new_id: Option<WindowId>) {
+        if self.focused_window == new_id {
+            return;
+        }
+
+        let old_id = self.focused_window;
+        self.focused_window = new_id;
+
+        if let Some(old_id) = old_id {
+            let ep = self.window_event_ep(old_id);
+            if ep != 0 {
+                ulib::sys_channel_send(ep, &[WindowEventType::FocusLost as u8]);
+            }
+        }
+
+        if let Some(new_id) = new_id {
+            let ep = self.window_event_ep(new_id);
+            if ep != 0 {
+                ulib::sys_channel_send(ep, &[WindowEventType::FocusGained as u8]);
+            }
+        }
+
+        // Border colours change on focus change — rebuild the scene.
+        self.mark_full_redraw();
+    }
+
+    fn window_event_ep(&self, id: WindowId) -> u64 {
+        self.windows.iter()
+            .filter_map(|w| w.as_ref())
+            .find(|w| w.id == id)
+            .map(|w| w.event_send_ep)
+            .unwrap_or(0)
+    }
+
+    // --- Border rendering ---
+
+    /// Fill a rectangle in `scene_buf`, clipped to `clip` (or unconstrained if None).
+    fn fill_scene_rect_clipped(
+        &mut self,
+        x: i32, y: i32, w: u32, h: u32,
+        clip: Option<DirtyRect>,
+        color: u32,
+    ) {
+        if self.scene_buf.is_null() || w == 0 || h == 0 {
+            return;
+        }
+        let screen_w = self.display_info.width as usize;
+        let screen_h = self.display_info.height as usize;
+
+        let mut x0 = x.max(0) as usize;
+        let mut y0 = y.max(0) as usize;
+        let mut x1 = ((x + w as i32).max(0) as usize).min(screen_w);
+        let mut y1 = ((y + h as i32).max(0) as usize).min(screen_h);
+
+        if let Some(c) = clip {
+            x0 = x0.max(c.x as usize);
+            y0 = y0.max(c.y as usize);
+            x1 = x1.min((c.x + c.w) as usize);
+            y1 = y1.min((c.y + c.h) as usize);
+        }
+
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+
+        unsafe {
+            for row in y0..y1 {
+                for col in x0..x1 {
+                    *self.scene_buf.add(row * screen_w + col) = color;
+                }
+            }
+        }
+    }
+
+    /// Draw a `BORDER_WIDTH`-pixel border around every non-panel Toplevel.
+    /// `clip` limits writes to within a damage rect (pass `None` for full-scene draws).
+    fn draw_borders(&mut self, clip: Option<DirtyRect>) {
+        let focused = self.focused_window;
+        let focused_color   = self.border_focused;
+        let unfocused_color = self.border_unfocused;
+
+        // Collect window geometry to avoid borrow conflict with fill_scene_rect_clipped.
+        let mut infos: [(i32, i32, u32, u32, u32); MAX_WINDOWS] =
+            [(0, 0, 0, 0, 0); MAX_WINDOWS];
+        let mut n = 0usize;
+        for slot in &self.windows {
+            if let Some(w) = slot {
+                if w.is_panel {
+                    continue;
+                }
+                let color = if focused == Some(w.id) { focused_color } else { unfocused_color };
+                infos[n] = (w.x, w.y, w.width, w.height, color);
+                n += 1;
+            }
+        }
+
+        for i in 0..n {
+            let (wx, wy, ww, wh, color) = infos[i];
+            let bw = BORDER_WIDTH;
+            let bwu = bw as u32;
+            // Top strip
+            self.fill_scene_rect_clipped(wx - bw, wy - bw, ww + 2 * bwu, bwu, clip, color);
+            // Bottom strip
+            self.fill_scene_rect_clipped(wx - bw, wy + wh as i32, ww + 2 * bwu, bwu, clip, color);
+            // Left strip (side only, corners already covered by top/bottom)
+            self.fill_scene_rect_clipped(wx - bw, wy, bwu, wh, clip, color);
+            // Right strip
+            self.fill_scene_rect_clipped(wx + ww as i32, wy, bwu, wh, clip, color);
+        }
+    }
+
     // --- Scene buffer compositing ---
 
-    /// Blit raw pixels from `src` into `scene_buf` (same clipping logic as Display::blit_raw).
     fn blit_to_scene(&mut self, src: *const u32, src_width: u32, dst_x: i32, dst_y: i32, w: u32, h: u32) {
         if self.scene_buf.is_null() {
             return;
@@ -193,9 +489,7 @@ impl Compositor {
         }
     }
 
-    /// Update scene_buf for `damage` region: blit background then all overlapping windows.
     fn update_scene_region(&mut self, damage: DirtyRect) {
-        // Background
         if !self.background_buf.is_null() {
             let screen_w = self.display_info.width;
             let src = unsafe {
@@ -204,10 +498,8 @@ impl Compositor {
             self.blit_to_scene(src, screen_w, damage.x as i32, damage.y as i32, damage.w, damage.h);
         }
 
-        // Windows in z-order (only those overlapping damage)
         for i in 0..self.n_windows {
             let id = self.z_order[i];
-            // Collect fields to avoid borrow conflict with blit_to_scene(&mut self)
             let info = self.windows.iter()
                 .filter_map(|w| w.as_ref())
                 .find(|w| w.id == id)
@@ -224,19 +516,19 @@ impl Compositor {
                 self.blit_to_scene(wbuf, ww, wx, wy, ww, wh);
             }
         }
+
+        // Redraw borders clipped to the damage rect so they're never erased by background blits.
+        self.draw_borders(Some(damage));
     }
 
-    /// Rebuild the entire scene_buf from background + all windows.
     fn update_scene_full(&mut self) {
         if self.scene_buf.is_null() {
             return;
         }
-        // Copy background
         if !self.background_buf.is_null() {
             let n = self.display_info.width as usize * self.display_info.height as usize;
             unsafe { core::ptr::copy_nonoverlapping(self.background_buf, self.scene_buf, n) };
         }
-        // Blit all windows in z-order
         for i in 0..self.n_windows {
             let id = self.z_order[i];
             let info = self.windows.iter()
@@ -248,10 +540,10 @@ impl Compositor {
                 self.blit_to_scene(wbuf, ww, wx, wy, ww, wh);
             }
         }
+        // Draw borders on top of all window content.
+        self.draw_borders(None);
     }
 
-    /// Blit `damage` region from scene_buf into the display back buffer, draw cursor
-    /// on top if it overlaps, then present.
     fn present_region(&mut self, damage: DirtyRect) {
         if !self.scene_buf.is_null() {
             let screen_w = self.display_info.width;
@@ -261,7 +553,6 @@ impl Compositor {
             self.display.blit_raw(src, screen_w, damage.x as i32, damage.y as i32, damage.w, damage.h);
         }
 
-        // Cursor is always on top — draw it if it overlaps the damage rect
         if let Some(cr) = self.cursor_rect() {
             let dx1 = damage.x + damage.w;
             let dy1 = damage.y + damage.h;
@@ -278,7 +569,6 @@ impl Compositor {
         self.display.present();
     }
 
-    /// Flush all pending damage: update scene if needed, then present.
     fn flush(&mut self) {
         if self.pending_full_redraw {
             self.pending_full_redraw = false;
@@ -299,12 +589,78 @@ impl Compositor {
 
     // --- Window handlers ---
 
-    fn handle_create_window(&mut self, req: &CreateWindowRequest, reply_ep: u64) {
+    fn handle_create_toplevel(&mut self, req: &CreateWindowRequest, reply_ep: u64) {
+        let slot_idx = match self.windows.iter().position(|w| w.is_none()) {
+            Some(i) => i,
+            None => {
+                self.send_response(reply_ep, &CreateWindowResponse {
+                    result: WindowResult::ErrorOutOfMemory,
+                    window_id: 0,
+                    shared_buf_id: 0,
+                    width: 0,
+                    height: 0,
+                });
+                return;
+            }
+        };
+
+        let window_id = self.next_window_id;
+        self.next_window_id += 1;
+
+        // Compute this window's initial tile position (it will be the n_current-th toplevel).
+        let n_current = self.count_toplevels();
+        let (ax, ay, aw, ah) = self.available_area();
+        let n_new = n_current + 1;
+        let total_h_gaps = 2 * OUTER_GAP + n_current as u32 * INNER_GAP; // (n_new-1) inner gaps
+        let usable_w = aw.saturating_sub(total_h_gaps);
+        let usable_h = ah.saturating_sub(2 * OUTER_GAP);
+        let tile_w = usable_w / n_new as u32;
+        let new_x = ax + OUTER_GAP as i32 + (n_current as u32 * (tile_w + INNER_GAP)) as i32;
+        // Last window gets remainder so rounding doesn't leave a sliver
+        let init_w = usable_w - n_current as u32 * tile_w;
+        let init_h = usable_h;
+
+        match Window::new(window_id, new_x, ay + OUTER_GAP as i32, init_w, init_h, req.event_send_ep) {
+            Some(window) => {
+                let shared_buf_id = window.shared_buf_id;
+                self.windows[slot_idx] = Some(window);
+                self.z_push_toplevel(window_id);
+
+                self.send_response(reply_ep, &CreateWindowResponse {
+                    result: WindowResult::Ok,
+                    window_id,
+                    shared_buf_id,
+                    width: init_w,
+                    height: init_h,
+                });
+
+                // Focus the new window
+                self.set_focus(Some(window_id));
+
+                // Recalculate layout: redistributes existing toplevels (new window already
+                // has the correct size, so its reconfigure() will return false).
+                self.recalculate_toplevel_layout();
+            }
+            None => {
+                self.send_response(reply_ep, &CreateWindowResponse {
+                    result: WindowResult::ErrorOutOfMemory,
+                    window_id: 0,
+                    shared_buf_id: 0,
+                    width: 0,
+                    height: 0,
+                });
+            }
+        }
+    }
+
+    fn handle_create_panel(&mut self, req: &CreatePanelRequest, reply_ep: u64) {
         if req.width == 0 || req.height == 0 || req.width > 4096 || req.height > 4096 {
             self.send_response(reply_ep, &CreateWindowResponse {
                 result: WindowResult::ErrorInvalidDimensions,
                 window_id: 0,
                 shared_buf_id: 0,
+                width: 0,
+                height: 0,
             });
             return;
         }
@@ -316,6 +672,8 @@ impl Compositor {
                     result: WindowResult::ErrorOutOfMemory,
                     window_id: 0,
                     shared_buf_id: 0,
+                    width: 0,
+                    height: 0,
                 });
                 return;
             }
@@ -324,23 +682,44 @@ impl Compositor {
         let window_id = self.next_window_id;
         self.next_window_id += 1;
 
-        match Window::new(window_id, req.x, req.y, req.width, req.height) {
-            Some(window) => {
+        let sw = self.display_info.width;
+        let sh = self.display_info.height;
+        let (px, py, pw, ph) = match req.anchor {
+            0 => (0i32, 0i32, sw, req.height),                          // Top
+            1 => (0i32, sh as i32 - req.height as i32, sw, req.height), // Bottom
+            2 => (0i32, 0i32, req.width, sh),                           // Left
+            3 => (sw as i32 - req.width as i32, 0i32, req.width, sh),   // Right
+            _ => (0i32, 0i32, req.width, req.height),
+        };
+
+        match Window::new(window_id, px, py, pw, ph, req.event_send_ep) {
+            Some(mut window) => {
+                window.is_panel = true;
+                window.anchor = req.anchor;
+                window.exclusive_zone = req.exclusive_zone;
                 let shared_buf_id = window.shared_buf_id;
                 self.windows[slot_idx] = Some(window);
+                // Panels live at the top of z_order
                 self.z_push(window_id);
+
                 self.send_response(reply_ep, &CreateWindowResponse {
                     result: WindowResult::Ok,
                     window_id,
                     shared_buf_id,
+                    width: pw,
+                    height: ph,
                 });
-                self.mark_full_redraw();
+
+                // Reflow toplevels into the reduced available area
+                self.recalculate_toplevel_layout();
             }
             None => {
                 self.send_response(reply_ep, &CreateWindowResponse {
                     result: WindowResult::ErrorOutOfMemory,
                     window_id: 0,
                     shared_buf_id: 0,
+                    width: 0,
+                    height: 0,
                 });
             }
         }
@@ -360,6 +739,12 @@ impl Compositor {
             {
                 return;
             }
+
+            // Clean up old buffer if client has acknowledged a Configure event
+            if let Some(old_id) = window.pending_old_buf_id.take() {
+                ulib::sys_destroy_shared_buf(old_id);
+            }
+
             (window.x, window.y, window.width, window.height)
         };
 
@@ -375,14 +760,44 @@ impl Compositor {
                     ulib::sys_munmap(window.buffer as *mut u8, window.buf_size);
                     let id = window.id;
                     let shared_buf_id = window.shared_buf_id;
+                    let event_ep = window.event_send_ep;
+                    let pending_old = window.pending_old_buf_id.take();
                     *slot = None;
                     self.z_remove(id);
                     ulib::sys_destroy_shared_buf(shared_buf_id);
+                    if let Some(old_id) = pending_old {
+                        ulib::sys_destroy_shared_buf(old_id);
+                    }
+                    // Close event channel to signal client
+                    if event_ep != 0 {
+                        ulib::sys_channel_close(event_ep);
+                    }
+                    // Update focus
+                    if self.focused_window == Some(id) {
+                        // Focus the topmost remaining toplevel, if any
+                        let new_focus = self.topmost_toplevel_id();
+                        self.focused_window = None; // prevent set_focus from sending FocusLost to dead window
+                        self.set_focus(new_focus);
+                    }
                     self.mark_full_redraw();
+                    // Redistribute space among remaining toplevels
+                    self.recalculate_toplevel_layout();
                     return;
                 }
             }
         }
+    }
+
+    fn topmost_toplevel_id(&self) -> Option<WindowId> {
+        for i in (0..self.n_windows).rev() {
+            let id = self.z_order[i];
+            if let Some(w) = self.windows.iter().filter_map(|w| w.as_ref()).find(|w| w.id == id) {
+                if !w.is_panel {
+                    return Some(id);
+                }
+            }
+        }
+        None
     }
 
     fn handle_move_window(&mut self, req: &MoveWindowRequest) {
@@ -444,19 +859,22 @@ impl Compositor {
                     return;
                 }
                 let req: CreateWindowRequest = unsafe {
-                    core::ptr::read(msg.as_ptr().add(1) as *const CreateWindowRequest)
+                    core::ptr::read_unaligned(msg.as_ptr().add(1) as *const CreateWindowRequest)
                 };
-                let reply_ep = u64::from_le_bytes([
-                    msg[1 + core::mem::size_of::<CreateWindowRequest>()],
-                    msg[2 + core::mem::size_of::<CreateWindowRequest>()],
-                    msg[3 + core::mem::size_of::<CreateWindowRequest>()],
-                    msg[4 + core::mem::size_of::<CreateWindowRequest>()],
-                    msg[5 + core::mem::size_of::<CreateWindowRequest>()],
-                    msg[6 + core::mem::size_of::<CreateWindowRequest>()],
-                    msg[7 + core::mem::size_of::<CreateWindowRequest>()],
-                    msg[8 + core::mem::size_of::<CreateWindowRequest>()],
-                ]);
-                self.handle_create_window(&req, reply_ep);
+                let ep_off = 1 + core::mem::size_of::<CreateWindowRequest>();
+                let reply_ep = u64::from_le_bytes(msg[ep_off..ep_off + 8].try_into().unwrap_or([0; 8]));
+                self.handle_create_toplevel(&req, reply_ep);
+            }
+            t if t == WindowMessageType::CreatePanel as u8 => {
+                if msg.len() < 1 + core::mem::size_of::<CreatePanelRequest>() + 8 {
+                    return;
+                }
+                let req: CreatePanelRequest = unsafe {
+                    core::ptr::read_unaligned(msg.as_ptr().add(1) as *const CreatePanelRequest)
+                };
+                let ep_off = 1 + core::mem::size_of::<CreatePanelRequest>();
+                let reply_ep = u64::from_le_bytes(msg[ep_off..ep_off + 8].try_into().unwrap_or([0; 8]));
+                self.handle_create_panel(&req, reply_ep);
             }
             t if t == WindowMessageType::UpdateWindow as u8 => {
                 if msg.len() < 1 + core::mem::size_of::<UpdateWindowRequest>() {
@@ -517,10 +935,10 @@ impl Compositor {
         self.mark_full_redraw();
 
         loop {
-            // Drain all pending IPC messages before compositing.
+            // Drain all pending IPC messages (non-blocking) before compositing.
             loop {
                 let msg_slice = unsafe { core::slice::from_raw_parts_mut(msg_buf, MAX_MSG_SIZE) };
-                let (result, bytes_read) = ulib::sys_channel_recv(self.recv_endpoint, msg_slice);
+                let (result, bytes_read) = ulib::sys_try_channel_recv(self.recv_endpoint, msg_slice);
                 if result != IPC_OK || bytes_read == 0 {
                     break;
                 }
@@ -531,10 +949,13 @@ impl Compositor {
             // Drain all pending mouse events; accumulate into a single cursor move.
             let mut total_dx = 0i32;
             let mut total_dy = 0i32;
+            let mut cur_buttons = self.prev_mouse_buttons;
             while let Some(ev) = ulib::sys_read_mouse() {
                 total_dx += ev.dx as i32;
                 total_dy += ev.dy as i32;
+                cur_buttons = ev.buttons;
             }
+
             if total_dx != 0 || total_dy != 0 {
                 let old_rect = self.cursor_rect();
                 self.cursor_x = (self.cursor_x + total_dx)
@@ -543,8 +964,6 @@ impl Compositor {
                     .clamp(0, self.display_info.height as i32 - 1);
                 let new_rect = self.cursor_rect();
 
-                // Expand pending damage to cover old and new cursor positions.
-                // No scene update needed — cursor lives above scene_buf.
                 let cursor_damage = match (old_rect, new_rect) {
                     (Some(mut a), Some(b)) => { a.expand(b.x, b.y, b.w, b.h); Some(a) }
                     (Some(a), None) => Some(a),
@@ -556,10 +975,47 @@ impl Compositor {
                 }
             }
 
+            // Click-to-focus: left button just pressed
+            let just_pressed = cur_buttons & !self.prev_mouse_buttons;
+            if just_pressed & MOUSE_LEFT != 0 {
+                let hit = self.hit_test(self.cursor_x, self.cursor_y);
+                if let Some(id) = hit {
+                    self.z_raise(id);
+                    self.mark_full_redraw();
+                }
+                self.set_focus(hit);
+            }
+            self.prev_mouse_buttons = cur_buttons;
+
+            // Route keyboard events to the focused window
+            while let Some(key) = ulib::sys_try_read_key() {
+                if let Some(fw_id) = self.focused_window {
+                    let ep = self.window_event_ep(fw_id);
+                    if ep != 0 {
+                        let ev = KeyPressEvent {
+                            event_type: WindowEventType::KeyPress as u8,
+                            key,
+                        };
+                        send_event(ep, &ev);
+                    }
+                }
+            }
+
             // Single composite for everything accumulated this iteration.
             self.flush();
 
             ulib::sys_yield();
         }
     }
+}
+
+/// Send an event struct to a persistent event channel (does NOT close the endpoint).
+fn send_event<T>(ep: u64, event: &T) {
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            event as *const T as *const u8,
+            core::mem::size_of::<T>(),
+        )
+    };
+    ulib::sys_channel_send(ep, bytes);
 }

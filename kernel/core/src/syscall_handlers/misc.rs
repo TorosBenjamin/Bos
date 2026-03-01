@@ -56,6 +56,25 @@ pub fn sys_read_key(key_event_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u
     }
 }
 
+/// Syscall: try to read a key event (non-blocking).
+///
+/// Writes a KeyEvent to `key_event_out_ptr` if one is available.
+/// Returns 0 (key available) or 1 (no key).
+pub fn sys_try_read_key(key_event_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    if !validate_user_ptr(key_event_out_ptr, core::mem::size_of::<kernel_api_types::KeyEvent>() as u64) {
+        return 1;
+    }
+    let out = key_event_out_ptr as *mut kernel_api_types::KeyEvent;
+
+    match crate::drivers::keyboard::try_read_key() {
+        Some(event) => {
+            unsafe { core::ptr::write(out, event) };
+            0
+        }
+        None => 1,
+    }
+}
+
 /// Syscall: try to read a mouse event (non-blocking).
 ///
 /// Returns 0 and writes the event if one is available, or 1 if the buffer is empty.

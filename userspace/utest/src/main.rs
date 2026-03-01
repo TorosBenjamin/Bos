@@ -295,13 +295,7 @@ fn display_registered() -> bool {
 
 fn create_window_ok() -> bool {
     let ds_ep = DS_ENDPOINT.load(Ordering::Relaxed);
-    ulib::window::Window::new(ds_ep, 100, 100, 0, 0).is_some()
-}
-
-fn create_window_bad_dims() -> bool {
-    let ds_ep = DS_ENDPOINT.load(Ordering::Relaxed);
-    // Width=0 should be rejected by display server as ErrorInvalidDimensions
-    ulib::window::Window::new(ds_ep, 0, 100, 0, 0).is_none()
+    ulib::window::Window::new(ds_ep).is_some()
 }
 
 fn update_window() -> bool {
@@ -310,16 +304,18 @@ fn update_window() -> bool {
         geometry::{Point, Size},
         pixelcolor::{Rgb888, RgbColor},
         primitives::Rectangle,
+        prelude::OriginDimensions,
     };
 
     let ds_ep = DS_ENDPOINT.load(Ordering::Relaxed);
-    let mut window = match ulib::window::Window::new(ds_ep, 50, 50, 200, 200) {
+    let mut window = match ulib::window::Window::new(ds_ep) {
         Some(w) => w,
         None => return false,
     };
 
+    let sz = window.size();
     let red = Rgb888::RED;
-    let area = Rectangle::new(Point::new(0, 0), Size::new(50, 50));
+    let area = Rectangle::new(Point::new(0, 0), Size::new(sz.width.min(50), sz.height.min(50)));
     let _ = window.fill_solid(&area, red);
     window.present();
     true
@@ -358,7 +354,6 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
     runner.run(display_info);
     runner.run(display_registered);
     runner.run(create_window_ok);
-    runner.run(create_window_bad_dims);
     runner.run(update_window);
 
     // Wait for filesystem server before running fs tests

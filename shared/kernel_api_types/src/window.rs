@@ -69,7 +69,7 @@ pub type WindowId = u64;
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowMessageType {
-    /// Create a new window with given dimensions
+    /// Create a new toplevel window (DS assigns size via tiling)
     CreateWindow = 0,
     /// Update a window's pixel buffer
     UpdateWindow = 1,
@@ -83,16 +83,50 @@ pub enum WindowMessageType {
     RaiseWindow = 5,
     /// Send window to back (change z-order)
     LowerWindow = 6,
+    /// Create a panel anchored to a screen edge
+    CreatePanel = 7,
 }
 
-/// Create window request
+/// Panel anchor edge
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelAnchor {
+    Top    = 0,
+    Bottom = 1,
+    Left   = 2,
+    Right  = 3,
+}
+
+/// DS-to-client event type sent over the event channel
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowEventType {
+    KeyPress     = 0,
+    FocusGained  = 1,
+    FocusLost    = 2,
+    Configure    = 3,
+}
+
+/// Create toplevel window request — DS assigns position and size via tiling.
+/// Wire: [type=0: u8][CreateWindowRequest][reply_ep: u64]
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct CreateWindowRequest {
+    /// Client's event receive channel send endpoint; DS keeps this open to push events.
+    pub event_send_ep: u64,
+}
+
+/// Create panel request — client specifies anchor and size.
+/// Wire: [type=7: u8][CreatePanelRequest][reply_ep: u64]
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct CreatePanelRequest {
+    pub anchor: u8,
+    pub _pad: [u8; 3],
+    pub exclusive_zone: u32,
     pub width: u32,
     pub height: u32,
-    pub x: i32,
-    pub y: i32,
+    pub event_send_ep: u64,
 }
 
 /// Update window request — dirty-rect notification only (no pixel data).
@@ -176,7 +210,7 @@ impl WindowResult {
     }
 }
 
-/// Response to CreateWindow
+/// Response to CreateWindow / CreatePanel
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct CreateWindowResponse {
@@ -184,5 +218,37 @@ pub struct CreateWindowResponse {
     pub window_id: WindowId,
     /// Opaque shared-buffer ID — client passes this to sys_map_shared_buf
     /// to get a writable pointer to the window's pixel backing store.
+    pub shared_buf_id: u64,
+    /// DS-assigned dimensions
+    pub width: u32,
+    pub height: u32,
+}
+
+// --- DS-to-client event structs (sent over the event channel) ---
+
+/// Key press event from DS to focused window.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct KeyPressEvent {
+    pub event_type: u8,  // WindowEventType::KeyPress
+    pub key: crate::KeyEvent,
+}
+
+/// Focus gained/lost event.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct FocusEvent {
+    pub event_type: u8,  // WindowEventType::FocusGained or FocusLost
+}
+
+/// Configure event: DS has resized the window and allocated a new shared buffer.
+/// Client must call apply_configure() to map the new buffer and start using it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ConfigureEvent {
+    pub event_type: u8,  // WindowEventType::Configure
+    pub _pad: [u8; 3],
+    pub width: u32,
+    pub height: u32,
     pub shared_buf_id: u64,
 }

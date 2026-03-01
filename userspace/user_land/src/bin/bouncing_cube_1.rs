@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use ulib::window::Window;
+use ulib::window::{Window, WindowEvent};
 use embedded_graphics::pixelcolor::{Rgb888, RgbColor};
 use embedded_graphics::geometry::{Point, Size};
 use embedded_graphics::prelude::OriginDimensions;
@@ -30,27 +30,38 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
         sys_yield();
     };
 
-    // Create a window (200x200 at position 10,10)
-    let mut window = match Window::new(display_server_ep, 200, 200, 10, 10) {
+    // Create a toplevel window — DS assigns size via tiling
+    let mut window = match Window::new(display_server_ep) {
         Some(w) => w,
         None => {
-            // Failed to create window
             loop {
                 sys_yield();
             }
         }
     };
 
-    let width = window.size().width;
-    let height = window.size().height;
+    let mut width = window.size().width;
+    let mut height = window.size().height;
 
     let mut x: i32 = 0;
     let mut y: i32 = 0;
-    let mut dx: i32 = 2; // X velocity
-    let mut dy: i32 = 2; // Y velocity
+    let mut dx: i32 = 2;
+    let mut dy: i32 = 2;
 
     loop {
-        // Clear the old cube position by drawing a black rectangle
+        // Handle events from the display server
+        while let Some(event) = window.poll_event() {
+            if let WindowEvent::Configure { shared_buf_id, width: new_w, height: new_h } = event {
+                window.apply_configure(shared_buf_id, new_w, new_h);
+                width = new_w;
+                height = new_h;
+                // Clamp position to new bounds
+                x = x.min(width as i32 - CUBE_SIZE as i32).max(0);
+                y = y.min(height as i32 - CUBE_SIZE as i32).max(0);
+            }
+        }
+
+        // Clear the old cube position
         let clear_rect = Rectangle::new(
             Point::new(x, y),
             Size::new(CUBE_SIZE, CUBE_SIZE),
@@ -63,7 +74,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
         x += dx;
         y += dy;
 
-        // Collision detection and response
+        // Collision detection
         if x < 0 {
             x = 0;
             dx = -dx;
@@ -89,7 +100,6 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
             .into_styled(PrimitiveStyle::with_fill(Rgb888::RED))
             .draw(&mut window);
 
-        // Send update to display_server
         window.present();
 
         sys_yield();

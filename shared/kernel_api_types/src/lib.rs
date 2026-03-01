@@ -37,6 +37,8 @@ pub enum SysCallNumber {
     BlockWriteSectors = 26,
     ThreadCreate   = 27,
     SetExitChannel = 28,
+    TryReadKey     = 29,
+    TryChannelRecv = 30,
 }
 
 pub const MAX_SERVICE_NAME_LEN: usize = 64;
