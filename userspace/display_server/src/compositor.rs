@@ -583,6 +583,15 @@ impl Compositor {
                 self.cursor_black, self.cursor_white,
             );
             self.display.present();
+            // Full redraw: every window's content is now on screen.
+            for slot in &self.windows {
+                if let Some(w) = slot {
+                    ulib::sys_try_channel_send(
+                        w.event_send_ep,
+                        &[WindowEventType::FramePresented as u8],
+                    );
+                }
+            }
             return;
         }
 
@@ -639,6 +648,18 @@ impl Compositor {
             self.cursor_black, self.cursor_white,
         );
         self.display.present();
+
+        // Notify each window whose pixels were composited this frame.
+        for (i, opt_dr) in dirty_rects.iter().enumerate() {
+            if opt_dr.is_some() {
+                if let Some(w) = &self.windows[i] {
+                    ulib::sys_try_channel_send(
+                        w.event_send_ep,
+                        &[WindowEventType::FramePresented as u8],
+                    );
+                }
+            }
+        }
     }
 
     // --- Window handlers ---

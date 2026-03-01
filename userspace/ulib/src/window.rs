@@ -32,6 +32,10 @@ pub enum WindowEvent {
     FocusLost,
     /// DS has reallocated the backing buffer. Call `apply_configure()` to activate it.
     Configure { shared_buf_id: u64, width: u32, height: u32 },
+    /// The compositor has finished presenting this window's pixels to the screen.
+    /// Clients should wait for this event before drawing the next frame so they
+    /// pace themselves to the compositor's actual output rate rather than spinning.
+    FramePresented,
 }
 
 /// A client window backed by shared physical memory.
@@ -290,6 +294,8 @@ impl Window {
                     height: ev.height,
                 });
             }
+        } else if event_type == WindowEventType::FramePresented as u8 {
+            return Some(WindowEvent::FramePresented);
         }
 
         None

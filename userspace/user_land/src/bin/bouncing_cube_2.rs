@@ -48,59 +48,67 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
     let mut dx: i32 = -2;
     let mut dy: i32 = 3;
 
+    // True on the first iteration so the initial frame is drawn immediately,
+    // then only set again when the compositor signals FramePresented.
+    let mut frame_presented = true;
+
     loop {
-        // Handle events from the display server
+        // Drain all pending events from the display server.
         while let Some(event) = window.poll_event() {
-            if let WindowEvent::Configure { shared_buf_id, width: new_w, height: new_h } = event {
-                window.apply_configure(shared_buf_id, new_w, new_h);
-                width = new_w;
-                height = new_h;
-                // Clamp position to new bounds
-                x = x.min(width as i32 - CUBE_SIZE as i32).max(0);
-                y = y.min(height as i32 - CUBE_SIZE as i32).max(0);
+            match event {
+                WindowEvent::FramePresented => frame_presented = true,
+                WindowEvent::Configure { shared_buf_id, width: new_w, height: new_h } => {
+                    window.apply_configure(shared_buf_id, new_w, new_h);
+                    width = new_w;
+                    height = new_h;
+                    // Clamp position to new bounds
+                    x = x.min(width as i32 - CUBE_SIZE as i32).max(0);
+                    y = y.min(height as i32 - CUBE_SIZE as i32).max(0);
+                    // Force a redraw into the fresh buffer.
+                    frame_presented = true;
+                }
+                _ => {}
             }
         }
 
-        // Clear the old cube position
-        let clear_rect = Rectangle::new(
-            Point::new(x, y),
-            Size::new(CUBE_SIZE, CUBE_SIZE),
-        );
-        let _ = clear_rect
-            .into_styled(PrimitiveStyle::with_fill(Rgb888::new(0, 0, 0)))
-            .draw(&mut window);
+        // Only advance physics and redraw when the compositor has presented the
+        // previous frame — this paces the client to the compositor's output rate.
+        if frame_presented {
+            frame_presented = false;
 
-        // Update position
-        x += dx;
-        y += dy;
+            // Clear the old cube position
+            let _ = Rectangle::new(Point::new(x, y), Size::new(CUBE_SIZE, CUBE_SIZE))
+                .into_styled(PrimitiveStyle::with_fill(Rgb888::new(0, 0, 0)))
+                .draw(&mut window);
 
-        // Collision detection
-        if x < 0 {
-            x = 0;
-            dx = -dx;
-        } else if (x + CUBE_SIZE as i32) > width as i32 {
-            x = width as i32 - CUBE_SIZE as i32;
-            dx = -dx;
+            // Update position
+            x += dx;
+            y += dy;
+
+            // Collision detection
+            if x < 0 {
+                x = 0;
+                dx = -dx;
+            } else if (x + CUBE_SIZE as i32) > width as i32 {
+                x = width as i32 - CUBE_SIZE as i32;
+                dx = -dx;
+            }
+
+            if y < 0 {
+                y = 0;
+                dy = -dy;
+            } else if (y + CUBE_SIZE as i32) > height as i32 {
+                y = height as i32 - CUBE_SIZE as i32;
+                dy = -dy;
+            }
+
+            // Draw the new cube (green)
+            let _ = Rectangle::new(Point::new(x, y), Size::new(CUBE_SIZE, CUBE_SIZE))
+                .into_styled(PrimitiveStyle::with_fill(Rgb888::GREEN))
+                .draw(&mut window);
+
+            window.present();
         }
-
-        if y < 0 {
-            y = 0;
-            dy = -dy;
-        } else if (y + CUBE_SIZE as i32) > height as i32 {
-            y = height as i32 - CUBE_SIZE as i32;
-            dy = -dy;
-        }
-
-        // Draw the new cube (green)
-        let cube_rect = Rectangle::new(
-            Point::new(x, y),
-            Size::new(CUBE_SIZE, CUBE_SIZE),
-        );
-        let _ = cube_rect
-            .into_styled(PrimitiveStyle::with_fill(Rgb888::GREEN))
-            .draw(&mut window);
-
-        window.present();
 
         sys_yield();
     }

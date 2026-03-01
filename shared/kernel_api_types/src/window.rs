@@ -101,10 +101,14 @@ pub enum PanelAnchor {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowEventType {
-    KeyPress     = 0,
-    FocusGained  = 1,
-    FocusLost    = 2,
-    Configure    = 3,
+    KeyPress       = 0,
+    FocusGained    = 1,
+    FocusLost      = 2,
+    Configure      = 3,
+    /// Sent once per frame after display.present() completes, for every window whose
+    /// pixels were composited that frame. Clients should wait for this before drawing
+    /// the next frame so they pace themselves to the compositor's actual output rate.
+    FramePresented = 4,
 }
 
 /// Create toplevel window request — DS assigns position and size via tiling.
