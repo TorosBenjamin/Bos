@@ -102,6 +102,10 @@ pub fn tests() -> &'static [TestEntry] {
         // Time
         TestEntry { group: TestGroup::Time, test: &time::tsc_calibration },
         TestEntry { group: TestGroup::Time, test: &time::pit_sleep },
+        TestEntry { group: TestGroup::Time, test: &time::sleep_ms_zero_noop },
+        TestEntry { group: TestGroup::Time, test: &time::sleep_ms_no_task_returns_error },
+        TestEntry { group: TestGroup::Time, test: &time::sleep_queue_tick_wakes_expired_task },
+        TestEntry { group: TestGroup::Time, test: &time::sleep_queue_only_expired_entries_woken },
 
         // Memory — virtual address allocator
         TestEntry { group: TestGroup::Memory, test: &memory::vaddr::allocate_kernel_page },
@@ -199,6 +203,11 @@ pub fn tests() -> &'static [TestEntry] {
         TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_mmap_write_and_read },
         TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_channel_send_recv_roundtrip },
         TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_get_display_info_success },
+        TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_set_exit_channel_unknown_task },
+        TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_set_exit_channel_bad_endpoint },
+        TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_set_exit_channel_recv_endpoint_rejected },
+        TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_set_exit_channel_valid },
+        TestEntry { group: TestGroup::Syscalls, test: &syscalls::test_sys_thread_create_no_user_task },
 
         // Kernel-only scheduler handoff — enables interrupts and never returns.
         // Skipped when running all tests (cargo ktest); run via cargo ktest-sched.

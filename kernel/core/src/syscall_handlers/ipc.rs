@@ -76,9 +76,16 @@ pub fn sys_channel_send(endpoint_id: u64, msg_ptr: u64, msg_len: u64, _: u64, _:
                 if !ctx_ptr.is_null() {
                     unsafe { (*ctx_ptr).rax = kernel_api_types::IPC_ERR_CHANNEL_FULL; }
                 }
-                // Register as send waiter and sleep
+                // Register as send waiter and sleep.
+                // Drain any stale entry for this task left by a prior timer-interrupted send
+                // (the timer's syscall-yield path returns the task to user-space via iretq,
+                // bypassing the post-hlt cleanup, so old entries accumulate otherwise).
                 if let Some((task, cpu_id)) = current_task_and_cpu() {
-                    channel_arc.send_waiters.lock().push_back((task.clone(), cpu_id));
+                    {
+                        let mut waiters = channel_arc.send_waiters.lock();
+                        waiters.retain(|(t, _)| !alloc::sync::Arc::ptr_eq(t, &task));
+                        waiters.push_back((task.clone(), cpu_id));
+                    }
                     task.state.store(TaskState::Sleeping, Ordering::Release);
                 }
                 x86_64::instructions::interrupts::enable();
@@ -124,9 +131,16 @@ pub fn sys_channel_recv(endpoint_id: u64, buf_ptr: u64, buf_cap: u64, bytes_read
                 if !ctx_ptr.is_null() {
                     unsafe { (*ctx_ptr).rax = kernel_api_types::IPC_ERR_CHANNEL_FULL; }
                 }
-                // Register as recv waiter and sleep
+                // Register as recv waiter and sleep.
+                // Drain any stale entry for this task left by a prior timer-interrupted recv
+                // (the timer's syscall-yield path returns the task to user-space via iretq,
+                // bypassing the post-hlt cleanup, so old entries accumulate otherwise).
                 if let Some((task, cpu_id)) = current_task_and_cpu() {
-                    channel_arc.recv_waiters.lock().push_back((task.clone(), cpu_id));
+                    {
+                        let mut waiters = channel_arc.recv_waiters.lock();
+                        waiters.retain(|(t, _)| !alloc::sync::Arc::ptr_eq(t, &task));
+                        waiters.push_back((task.clone(), cpu_id));
+                    }
                     task.state.store(TaskState::Sleeping, Ordering::Release);
                 }
                 x86_64::instructions::interrupts::enable();

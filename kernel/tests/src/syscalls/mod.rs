@@ -386,3 +386,73 @@ pub fn test_sys_get_display_info_success() -> TestResult {
         TestResult::Ok
     })
 }
+
+// ─── sys_set_exit_channel ────────────────────────────────────────────────────
+
+/// Unknown task_id → error 1 (endpoint check runs first; ep_id=0 is also invalid,
+/// so the function returns 1 at the endpoint-validation step).
+pub fn test_sys_set_exit_channel_unknown_task() -> TestResult {
+    let ret = kernel::syscall_handlers::sys_set_exit_channel(99999, 0, 0, 0, 0, 0);
+    if ret != 1 {
+        TestResult::Failed(format!("expected 1 (invalid ep), got {ret}"))
+    } else {
+        TestResult::Ok
+    }
+}
+
+/// A non-existent endpoint ID → error 1.
+pub fn test_sys_set_exit_channel_bad_endpoint() -> TestResult {
+    let ret = kernel::syscall_handlers::sys_set_exit_channel(0, 99999, 0, 0, 0, 0);
+    if ret != 1 {
+        TestResult::Failed(format!("expected 1 (bad endpoint), got {ret}"))
+    } else {
+        TestResult::Ok
+    }
+}
+
+/// Passing the recv side of a channel → error 1 (wrong direction).
+pub fn test_sys_set_exit_channel_recv_endpoint_rejected() -> TestResult {
+    let (send_id, recv_id) = ipc::create_channel(4);
+    let ret = kernel::syscall_handlers::sys_set_exit_channel(0, recv_id, 0, 0, 0, 0);
+    let _ = ipc::close_endpoint(send_id);
+    let _ = ipc::close_endpoint(recv_id);
+    if ret != 1 {
+        TestResult::Failed(format!("expected 1 for recv endpoint, got {ret}"))
+    } else {
+        TestResult::Ok
+    }
+}
+
+/// Valid send endpoint + spawned task → returns 0.
+pub fn test_sys_set_exit_channel_valid() -> TestResult {
+    use kernel::task::task::Task;
+    use kernel::task::global_scheduler::spawn_task;
+
+    let task = Task::new(|| loop {});
+    let task_id = task.id.to_u64();
+    spawn_task(task);
+
+    let (send_id, recv_id) = ipc::create_channel(4);
+    let ret = kernel::syscall_handlers::sys_set_exit_channel(task_id, send_id, 0, 0, 0, 0);
+
+    let _ = ipc::close_endpoint(send_id);
+    let _ = ipc::close_endpoint(recv_id);
+
+    if ret != 0 {
+        TestResult::Failed(format!("expected 0 (ok), got {ret}"))
+    } else {
+        TestResult::Ok
+    }
+}
+
+// ─── sys_thread_create ───────────────────────────────────────────────────────
+
+/// Without a current UserKind task in the run-queue, sys_thread_create returns 0.
+pub fn test_sys_thread_create_no_user_task() -> TestResult {
+    let ret = kernel::syscall_handlers::sys_thread_create(0, 0, 0, 0, 0, 0);
+    if ret != 0 {
+        TestResult::Failed(format!("expected 0 (no user task), got {ret}"))
+    } else {
+        TestResult::Ok
+    }
+}
