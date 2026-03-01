@@ -90,41 +90,21 @@ impl Display {
         self.n_dirty = 0;
     }
 
-    /// Blit raw u32 pixels directly into the back buffer (no color conversion).
-    /// Pixels are already in the native framebuffer format.
-    pub fn blit_raw(
-        &mut self,
-        src: *const u32,
-        src_width: u32,
-        dst_x: i32,
-        dst_y: i32,
-        w: u32,
-        h: u32,
-    ) {
-        // Clip to display bounds
-        let x0 = dst_x.max(0) as u32;
-        let y0 = dst_y.max(0) as u32;
-        let x1 = ((dst_x + w as i32).max(0) as u32).min(self.width);
-        let y1 = ((dst_y + h as i32).max(0) as u32).min(self.height);
-        if x0 >= x1 || y0 >= y1 {
-            return;
-        }
-        let clipped_w = x1 - x0;
-        let src_x_off = (x0 as i32 - dst_x) as u32;
-        let src_y_off = (y0 as i32 - dst_y) as u32;
+    /// Returns a raw mutable pointer to the start of the back buffer.
+    /// The back buffer is flat with stride == width (no padding).
+    pub fn back_buffer_ptr(&self) -> *mut u32 {
+        self.back_buffer.as_ptr() as *mut u32
+    }
 
-        for row in 0..(y1 - y0) {
-            let src_offset = ((src_y_off + row) * src_width + src_x_off) as usize;
-            let dst_offset = ((y0 + row) as usize) * (self.width as usize) + x0 as usize;
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    src.add(src_offset),
-                    self.back_buffer.as_mut_ptr().add(dst_offset),
-                    clipped_w as usize,
-                );
-            }
-        }
-        self.expand_dirty(x0, y0, clipped_w, y1 - y0);
+    /// Stride of the back buffer in u32 units (equals display width, no padding).
+    pub fn back_buffer_width(&self) -> u32 {
+        self.width
+    }
+
+    /// Register a dirty rectangle for the next `present()` call without writing any pixels.
+    /// Use this after compositing directly into `back_buffer_ptr()`.
+    pub fn mark_dirty(&mut self, x: u32, y: u32, w: u32, h: u32) {
+        self.expand_dirty(x, y, w, h);
     }
 
     /// Blit a two-layer bitmask cursor sprite into the back buffer.
