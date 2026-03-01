@@ -89,6 +89,18 @@ pub fn sys_try_read_key() -> Option<kernel_api_types::KeyEvent> {
     if args[6] == 0 { Some(event) } else { None }
 }
 
+/// Non-blocking channel send. Returns IPC_OK if enqueued, IPC_ERR_CHANNEL_FULL if full.
+/// Never blocks or sleeps.
+pub fn sys_try_channel_send(endpoint_id: u64, data: &[u8]) -> u64 {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::TryChannelSend as u64;
+    args[1] = endpoint_id;
+    args[2] = data.as_ptr() as u64;
+    args[3] = data.len() as u64;
+    syscall(&mut args);
+    args[6]
+}
+
 pub fn sys_try_channel_recv(endpoint_id: u64, buf: &mut [u8]) -> (u64, u64) {
     let mut bytes_read: u64 = 0;
     let mut args = [0u64; 7];

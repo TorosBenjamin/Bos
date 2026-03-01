@@ -39,6 +39,7 @@ pub enum SysCallNumber {
     SetExitChannel = 28,
     TryReadKey     = 29,
     TryChannelRecv = 30,
+    TryChannelSend = 31,
 }
 
 pub const MAX_SERVICE_NAME_LEN: usize = 64;

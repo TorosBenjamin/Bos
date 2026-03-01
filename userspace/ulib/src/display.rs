@@ -8,13 +8,21 @@ use kernel_api_types::graphics::{DisplayInfo, FRAMEBUFFER_USER_VADDR};
 use kernel_api_types::MMAP_WRITE;
 use crate::window::DirtyRect;
 
+/// Maximum number of independent dirty rectangles tracked before falling back to a bounding box.
+const MAX_DIRTY: usize = 8;
+
 pub struct Display {
     back_buffer: &'static mut [u32],
     front_buffer: &'static mut [u32],
     width: u32,
     height: u32,
     info: DisplayInfo,
-    dirty: Option<DirtyRect>,
+    /// List of independent dirty rects to present. Using a list instead of a single bounding
+    /// box avoids the 879× VRAM-write explosion that occurs when two windows at opposite screen
+    /// corners both update in the same frame (their tiny rects would otherwise merge into a
+    /// huge bounding box covering most of the screen).
+    dirty: [Option<DirtyRect>; MAX_DIRTY],
+    n_dirty: usize,
 }
 
 impl Display {
@@ -42,32 +50,35 @@ impl Display {
             width,
             height,
             info,
-            dirty: None,
+            dirty: [None; MAX_DIRTY],
+            n_dirty: 0,
         }
     }
 
-    /// Flushes only the dirty region from the back buffer to the hardware front buffer.
+    /// Flush all accumulated dirty rectangles from the back buffer to the hardware front buffer.
+    ///
+    /// Each rect in the dirty list is written to VRAM independently — no bounding-box merging —
+    /// so two small windows at opposite screen corners only write their individual pixels.
     pub fn present(&mut self) {
-        if let Some(dirty) = self.dirty.take() {
-            let x_start = dirty.x as usize;
-            let y_start = dirty.y as usize;
-            let width = dirty.w as usize;
-            let height = dirty.h as usize;
-
-            // Perform row-by-row copy
-            for row in 0..height {
-                let current_y = y_start + row;
-                let offset = current_y * self.width as usize + x_start;
-
-                unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        self.back_buffer.as_ptr().add(offset),
-                        self.front_buffer.as_mut_ptr().add(offset),
-                        width,
-                    );
+        for i in 0..self.n_dirty {
+            if let Some(dirty) = self.dirty[i].take() {
+                let x_start = dirty.x as usize;
+                let y_start = dirty.y as usize;
+                let w = dirty.w as usize;
+                let h = dirty.h as usize;
+                for row in 0..h {
+                    let offset = (y_start + row) * self.width as usize + x_start;
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            self.back_buffer.as_ptr().add(offset),
+                            self.front_buffer.as_mut_ptr().add(offset),
+                            w,
+                        );
+                    }
                 }
             }
         }
+        self.n_dirty = 0;
     }
 
     /// Blit raw u32 pixels directly into the back buffer (no color conversion).
@@ -160,10 +171,13 @@ impl Display {
     }
 
     fn expand_dirty(&mut self, x: u32, y: u32, w: u32, h: u32) {
-        match &mut self.dirty {
-            Some(d) => d.expand(x, y, w, h),
-            None => {
-                self.dirty = Some(DirtyRect { x, y, w, h });
+        if self.n_dirty < MAX_DIRTY {
+            self.dirty[self.n_dirty] = Some(DirtyRect { x, y, w, h });
+            self.n_dirty += 1;
+        } else {
+            // List full: merge new rect into the last entry as a bounding-box fallback.
+            if let Some(last) = &mut self.dirty[MAX_DIRTY - 1] {
+                last.expand(x, y, w, h);
             }
         }
     }

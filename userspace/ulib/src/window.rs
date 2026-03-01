@@ -318,8 +318,12 @@ impl Window {
 
     /// Notify the display server of the dirty region — no pixel data is sent.
     /// Pixels were already written directly into the shared buffer.
+    ///
+    /// Uses a non-blocking send; if the DS channel is full the notification is
+    /// held and retried on the next call to `present()` (the accumulated dirty
+    /// rect covers all changes since the last successful send).
     pub fn present(&mut self) {
-        if let Some(dirty) = self.dirty.take() {
+        if let Some(dirty) = self.dirty.as_ref().copied() {
             let header = UpdateWindowRequest {
                 window_id: self.window_id,
                 dirty_x: dirty.x,
@@ -337,7 +341,12 @@ impl Window {
                     core::mem::size_of::<UpdateWindowRequest>(),
                 );
             }
-            crate::sys_channel_send(self.send_endpoint, &msg);
+            let result = crate::sys_try_channel_send(self.send_endpoint, &msg);
+            if result == kernel_api_types::IPC_OK {
+                // Message delivered — clear the dirty rect.
+                self.dirty = None;
+            }
+            // If channel full: leave dirty intact so it's retried next frame.
         }
     }
 

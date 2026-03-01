@@ -1,4 +1,4 @@
-use kernel_api_types::window::WindowId;
+use kernel_api_types::window::{DirtyRect, WindowId};
 
 pub struct Window {
     pub id: WindowId,
@@ -22,6 +22,9 @@ pub struct Window {
     pub exclusive_zone: u32,
     /// Old shared_buf_id awaiting sys_destroy_shared_buf after the client acknowledges Configure.
     pub pending_old_buf_id: Option<u64>,
+    /// Dirty region (screen coordinates) from the latest UpdateWindow, pending compositing.
+    /// Stored per-window to avoid merging two distant windows into one huge bounding box.
+    pub pending_dirty: Option<DirtyRect>,
 }
 
 impl Window {
@@ -52,6 +55,7 @@ impl Window {
             anchor: 0,
             exclusive_zone: 0,
             pending_old_buf_id: None,
+            pending_dirty: None,
         })
     }
 

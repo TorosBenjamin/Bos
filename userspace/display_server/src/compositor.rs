@@ -32,9 +32,10 @@ pub struct Compositor {
     /// Cursor colours pre-built in native framebuffer pixel format
     cursor_black: u32,
     cursor_white: u32,
-    /// Damage accumulated this loop iteration from IPC messages (requires scene update)
+    /// Damage accumulated this loop iteration from mouse/window-move events.
+    /// Window content updates are tracked per-window via Window::pending_dirty instead,
+    /// to avoid merging two distant windows into a single huge bounding box.
     pending_damage: Option<DirtyRect>,
-    pending_scene_update: bool,
     /// True when a full redraw is needed (window add/remove/reorder)
     pending_full_redraw: bool,
     /// Currently focused window (receives keyboard events)
@@ -104,7 +105,6 @@ impl Compositor {
             cursor_black,
             cursor_white,
             pending_damage: None,
-            pending_scene_update: false,
             pending_full_redraw: false,
             focused_window: None,
             prev_mouse_buttons: 0,
@@ -210,13 +210,11 @@ impl Compositor {
 
     fn mark_full_redraw(&mut self) {
         self.pending_full_redraw = true;
-        self.pending_scene_update = true;
         self.pending_damage = None;
     }
 
     fn mark_damage(&mut self, rect: DirtyRect) {
         self.expand_pending(rect);
-        self.pending_scene_update = true;
     }
 
     // --- Tiling layout ---
@@ -360,14 +358,14 @@ impl Compositor {
         if let Some(old_id) = old_id {
             let ep = self.window_event_ep(old_id);
             if ep != 0 {
-                ulib::sys_channel_send(ep, &[WindowEventType::FocusLost as u8]);
+                ulib::sys_try_channel_send(ep, &[WindowEventType::FocusLost as u8]);
             }
         }
 
         if let Some(new_id) = new_id {
             let ep = self.window_event_ep(new_id);
             if ep != 0 {
-                ulib::sys_channel_send(ep, &[WindowEventType::FocusGained as u8]);
+                ulib::sys_try_channel_send(ep, &[WindowEventType::FocusGained as u8]);
             }
         }
 
@@ -416,9 +414,8 @@ impl Compositor {
 
         unsafe {
             for row in y0..y1 {
-                for col in x0..x1 {
-                    *self.scene_buf.add(row * screen_w + col) = color;
-                }
+                let row_ptr = self.scene_buf.add(row * screen_w + x0);
+                core::slice::from_raw_parts_mut(row_ptr, x1 - x0).fill(color);
             }
         }
     }
@@ -462,17 +459,37 @@ impl Compositor {
 
     // --- Scene buffer compositing ---
 
-    fn blit_to_scene(&mut self, src: *const u32, src_width: u32, dst_x: i32, dst_y: i32, w: u32, h: u32) {
+    /// Blit `w×h` pixels from `src` into `scene_buf` at `(dst_x, dst_y)`,
+    /// clipped to both screen bounds and the optional `clip` rect.
+    fn blit_to_scene(
+        &mut self,
+        src: *const u32,
+        src_width: u32,
+        dst_x: i32,
+        dst_y: i32,
+        w: u32,
+        h: u32,
+        clip: Option<DirtyRect>,
+    ) {
         if self.scene_buf.is_null() {
             return;
         }
         let screen_w = self.display_info.width as usize;
         let screen_h = self.display_info.height as usize;
 
-        let x0 = dst_x.max(0) as usize;
-        let y0 = dst_y.max(0) as usize;
-        let x1 = ((dst_x + w as i32).max(0) as usize).min(screen_w);
-        let y1 = ((dst_y + h as i32).max(0) as usize).min(screen_h);
+        let mut x0 = dst_x.max(0) as usize;
+        let mut y0 = dst_y.max(0) as usize;
+        let mut x1 = ((dst_x + w as i32).max(0) as usize).min(screen_w);
+        let mut y1 = ((dst_y + h as i32).max(0) as usize).min(screen_h);
+
+        // Further clip to damage rect so we only touch the pixels that need compositing.
+        if let Some(c) = clip {
+            x0 = x0.max(c.x as usize);
+            y0 = y0.max(c.y as usize);
+            x1 = x1.min((c.x + c.w) as usize);
+            y1 = y1.min((c.y + c.h) as usize);
+        }
+
         if x0 >= x1 || y0 >= y1 {
             return;
         }
@@ -495,7 +512,7 @@ impl Compositor {
             let src = unsafe {
                 self.background_buf.add(damage.y as usize * screen_w as usize + damage.x as usize)
             };
-            self.blit_to_scene(src, screen_w, damage.x as i32, damage.y as i32, damage.w, damage.h);
+            self.blit_to_scene(src, screen_w, damage.x as i32, damage.y as i32, damage.w, damage.h, None);
         }
 
         for i in 0..self.n_windows {
@@ -513,7 +530,8 @@ impl Compositor {
                 if wx >= dx1 || wx1 <= damage.x as i32 || wy >= dy1 || wy1 <= damage.y as i32 {
                     continue;
                 }
-                self.blit_to_scene(wbuf, ww, wx, wy, ww, wh);
+                // Clip the window blit to the damage rect — only touch pixels that changed.
+                self.blit_to_scene(wbuf, ww, wx, wy, ww, wh, Some(damage));
             }
         }
 
@@ -537,54 +555,90 @@ impl Compositor {
                 .map(|w| (w.x, w.y, w.width, w.height, w.buffer as *const u32));
 
             if let Some((wx, wy, ww, wh, wbuf)) = info {
-                self.blit_to_scene(wbuf, ww, wx, wy, ww, wh);
+                self.blit_to_scene(wbuf, ww, wx, wy, ww, wh, None);
             }
         }
         // Draw borders on top of all window content.
         self.draw_borders(None);
     }
 
-    fn present_region(&mut self, damage: DirtyRect) {
-        if !self.scene_buf.is_null() {
-            let screen_w = self.display_info.width;
-            let src = unsafe {
-                self.scene_buf.add(damage.y as usize * screen_w as usize + damage.x as usize)
-            };
-            self.display.blit_raw(src, screen_w, damage.x as i32, damage.y as i32, damage.w, damage.h);
-        }
-
-        if let Some(cr) = self.cursor_rect() {
-            let dx1 = damage.x + damage.w;
-            let dy1 = damage.y + damage.h;
-            if cr.x < dx1 && cr.x + cr.w > damage.x && cr.y < dy1 && cr.y + cr.h > damage.y {
-                self.display.blit_cursor(
-                    self.cursor_x, self.cursor_y,
-                    &CURSOR_MASK, &CURSOR_IMAGE,
-                    CURSOR_W, CURSOR_H,
-                    self.cursor_black, self.cursor_white,
-                );
-            }
-        }
-
-        self.display.present();
-    }
-
     fn flush(&mut self) {
         if self.pending_full_redraw {
             self.pending_full_redraw = false;
-            self.pending_scene_update = false;
             self.pending_damage = None;
-            self.update_scene_full();
-            let w = self.display_info.width;
-            let h = self.display_info.height;
-            self.present_region(DirtyRect { x: 0, y: 0, w, h });
-        } else if let Some(damage) = self.pending_damage.take() {
-            if self.pending_scene_update {
-                self.pending_scene_update = false;
-                self.update_scene_region(damage);
+            // Clear per-window dirty rects subsumed by the full redraw.
+            for slot in &mut self.windows {
+                if let Some(w) = slot { w.pending_dirty = None; }
             }
-            self.present_region(damage);
+            self.update_scene_full();
+            let sw = self.display_info.width;
+            let sh = self.display_info.height;
+            if !self.scene_buf.is_null() {
+                self.display.blit_raw(self.scene_buf, sw, 0, 0, sw, sh);
+            }
+            self.display.blit_cursor(
+                self.cursor_x, self.cursor_y,
+                &CURSOR_MASK, &CURSOR_IMAGE,
+                CURSOR_W, CURSOR_H,
+                self.cursor_black, self.cursor_white,
+            );
+            self.display.present();
+            return;
         }
+
+        // Collect each window's independent dirty rect without holding a borrow on self.windows.
+        // Keeping them separate prevents the bounding-box explosion caused by two windows at
+        // opposite screen corners merging into a rect that covers the entire display.
+        let mut dirty_rects: [Option<DirtyRect>; MAX_WINDOWS] = [None; MAX_WINDOWS];
+        for (i, slot) in self.windows.iter_mut().enumerate() {
+            if let Some(w) = slot {
+                dirty_rects[i] = w.pending_dirty.take();
+            }
+        }
+        // Extra damage from cursor movement and explicit window moves.
+        let extra_damage = self.pending_damage.take();
+
+        let has_window = dirty_rects.iter().any(|d| d.is_some());
+        if !has_window && extra_damage.is_none() {
+            return;
+        }
+
+        let screen_w = self.display_info.width;
+
+        // Update the scene buffer and blit each region to the back buffer independently.
+        for opt_dr in &dirty_rects {
+            if let Some(dr) = opt_dr {
+                self.update_scene_region(*dr);
+                if !self.scene_buf.is_null() {
+                    let src = unsafe {
+                        self.scene_buf.add(dr.y as usize * screen_w as usize + dr.x as usize)
+                    };
+                    self.display.blit_raw(src, screen_w, dr.x as i32, dr.y as i32, dr.w, dr.h);
+                }
+            }
+        }
+
+        if let Some(cd) = extra_damage {
+            self.update_scene_region(cd);
+            if !self.scene_buf.is_null() {
+                let src = unsafe {
+                    self.scene_buf.add(cd.y as usize * screen_w as usize + cd.x as usize)
+                };
+                self.display.blit_raw(src, screen_w, cd.x as i32, cd.y as i32, cd.w, cd.h);
+            }
+        }
+
+        // Draw cursor on top of the composited back buffer (once, after all scene updates),
+        // then present every accumulated dirty rect to VRAM independently via Display::present().
+        // Because Display now tracks a list of dirty rects instead of a single bounding box,
+        // each small rect is written to VRAM separately — no cross-window merging.
+        self.display.blit_cursor(
+            self.cursor_x, self.cursor_y,
+            &CURSOR_MASK, &CURSOR_IMAGE,
+            CURSOR_W, CURSOR_H,
+            self.cursor_black, self.cursor_white,
+        );
+        self.display.present();
     }
 
     // --- Window handlers ---
@@ -726,7 +780,7 @@ impl Compositor {
     }
 
     fn handle_update_window(&mut self, header: &UpdateWindowRequest) {
-        let pos = {
+        let damage = {
             let window = match self.windows.iter_mut()
                 .filter_map(|w| w.as_mut())
                 .find(|w| w.id == header.window_id)
@@ -745,11 +799,28 @@ impl Compositor {
                 ulib::sys_destroy_shared_buf(old_id);
             }
 
-            (window.x, window.y, window.width, window.height)
+            // Translate the client's window-local dirty rect to screen coordinates.
+            (
+                window.x + header.dirty_x as i32,
+                window.y + header.dirty_y as i32,
+                header.dirty_width,
+                header.dirty_height,
+            )
         };
 
-        if let Some(rect) = self.screen_rect(pos.0, pos.1, pos.2, pos.3) {
-            self.mark_damage(rect);
+        if let Some(rect) = self.screen_rect(damage.0, damage.1, damage.2, damage.3) {
+            // Store in the window's own pending_dirty, NOT the global pending_damage.
+            // This prevents two windows at opposite screen corners from merging their
+            // tiny dirty rects into a huge bounding box that covers the entire screen.
+            if let Some(window) = self.windows.iter_mut()
+                .filter_map(|w| w.as_mut())
+                .find(|w| w.id == header.window_id)
+            {
+                match &mut window.pending_dirty {
+                    Some(d) => d.expand(rect.x, rect.y, rect.w, rect.h),
+                    None => window.pending_dirty = Some(rect),
+                }
+            }
         }
     }
 
@@ -1010,6 +1081,8 @@ impl Compositor {
 }
 
 /// Send an event struct to a persistent event channel (does NOT close the endpoint).
+/// Non-blocking: if the channel is full, the event is dropped rather than blocking
+/// the compositor. This prevents any blocking calls in the DS hot path.
 fn send_event<T>(ep: u64, event: &T) {
     let bytes = unsafe {
         core::slice::from_raw_parts(
@@ -1017,5 +1090,5 @@ fn send_event<T>(ep: u64, event: &T) {
             core::mem::size_of::<T>(),
         )
     };
-    ulib::sys_channel_send(ep, bytes);
+    ulib::sys_try_channel_send(ep, bytes);
 }

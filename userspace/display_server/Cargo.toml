@@ -13,3 +13,7 @@ embedded-graphics = "0.8.1"
 name = "display_server"
 test = false
 bench = false
+
+[lib]
+name = "display_server_lib"
+path = "src/lib.rs"
