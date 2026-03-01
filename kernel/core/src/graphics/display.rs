@@ -105,6 +105,7 @@ impl Display {
             green_mask_shift: fb.info.pixel.green_mask_shift,
             blue_mask_size: fb.info.pixel.blue_mask_size,
             blue_mask_shift: fb.info.pixel.blue_mask_shift,
+            pitch: fb.info.pitch as u32,
         }
     }
 

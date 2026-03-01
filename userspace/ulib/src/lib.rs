@@ -46,6 +46,7 @@ pub fn sys_get_display_info() -> DisplayInfo {
         green_mask_shift: 0,
         blue_mask_size: 0,
         blue_mask_shift: 0,
+        pitch: 0,
     };
     let mut args = [0u64; 7];
     args[0] = SysCallNumber::GetDisplayInfo as u64;

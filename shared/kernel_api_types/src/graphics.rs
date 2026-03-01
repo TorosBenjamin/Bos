@@ -46,6 +46,9 @@ pub struct DisplayInfo {
     pub green_mask_shift: u8,
     pub blue_mask_size: u8,
     pub blue_mask_shift: u8,
+    /// Row stride in bytes (may be larger than width * bytes_per_pixel due to hardware alignment).
+    /// Callers must use this when calculating row offsets into the VRAM front buffer.
+    pub pitch: u32,
 }
 
 impl DisplayInfo {

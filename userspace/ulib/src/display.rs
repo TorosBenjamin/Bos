@@ -16,6 +16,9 @@ pub struct Display {
     front_buffer: &'static mut [u32],
     width: u32,
     height: u32,
+    /// Row stride of the VRAM front buffer in u32 units. May be larger than `width`
+    /// when the hardware pads rows for alignment (pitch > width * 4).
+    pitch_pixels: u32,
     info: DisplayInfo,
     /// List of independent dirty rects to present. Using a list instead of a single bounding
     /// box avoids the 879× VRAM-write explosion that occurs when two windows at opposite screen
@@ -33,22 +36,26 @@ impl Display {
         let width = info.width;
         let height = info.height;
 
-        let buf_size = (width as u64) * (height as u64) * 4;
+        // pitch is bytes per row; pitch_pixels is u32 units per row (may be > width).
+        let pitch_pixels = info.pitch / 4;
+        let back_size = (width as u64) * (height as u64) * 4;
+        // The VRAM mapping covers pitch * height bytes (hardware may pad each row).
+        let front_len = (pitch_pixels as usize) * (height as usize);
 
-        // Allocate the Back Buffer (RAM)
-        // This is just normal heap memory or anonymous mmap
-        let back_ptr = crate::sys_mmap(buf_size, MMAP_WRITE);
-        let back_buffer = unsafe { core::slice::from_raw_parts_mut(back_ptr as *mut u32, buf_size as usize / 4) };
+        // Allocate the Back Buffer (RAM) — flat, no padding, stride == width.
+        let back_ptr = crate::sys_mmap(back_size, MMAP_WRITE);
+        let back_buffer = unsafe { core::slice::from_raw_parts_mut(back_ptr as *mut u32, back_size as usize / 4) };
 
-        // Get the Front Buffer (VRAM) - mapped by TransferDisplay syscall
+        // Get the Front Buffer (VRAM) - mapped by TransferDisplay syscall.
         let front_ptr = FRAMEBUFFER_USER_VADDR as *mut u32;
-        let front_buffer = unsafe { core::slice::from_raw_parts_mut(front_ptr, buf_size as usize / 4) };
+        let front_buffer = unsafe { core::slice::from_raw_parts_mut(front_ptr, front_len) };
 
         Display {
             back_buffer,
             front_buffer,
             width,
             height,
+            pitch_pixels,
             info,
             dirty: [None; MAX_DIRTY],
             n_dirty: 0,
@@ -67,11 +74,13 @@ impl Display {
                 let w = dirty.w as usize;
                 let h = dirty.h as usize;
                 for row in 0..h {
-                    let offset = (y_start + row) * self.width as usize + x_start;
+                    // back_buffer is flat (stride = width); front_buffer may have padding (stride = pitch_pixels).
+                    let back_offset  = (y_start + row) * self.width as usize + x_start;
+                    let front_offset = (y_start + row) * self.pitch_pixels as usize + x_start;
                     unsafe {
                         core::ptr::copy_nonoverlapping(
-                            self.back_buffer.as_ptr().add(offset),
-                            self.front_buffer.as_mut_ptr().add(offset),
+                            self.back_buffer.as_ptr().add(back_offset),
+                            self.front_buffer.as_mut_ptr().add(front_offset),
                             w,
                         );
                     }
