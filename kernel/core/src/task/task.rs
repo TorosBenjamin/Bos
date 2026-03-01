@@ -215,6 +215,8 @@ pub struct Task {
     pub exit_code: AtomicU64,
     /// Task waiting for this task to exit (set by sys_waitpid).
     pub exit_waiter: Mutex<Option<(Arc<Task>, u32)>>,
+    /// Send endpoint ID to notify on exit. 0 = unset.
+    pub exit_notification_ep: AtomicU64,
     /// Number of scheduler quanta this task has consumed. One tick ≈ 1 ms.
     pub cpu_ticks: AtomicU64,
 }
@@ -268,6 +270,7 @@ impl Task {
             cr3,
             exit_code: AtomicU64::new(0),
             exit_waiter: Mutex::new(None),
+            exit_notification_ep: AtomicU64::new(0),
             cpu_ticks: AtomicU64::new(0),
         }
     }
@@ -329,6 +332,60 @@ impl Task {
             cr3,
             exit_code: AtomicU64::new(0),
             exit_waiter: Mutex::new(None),
+            exit_notification_ep: AtomicU64::new(0),
+            cpu_ticks: AtomicU64::new(0),
+        }
+    }
+
+    /// Create a new user-mode thread that shares the parent's address space.
+    ///
+    /// Unlike `new_user`, this does NOT take ownership of any page table frame —
+    /// the parent process owns and will free the page table.
+    pub fn new_thread(
+        entry_rip: u64,
+        user_rsp: u64,
+        cr3: u64,
+        user_cs: u16,
+        user_ss: u16,
+        user_vaddr_set: NoditSet<u64, Interval<u64>>,
+        arg: u64,
+    ) -> Self {
+        let kernel_stack = GuardedStack::new_kernel(
+            NORMAL_STACK_SIZE,
+            StackId {
+                _type: StackType::Normal,
+                cpu_id: get_local().kernel_id,
+            },
+        );
+        let kernel_stack_top = kernel_stack.top().as_u64();
+
+        let context = CpuContext {
+            r15: 0, r14: 0, r13: 0, r12: 0, r11: 0, r10: 0, r9: 0, r8: 0,
+            rdi: arg, rsi: 0, rbp: 0, rbx: 0, rdx: 0, rcx: 0, rax: 0,
+            rip: entry_rip,
+            cs: user_cs as u64,
+            rflags: 0x200,
+            rsp: user_rsp,
+            ss: user_ss as u64,
+        };
+
+        Task {
+            inner: Mutex::new(TaskInner {
+                context,
+                kernel_stack,
+                kernel_stack_top,
+                user_page_table: None, // thread does NOT own/free the page table
+                user_vaddr_set,
+                owned_endpoints: Vec::new(),
+                registered_services: Vec::new(),
+            }),
+            id: TaskId::new(),
+            state: AtomicTaskState::new(TaskState::Initializing),
+            kind: TaskKind::User,
+            cr3,
+            exit_code: AtomicU64::new(0),
+            exit_waiter: Mutex::new(None),
+            exit_notification_ep: AtomicU64::new(0),
             cpu_ticks: AtomicU64::new(0),
         }
     }

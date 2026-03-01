@@ -263,6 +263,31 @@ pub fn sys_block_read_sectors(lba: u64, count: u32, buf: &mut [u8]) -> u64 {
     args[6]
 }
 
+/// Create a new thread sharing the caller's address space.
+/// `entry` is the function pointer, `stack_top` is the top of an already-allocated stack,
+/// and `arg` is passed in RDI on entry.
+/// Returns the thread's task ID on success, or 0 on failure.
+pub fn sys_thread_create(entry: u64, stack_top: u64, arg: u64) -> u64 {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::ThreadCreate as u64;
+    args[1] = entry;
+    args[2] = stack_top;
+    args[3] = arg;
+    syscall(&mut args);
+    args[6]
+}
+
+/// Register `send_ep` as the exit-notification endpoint for `task_id`.
+/// Returns 0 on success, 1 on error (task not found or invalid endpoint).
+pub fn sys_set_exit_channel(task_id: u64, send_ep: u64) -> u64 {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::SetExitChannel as u64;
+    args[1] = task_id;
+    args[2] = send_ep;
+    syscall(&mut args);
+    args[6]
+}
+
 /// Write `count` sectors (each 512 bytes) from `buf` to the IDE disk at `lba`.
 /// Returns 1 on success, 0 on failure.
 pub fn sys_block_write_sectors(lba: u64, count: u32, buf: &[u8]) -> u64 {

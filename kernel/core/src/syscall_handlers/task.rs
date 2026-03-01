@@ -1,6 +1,6 @@
 use crate::memory::cpu_local_data::get_local;
 use crate::task::global_scheduler::TASK_TABLE;
-use crate::task::task::{TaskId, TaskKind, TaskState};
+use crate::task::task::{Task, TaskId, TaskKind, TaskState};
 use core::sync::atomic::Ordering;
 use super::{current_task_and_cpu, wake_task};
 
@@ -35,6 +35,16 @@ pub fn sys_exit(exit_code: u64) -> ! {
     if let Some(task) = task_arc {
         task.exit_code.store(exit_code, Ordering::Release);
         task.state.store(TaskState::Zombie, Ordering::Relaxed);
+
+        // Send exit notification if a channel endpoint was registered
+        let notif_ep = task.exit_notification_ep.load(Ordering::Relaxed);
+        if notif_ep != 0 {
+            let mut msg = [0u8; 16];
+            msg[0..8].copy_from_slice(&task.id.to_u64().to_le_bytes());
+            msg[8..16].copy_from_slice(&exit_code.to_le_bytes());
+            let _ = crate::ipc::try_send(notif_ep, &msg);
+        }
+
         if let Some((waiter, w_cpu)) = task.exit_waiter.lock().take() {
             wake_task(waiter, w_cpu);
         } else {
@@ -99,6 +109,56 @@ pub fn sys_spawn(elf_ptr: u64, elf_len: u64, child_arg: u64, _: u64, _: u64, _: 
         }
         Err(_) => 0,
     }
+}
+
+/// Syscall: create a new thread sharing the caller's address space.
+///
+/// Arguments: entry_rip, stack_top, arg
+/// Returns: task ID on success, 0 on failure.
+pub fn sys_thread_create(entry: u64, stack_top: u64, arg: u64, _: u64, _: u64, _: u64) -> u64 {
+    let cpu = get_local();
+
+    let (parent_cr3, vaddr_set) = {
+        let rq = cpu.run_queue.get().unwrap().lock();
+        let task = match &rq.current_task {
+            Some(t) if t.kind == TaskKind::User => t.clone(),
+            _ => return 0,
+        };
+        let inner = task.inner.lock();
+        (task.cr3, inner.user_vaddr_set.clone())
+    };
+
+    let gdt = cpu.gdt.get().unwrap();
+    let user_cs = gdt.user_code_selector().0;
+    let user_ss = gdt.user_data_selector().0;
+
+    let task = Task::new_thread(entry, stack_top, parent_cr3, user_cs, user_ss, vaddr_set, arg);
+    let id = task.id.to_u64();
+    crate::task::global_scheduler::spawn_task(task);
+    id
+}
+
+/// Syscall: register a send endpoint to receive an exit notification when `task_id` exits.
+///
+/// Arguments: task_id, send_ep_id
+/// Returns: 0 on success, 1 on error.
+pub fn sys_set_exit_channel(task_id: u64, send_ep_id: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    use crate::ipc::{ENDPOINT_REGISTRY, EndpointRole};
+
+    {
+        let registry = ENDPOINT_REGISTRY.lock();
+        match registry.get(&send_ep_id) {
+            Some(ep) if ep.role == EndpointRole::Send => {}
+            _ => return 1,
+        }
+    }
+
+    let target = match TASK_TABLE.lock().get(&TaskId::from_u64(task_id)).cloned() {
+        Some(t) => t,
+        None => return 1,
+    };
+    target.exit_notification_ep.store(send_ep_id, Ordering::Relaxed);
+    0
 }
 
 /// Syscall: wait for a task to exit and collect its exit code.
