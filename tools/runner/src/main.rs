@@ -38,6 +38,12 @@ fn main() {
     qemu.arg("-cpu").arg("host");
     // qemu.arg("-display").arg("none");
 
+    // Attach the FAT32 disk image as an IDE drive (secondary to the CD-ROM)
+    let disk_img = env!("DISK_IMG");
+    qemu.arg("-drive").arg(format!(
+        "file={disk_img},if=ide,format=raw,media=disk"
+    ));
+
     let exit_status = qemu.status().expect("Failed to run QEMU");
     process::exit(exit_status.code().unwrap_or(1));
 }

@@ -3,6 +3,7 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod fs;
 pub mod graphics;
 pub mod window;
 
@@ -32,6 +33,8 @@ pub enum SysCallNumber {
     CreateSharedBuf = 22,
     MapSharedBuf = 23,
     DestroySharedBuf = 24,
+    BlockReadSectors = 25,
+    BlockWriteSectors = 26,
 }
 
 pub const MAX_SERVICE_NAME_LEN: usize = 64;

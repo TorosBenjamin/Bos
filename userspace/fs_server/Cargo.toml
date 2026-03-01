@@ -1,0 +1,25 @@
+[package]
+name = "fs_server"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Library target: thin wrapper around fat32.rs with no_std guard.
+# `cargo test -p fs_server` runs the #[cfg(test)] module inside fat32.rs.
+# lib.rs has `#![cfg_attr(not(test), no_std)]` so it also compiles for x86_64-unknown-none.
+[lib]
+name = "fat32_impl"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fs_server"
+test = false
+bench = false
+
+[dependencies]
+ulib = { path = "../ulib" }
+kernel_api_types = { path = "../../shared/kernel_api_types" }
+
+[dev-dependencies]
+# fatfs with std feature (default) is used only in test helpers (make_disk, disk_with_file, read_via_fatfs).
+fatfs = "0.3"

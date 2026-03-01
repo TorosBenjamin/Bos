@@ -7,6 +7,7 @@ use kernel_api_types::{
     IPC_ERR_CHANNEL_FULL, IPC_ERR_INVALID_ENDPOINT, IPC_ERR_PEER_CLOSED,
     IPC_OK, MMAP_WRITE, SVC_ERR_NOT_FOUND, SVC_OK,
 };
+use ulib::fs;
 use ulib::test_framework::TestRunner;
 
 #[panic_handler]
@@ -156,6 +157,116 @@ fn service_lookup_missing() -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Filesystem server tests
+// ---------------------------------------------------------------------------
+
+static FS_ENDPOINT: AtomicU64 = AtomicU64::new(0);
+
+/// Poll the service registry until the "fatfs" service appears, then cache it.
+fn wait_for_fs_service() {
+    loop {
+        let ep = ulib::sys_lookup_service(b"fatfs");
+        if ep != SVC_ERR_NOT_FOUND {
+            FS_ENDPOINT.store(ep, Ordering::Relaxed);
+            return;
+        }
+        ulib::sys_yield();
+    }
+}
+
+fn fs_service_registered() -> bool {
+    ulib::sys_lookup_service(b"fatfs") != SVC_ERR_NOT_FOUND
+}
+
+fn fs_readdir_root() -> bool {
+    let ep = FS_ENDPOINT.load(Ordering::Relaxed);
+    match fs::fs_readdir(ep, "/") {
+        Some(resp) => resp.count > 0,
+        None => false,
+    }
+}
+
+fn fs_stat_existing_file() -> bool {
+    let ep = FS_ENDPOINT.load(Ordering::Relaxed);
+    match fs::fs_stat(ep, "CUBE1.ELF") {
+        Some(resp) => resp.is_dir == 0 && resp.size > 0,
+        None => false,
+    }
+}
+
+fn fs_map_file_elf_magic() -> bool {
+    let ep = FS_ENDPOINT.load(Ordering::Relaxed);
+    let (buf_id, file_size) = match fs::fs_map_file(ep, "CUBE1.ELF") {
+        Some(v) => v,
+        None => return false,
+    };
+    if file_size < 4 {
+        ulib::sys_destroy_shared_buf(buf_id);
+        return false;
+    }
+    let ptr = ulib::sys_map_shared_buf(buf_id);
+    let magic_ok = if ptr.is_null() {
+        false
+    } else {
+        unsafe {
+            ptr.read() == 0x7F
+                && ptr.add(1).read() == b'E'
+                && ptr.add(2).read() == b'L'
+                && ptr.add(3).read() == b'F'
+        }
+    };
+    ulib::sys_destroy_shared_buf(buf_id);
+    magic_ok
+}
+
+fn fs_map_missing_returns_none() -> bool {
+    let ep = FS_ENDPOINT.load(Ordering::Relaxed);
+    fs::fs_map_file(ep, "NOSUCHFILE.BIN").is_none()
+}
+
+fn fs_write_read_roundtrip() -> bool {
+    let ep = FS_ENDPOINT.load(Ordering::Relaxed);
+
+    // Create a shared buffer and fill it with known data
+    let content = b"utest_write_roundtrip";
+    let (buf_id, ptr) = ulib::sys_create_shared_buf(content.len() as u64);
+    if ptr.is_null() || buf_id == u64::MAX {
+        return false;
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(content.as_ptr(), ptr, content.len());
+    }
+
+    // Write to disk
+    let result = fs::fs_write_file(ep, "UTEST.TXT", buf_id, content.len() as u64);
+    ulib::sys_destroy_shared_buf(buf_id);
+    if result != kernel_api_types::fs::FsResult::Ok {
+        return false;
+    }
+
+    // Read back and verify
+    let (read_id, read_size) = match fs::fs_map_file(ep, "UTEST.TXT") {
+        Some(v) => v,
+        None => return false,
+    };
+    if read_size != content.len() as u64 {
+        ulib::sys_destroy_shared_buf(read_id);
+        return false;
+    }
+    let read_ptr = ulib::sys_map_shared_buf(read_id);
+    let ok = if read_ptr.is_null() {
+        false
+    } else {
+        unsafe {
+            let read_slice = core::slice::from_raw_parts(read_ptr, content.len());
+            read_slice == content
+        }
+    };
+    ulib::sys_destroy_shared_buf(read_id);
+    ok
+}
+
+// ---------------------------------------------------------------------------
 // Display server tests
 // ---------------------------------------------------------------------------
 
@@ -249,6 +360,17 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
     runner.run(create_window_ok);
     runner.run(create_window_bad_dims);
     runner.run(update_window);
+
+    // Wait for filesystem server before running fs tests
+    wait_for_fs_service();
+
+    // Filesystem server tests
+    runner.run(fs_service_registered);
+    runner.run(fs_readdir_root);
+    runner.run(fs_stat_existing_file);
+    runner.run(fs_map_file_elf_magic);
+    runner.run(fs_map_missing_returns_none);
+    runner.run(fs_write_read_roundtrip);
 
     runner.finish()
 }

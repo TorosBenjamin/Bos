@@ -78,6 +78,7 @@ extern "sysv64" fn init_bsp() -> ! {
         get_local().local_apic_id,
     );
     kernel::drivers::mouse::init();
+    kernel::drivers::disk::init();
 
     time::tsc::calibrate();
     time::lapic_timer::init();

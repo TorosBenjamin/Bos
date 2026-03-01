@@ -24,6 +24,16 @@ unsafe extern "sysv64" fn entry_point() -> ! {
     // Transfer display ownership to display_server
     ulib::sys_transfer_display(ds_id);
 
+    // Load and spawn fs_server (registers "fatfs" service)
+    let fss_size = ulib::sys_get_module("fs_server", core::ptr::null_mut(), 0);
+    if fss_size > 0 {
+        let fss_buf = ulib::sys_mmap(fss_size, kernel_api_types::MMAP_WRITE);
+        let _ = ulib::sys_get_module("fs_server", fss_buf, fss_size);
+        let fss_elf = unsafe { core::slice::from_raw_parts(fss_buf, fss_size as usize) };
+        let _ = ulib::sys_spawn(fss_elf, 0);
+        ulib::sys_munmap(fss_buf, fss_size);
+    }
+
     if is_test_mode {
         // Test mode: spawn utest; skip bouncing cubes
         let utest_buf = ulib::sys_mmap(utest_size, kernel_api_types::MMAP_WRITE);

@@ -1,6 +1,7 @@
 #![no_std]
 
 pub mod display;
+pub mod fs;
 pub mod window;
 pub mod test_framework;
 
@@ -248,6 +249,30 @@ pub fn sys_shutdown(exit_code: u64) -> ! {
     args[1] = exit_code;
     syscall(&mut args);
     loop {}
+}
+
+/// Read `count` sectors (each 512 bytes) from the IDE disk at `lba` into `buf`.
+/// Returns 1 on success, 0 on failure.
+pub fn sys_block_read_sectors(lba: u64, count: u32, buf: &mut [u8]) -> u64 {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::BlockReadSectors as u64;
+    args[1] = lba;
+    args[2] = count as u64;
+    args[3] = buf.as_mut_ptr() as u64;
+    syscall(&mut args);
+    args[6]
+}
+
+/// Write `count` sectors (each 512 bytes) from `buf` to the IDE disk at `lba`.
+/// Returns 1 on success, 0 on failure.
+pub fn sys_block_write_sectors(lba: u64, count: u32, buf: &[u8]) -> u64 {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::BlockWriteSectors as u64;
+    args[1] = lba;
+    args[2] = count as u64;
+    args[3] = buf.as_ptr() as u64;
+    syscall(&mut args);
+    args[6]
 }
 
 pub fn default_panic(_info: &core::panic::PanicInfo) -> ! {

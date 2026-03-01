@@ -1,5 +1,5 @@
 use crate::memory::cpu_local_data::{CpuLocalData, IN_SYSCALL_HANDLER_OFFSET, CURRENT_CONTEXT_PTR_OFFSET, CURRENT_TASK_KERNEL_STACK_TOP_OFFSET, get_local};
-use crate::syscall_handlers::{sys_channel_close, sys_channel_create, sys_channel_recv, sys_channel_send, sys_create_shared_buf, sys_debug_log, sys_destroy_shared_buf, sys_exit, sys_get_bounding_box, sys_get_display_info, sys_get_module, sys_lookup_service, sys_map_shared_buf, sys_mmap, sys_munmap, sys_read_key, sys_read_mouse, sys_register_service, sys_shutdown, sys_spawn, sys_transfer_display, sys_waitpid, sys_yield};
+use crate::syscall_handlers::{sys_block_read_sectors, sys_block_write_sectors, sys_channel_close, sys_channel_create, sys_channel_recv, sys_channel_send, sys_create_shared_buf, sys_debug_log, sys_destroy_shared_buf, sys_exit, sys_get_bounding_box, sys_get_display_info, sys_get_module, sys_lookup_service, sys_map_shared_buf, sys_mmap, sys_munmap, sys_read_key, sys_read_mouse, sys_register_service, sys_shutdown, sys_spawn, sys_transfer_display, sys_waitpid, sys_yield};
 use crate::task::task::{
     CTX_RAX, CTX_RBP, CTX_RBX, CTX_RCX, CTX_RDI, CTX_RDX, CTX_RSI,
     CTX_R8, CTX_R9, CTX_R10, CTX_R11, CTX_R12, CTX_R13, CTX_R14, CTX_R15,
@@ -226,6 +226,8 @@ pub fn init() {
         table[SysCallNumber::CreateSharedBuf as usize] = Some(sys_create_shared_buf);
         table[SysCallNumber::MapSharedBuf as usize] = Some(sys_map_shared_buf);
         table[SysCallNumber::DestroySharedBuf as usize] = Some(sys_destroy_shared_buf);
+        table[SysCallNumber::BlockReadSectors as usize] = Some(sys_block_read_sectors);
+        table[SysCallNumber::BlockWriteSectors as usize] = Some(sys_block_write_sectors);
         table
     });
 }

@@ -1,5 +1,5 @@
 use std::fs::{create_dir_all, remove_file};
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Cursor, Seek, SeekFrom, Write};
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -130,6 +130,17 @@ fn main() {
         ensure_symlink(limine_dir.join(efi_file), efi_boot_dir.join(efi_file)).unwrap();
     }
 
+    // FS Server
+    let fs_server_executable_file = env::var("CARGO_BIN_FILE_FS_SERVER").unwrap();
+    ensure_symlink(fs_server_executable_file, iso_dir.join("fs_server")).unwrap();
+
+    // ── FAT32 disk image ──────────────────────────────────────────────────────
+    // Create a 64 MB raw FAT32 image (no MBR) at out_dir/disk.img.
+    // Populate it with the app binaries so the fs_server can load them.
+    let disk_img = out_dir.join("disk.img");
+    create_fat32_disk_image(&disk_img);
+    println!("cargo:rustc-env=DISK_IMG={}", disk_img.display());
+
     // Symlink the out dir so we get a constant path to it
     ensure_symlink(&out_dir, runner_dir.join("out_dir")).unwrap();
 
@@ -205,4 +216,59 @@ fn check_command_exists(cmd: &str) {
     {
         panic!("Command '{}' not found. Please install it.", cmd);
     }
+}
+
+/// Create a 64 MB raw FAT32 disk image and populate it with app binaries.
+fn create_fat32_disk_image(path: &PathBuf) {
+    const DISK_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
+
+    // Allocate a buffer for the whole disk
+    let mut disk: Cursor<Vec<u8>> = Cursor::new(vec![0u8; DISK_SIZE as usize]);
+
+    // Format as FAT32
+    fatfs::format_volume(
+        &mut disk,
+        fatfs::FormatVolumeOptions::new()
+            .volume_label(*b"BOS_APPS   "),
+    )
+    .expect("fatfs: format_volume failed");
+
+    // Open the filesystem and populate it
+    disk.seek(SeekFrom::Start(0)).unwrap();
+    {
+        let fs = fatfs::FileSystem::new(&mut disk, fatfs::FsOptions::new())
+            .expect("fatfs: FileSystem::new failed");
+        let root = fs.root_dir();
+
+        // Write each app binary that exists as a build artefact.
+        // We add every user-land binary that is available; others are silently skipped.
+        let apps: &[(&str, &str)] = &[
+            ("BOUNCING_CUBE_1", "CUBE1.ELF"),
+            ("BOUNCING_CUBE_2", "CUBE2.ELF"),
+        ];
+        for (env_suffixes, fat_name) in apps {
+            // Try a few env var naming conventions Cargo uses for artifact bins
+            let candidates = [
+                format!("CARGO_BIN_FILE_USER_LAND_{env_suffixes}"),
+                format!("CARGO_BIN_FILE_USER_LAND_{}", env_suffixes.to_lowercase()),
+            ];
+            let bin_path = candidates.iter().find_map(|e| std::env::var(e).ok());
+            if let Some(p) = bin_path {
+                match std::fs::read(&p) {
+                    Ok(data) => {
+                        let mut f = root.create_file(fat_name)
+                            .expect("fatfs: create_file failed");
+                        f.truncate().unwrap();
+                        f.write_all(&data).unwrap();
+                    }
+                    Err(e) => eprintln!("build.rs: skipping {fat_name}: {e}"),
+                }
+            }
+        }
+    }
+
+    // Write the image to disk
+    let buf = disk.into_inner();
+    std::fs::write(path, &buf).expect("build.rs: failed to write disk.img");
+    println!("build.rs: wrote {} MB disk image to {}", DISK_SIZE / 1_048_576, path.display());
 }
