@@ -35,7 +35,7 @@ unsafe extern "sysv64" fn entry_point() -> ! {
     }
 
     if is_test_mode {
-        // Test mode: spawn utest; skip bouncing cubes
+        // Test mode: spawn utest; skip normal apps
         let utest_buf = ulib::sys_mmap(utest_size, kernel_api_types::MMAP_WRITE);
         let _ = ulib::sys_get_module("utest", utest_buf, utest_size);
 
@@ -43,27 +43,24 @@ unsafe extern "sysv64" fn entry_point() -> ! {
         let _ = ulib::sys_spawn(utest_elf, 0);
         ulib::sys_munmap(utest_buf, utest_size);
     } else {
-        // Normal mode: spawn bouncing cube clients
-        let cube1_size = ulib::sys_get_module("bouncing_cube_1", core::ptr::null_mut(), 0);
-        if cube1_size > 0 {
-            let cube1_buf = ulib::sys_mmap(cube1_size, kernel_api_types::MMAP_WRITE);
-            let _ = ulib::sys_get_module("bouncing_cube_1", cube1_buf, cube1_size);
-
-            let cube1_elf =
-                unsafe { core::slice::from_raw_parts(cube1_buf, cube1_size as usize) };
-            let _ = ulib::sys_spawn(cube1_elf, 0);
-            ulib::sys_munmap(cube1_buf, cube1_size);
+        // Normal mode: spawn bouncing_cube_1 and hello_egui
+        let cube_size = ulib::sys_get_module("bouncing_cube_1", core::ptr::null_mut(), 0);
+        if cube_size > 0 {
+            let cube_buf = ulib::sys_mmap(cube_size, kernel_api_types::MMAP_WRITE);
+            let _ = ulib::sys_get_module("bouncing_cube_1", cube_buf, cube_size);
+            let cube_elf = unsafe { core::slice::from_raw_parts(cube_buf, cube_size as usize) };
+            let _ = ulib::sys_spawn(cube_elf, 0);
+            ulib::sys_munmap(cube_buf, cube_size);
         }
 
-        let cube2_size = ulib::sys_get_module("bouncing_cube_2", core::ptr::null_mut(), 0);
-        if cube2_size > 0 {
-            let cube2_buf = ulib::sys_mmap(cube2_size, kernel_api_types::MMAP_WRITE);
-            let _ = ulib::sys_get_module("bouncing_cube_2", cube2_buf, cube2_size);
-
-            let cube2_elf =
-                unsafe { core::slice::from_raw_parts(cube2_buf, cube2_size as usize) };
-            let _ = ulib::sys_spawn(cube2_elf, 0);
-            ulib::sys_munmap(cube2_buf, cube2_size);
+        let hello_egui_size = ulib::sys_get_module("hello_egui", core::ptr::null_mut(), 0);
+        if hello_egui_size > 0 {
+            let hello_egui_buf = ulib::sys_mmap(hello_egui_size, kernel_api_types::MMAP_WRITE);
+            let _ = ulib::sys_get_module("hello_egui", hello_egui_buf, hello_egui_size);
+            let hello_egui_elf =
+                unsafe { core::slice::from_raw_parts(hello_egui_buf, hello_egui_size as usize) };
+            let _ = ulib::sys_spawn(hello_egui_elf, 0);
+            ulib::sys_munmap(hello_egui_buf, hello_egui_size);
         }
     }
 

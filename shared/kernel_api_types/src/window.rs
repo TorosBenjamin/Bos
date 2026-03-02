@@ -101,14 +101,16 @@ pub enum PanelAnchor {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowEventType {
-    KeyPress       = 0,
-    FocusGained    = 1,
-    FocusLost      = 2,
-    Configure      = 3,
+    KeyPress           = 0,
+    FocusGained        = 1,
+    FocusLost          = 2,
+    Configure          = 3,
     /// Sent once per frame after display.present() completes, for every window whose
     /// pixels were composited that frame. Clients should wait for this before drawing
     /// the next frame so they pace themselves to the compositor's actual output rate.
-    FramePresented = 4,
+    FramePresented     = 4,
+    MouseButtonPress   = 5,
+    MouseButtonRelease = 6,
 }
 
 /// Create toplevel window request — DS assigns position and size via tiling.
@@ -229,6 +231,19 @@ pub struct CreateWindowResponse {
 }
 
 // --- DS-to-client event structs (sent over the event channel) ---
+
+/// Mouse button press/release event sent to the focused window.
+/// `button` holds one of the `MOUSE_LEFT` / `MOUSE_RIGHT` / `MOUSE_MIDDLE` bitmask values.
+/// `x` and `y` are the cursor position relative to the window's top-left corner.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct MouseButtonEvent {
+    pub event_type: u8,  // WindowEventType::MouseButtonPress or MouseButtonRelease
+    pub button: u8,
+    pub _pad: [u8; 2],
+    pub x: i32,
+    pub y: i32,
+}
 
 /// Key press event from DS to focused window.
 #[repr(C)]

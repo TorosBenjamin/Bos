@@ -103,6 +103,12 @@ fn main() {
         .expect("bouncing_cube_2 binary not found");
     ensure_symlink(bouncing_cube_2_executable_file, iso_dir.join("bouncing_cube_2")).unwrap();
 
+    // Hello Egui
+    let hello_egui_executable_file = env::var("CARGO_BIN_FILE_HELLO_EGUI_hello_egui")
+        .or_else(|_| env::var("CARGO_BIN_FILE_HELLO_EGUI"))
+        .expect("hello_egui binary not found");
+    ensure_symlink(hello_egui_executable_file, iso_dir.join("hello_egui")).unwrap();
+
     // Userspace integration test binary (only included when --features userspace_test)
     if env::var("CARGO_FEATURE_USERSPACE_TEST").is_ok() {
         let utest = env::var("CARGO_BIN_FILE_UTEST").expect("utest binary not built");

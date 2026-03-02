@@ -48,6 +48,9 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
     let mut dx: i32 = 2;
     let mut dy: i32 = 2;
 
+    // Cube color: red normally, blue while any mouse button is held down.
+    let mut cube_color = Rgb888::RED;
+
     // True on the first iteration so the initial frame is drawn immediately,
     // then only set again when the compositor signals FramePresented.
     let mut frame_presented = true;
@@ -65,6 +68,14 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                     x = x.min(width as i32 - CUBE_SIZE as i32).max(0);
                     y = y.min(height as i32 - CUBE_SIZE as i32).max(0);
                     // Force a redraw into the fresh buffer.
+                    frame_presented = true;
+                }
+                WindowEvent::MouseButtonPress { .. } => {
+                    cube_color = Rgb888::new(0, 100, 255);
+                    frame_presented = true;
+                }
+                WindowEvent::MouseButtonRelease { .. } => {
+                    cube_color = Rgb888::RED;
                     frame_presented = true;
                 }
                 _ => {}
@@ -102,9 +113,9 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                 dy = -dy;
             }
 
-            // Draw the new cube (red)
+            // Draw the cube (color changes on mouse press)
             let _ = Rectangle::new(Point::new(x, y), Size::new(CUBE_SIZE, CUBE_SIZE))
-                .into_styled(PrimitiveStyle::with_fill(Rgb888::RED))
+                .into_styled(PrimitiveStyle::with_fill(cube_color))
                 .draw(&mut window);
 
             window.present();

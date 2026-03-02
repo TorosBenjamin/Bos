@@ -20,7 +20,7 @@ use embedded_graphics::Pixel;
 use kernel_api_types::graphics::DisplayInfo;
 use kernel_api_types::window::{
     ConfigureEvent, CreatePanelRequest, CreateWindowRequest, CreateWindowResponse,
-    UpdateWindowRequest, WindowEventType, WindowMessageType, WindowResult, WindowId,
+    MouseButtonEvent, UpdateWindowRequest, WindowEventType, WindowMessageType, WindowResult, WindowId,
 };
 pub use kernel_api_types::window::DirtyRect;
 pub use kernel_api_types::{KeyEvent, KeyEventType};
@@ -36,6 +36,11 @@ pub enum WindowEvent {
     /// Clients should wait for this event before drawing the next frame so they
     /// pace themselves to the compositor's actual output rate rather than spinning.
     FramePresented,
+    /// Mouse button pressed inside this window. `button` is one of the MOUSE_* bitmask
+    /// values. `x`/`y` are relative to the window's top-left corner.
+    MouseButtonPress { button: u8, x: i32, y: i32 },
+    /// Mouse button released. Same coordinate convention as `MouseButtonPress`.
+    MouseButtonRelease { button: u8, x: i32, y: i32 },
 }
 
 /// A client window backed by shared physical memory.
@@ -296,6 +301,19 @@ impl Window {
             }
         } else if event_type == WindowEventType::FramePresented as u8 {
             return Some(WindowEvent::FramePresented);
+        } else if event_type == WindowEventType::MouseButtonPress as u8
+            || event_type == WindowEventType::MouseButtonRelease as u8
+        {
+            if bytes_read >= core::mem::size_of::<MouseButtonEvent>() as u64 {
+                let ev: MouseButtonEvent = unsafe {
+                    core::ptr::read_unaligned(buf.as_ptr() as *const _)
+                };
+                return Some(if event_type == WindowEventType::MouseButtonPress as u8 {
+                    WindowEvent::MouseButtonPress { button: ev.button, x: ev.x, y: ev.y }
+                } else {
+                    WindowEvent::MouseButtonRelease { button: ev.button, x: ev.x, y: ev.y }
+                });
+            }
         }
 
         None
@@ -363,6 +381,19 @@ impl Window {
                 self.dirty = Some(DirtyRect { x, y, w, h });
             }
         }
+    }
+
+    pub fn width(&self) -> u32 { self.width }
+    pub fn height(&self) -> u32 { self.height }
+
+    pub fn pixels_mut(&mut self) -> &mut [u32] {
+        unsafe { core::slice::from_raw_parts_mut(self.buffer, (self.width * self.height) as usize) }
+    }
+
+    pub fn display_info(&self) -> &kernel_api_types::graphics::DisplayInfo { &self.info }
+
+    pub fn mark_dirty_all(&mut self) {
+        self.dirty = Some(DirtyRect { x: 0, y: 0, w: self.width, h: self.height });
     }
 }
 

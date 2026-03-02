@@ -1,7 +1,7 @@
 use crate::cursor::{CURSOR_H, CURSOR_W};
 use crate::window::Window;
 use kernel_api_types::window::*;
-use kernel_api_types::{IPC_OK, MMAP_WRITE, MOUSE_LEFT};
+use kernel_api_types::{IPC_OK, MMAP_WRITE, MOUSE_LEFT, MOUSE_RIGHT, MOUSE_MIDDLE};
 
 mod layout;
 mod render;
@@ -319,7 +319,8 @@ impl Compositor {
             }
 
             // Click-to-focus: left button just pressed
-            let just_pressed = cur_buttons & !self.prev_mouse_buttons;
+            let just_pressed  = cur_buttons & !self.prev_mouse_buttons;
+            let just_released = self.prev_mouse_buttons & !cur_buttons;
             if just_pressed & MOUSE_LEFT != 0 {
                 let hit = self.hit_test(self.cursor_x, self.cursor_y);
                 if let Some(id) = hit {
@@ -329,6 +330,41 @@ impl Compositor {
                 self.set_focus(hit);
             }
             self.prev_mouse_buttons = cur_buttons;
+
+            // Route mouse button events to the focused window
+            if (just_pressed | just_released) != 0 {
+                if let Some(fw_id) = self.focused_window {
+                    let pos = self.windows.iter()
+                        .filter_map(|w| w.as_ref())
+                        .find(|w| w.id == fw_id)
+                        .map(|w| (w.x, w.y));
+                    if let Some((wx, wy)) = pos {
+                        let ep = self.window_event_ep(fw_id);
+                        if ep != 0 {
+                            for &bit in &[MOUSE_LEFT, MOUSE_RIGHT, MOUSE_MIDDLE] {
+                                if just_pressed & bit != 0 {
+                                    send_event(ep, &MouseButtonEvent {
+                                        event_type: WindowEventType::MouseButtonPress as u8,
+                                        button: bit,
+                                        _pad: [0; 2],
+                                        x: self.cursor_x - wx,
+                                        y: self.cursor_y - wy,
+                                    });
+                                }
+                                if just_released & bit != 0 {
+                                    send_event(ep, &MouseButtonEvent {
+                                        event_type: WindowEventType::MouseButtonRelease as u8,
+                                        button: bit,
+                                        _pad: [0; 2],
+                                        x: self.cursor_x - wx,
+                                        y: self.cursor_y - wy,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             // Route keyboard events to the focused window
             while let Some(key) = ulib::sys_try_read_key() {

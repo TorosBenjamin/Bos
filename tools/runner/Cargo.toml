@@ -11,6 +11,7 @@ init_task = {path = "../../userspace/init_task", artifact = "bin", target = "x86
 display_server = {path = "../../userspace/display_server", artifact = "bin", target = "x86_64-unknown-none"}
 fs_server = {path = "../../userspace/fs_server", artifact = "bin", target = "x86_64-unknown-none"}
 user_land = {path = "../../userspace/user_land", artifact = "bin", target = "x86_64-unknown-none"}
+hello_egui = {path = "../../userspace/hello_egui", artifact = "bin", target = "x86_64-unknown-none"}
 utest = { path = "../../userspace/utest", artifact = "bin", target = "x86_64-unknown-none", optional = true }
 fatfs = "0.3"
 

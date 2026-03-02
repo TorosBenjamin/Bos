@@ -9,6 +9,7 @@ pub const DISPLAY_SERVER_PATH: &CStr = c"/display_server";
 pub const FS_SERVER_PATH: &CStr = c"/fs_server";
 pub const BOUNCING_CUBE_1_PATH: &CStr = c"/bouncing_cube_1";
 pub const BOUNCING_CUBE_2_PATH: &CStr = c"/bouncing_cube_2";
+pub const HELLO_EGUI_PATH: &CStr = c"/hello_egui";
 
 #[used]
 #[unsafe(link_section = ".requests")]
@@ -43,6 +44,7 @@ pub static MODULE_REQUEST: ModuleRequest =
         &InternalModule::new().with_path(FS_SERVER_PATH),
         &InternalModule::new().with_path(BOUNCING_CUBE_1_PATH),
         &InternalModule::new().with_path(BOUNCING_CUBE_2_PATH),
+        &InternalModule::new().with_path(HELLO_EGUI_PATH),
     ]);
 
 #[used]
