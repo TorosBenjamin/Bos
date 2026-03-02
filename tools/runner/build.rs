@@ -271,6 +271,24 @@ fn create_fat32_disk_image(path: &PathBuf) {
                 }
             }
         }
+
+        // Write the default display server config
+        let config_content: &[u8] = b"\
+# Bos display server config\n\
+\n\
+[general]\n\
+outer_gap = 8\n\
+inner_gap = 8\n\
+border_size = 2\n\
+\n\
+[colors]\n\
+border_focused   = #8aadf4\n\
+border_unfocused = #363a4f\n\
+bg_top           = #1e3a5f\n\
+bg_bottom        = #0a0a0f\n\
+";
+        let mut f = root.create_file("HYPR.CONF").expect("fatfs: create HYPR.CONF");
+        f.write_all(config_content).unwrap();
     }
 
     // Write the image to disk

@@ -1,4 +1,4 @@
-use super::{Compositor, MAX_WINDOWS, BORDER_WIDTH};
+use super::{Compositor, MAX_WINDOWS};
 use crate::cursor::{CURSOR_H, CURSOR_IMAGE, CURSOR_MASK, CURSOR_W};
 use kernel_api_types::window::{DirtyRect, WindowEventType};
 
@@ -65,7 +65,7 @@ impl Compositor {
 
         for i in 0..n {
             let (wx, wy, ww, wh, color) = infos[i];
-            let bw = BORDER_WIDTH;
+            let bw = self.border_width;
             let bwu = bw as u32;
             // Top strip
             self.fill_back_rect_clipped(wx - bw, wy - bw, ww + 2 * bwu, bwu, clip, color);

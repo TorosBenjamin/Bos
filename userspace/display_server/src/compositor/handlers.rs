@@ -1,4 +1,4 @@
-use super::{Compositor, OUTER_GAP, INNER_GAP};
+use super::Compositor;
 use crate::window::Window;
 use kernel_api_types::window::*;
 
@@ -25,16 +25,16 @@ impl Compositor {
         let n_current = self.count_toplevels();
         let (ax, ay, aw, ah) = self.available_area();
         let n_new = n_current + 1;
-        let total_h_gaps = 2 * OUTER_GAP + n_current as u32 * INNER_GAP; // (n_new-1) inner gaps
+        let total_h_gaps = 2 * self.outer_gap + n_current as u32 * self.inner_gap; // (n_new-1) inner gaps
         let usable_w = aw.saturating_sub(total_h_gaps);
-        let usable_h = ah.saturating_sub(2 * OUTER_GAP);
+        let usable_h = ah.saturating_sub(2 * self.outer_gap);
         let tile_w = usable_w / n_new as u32;
-        let new_x = ax + OUTER_GAP as i32 + (n_current as u32 * (tile_w + INNER_GAP)) as i32;
+        let new_x = ax + self.outer_gap as i32 + (n_current as u32 * (tile_w + self.inner_gap)) as i32;
         // Last window gets remainder so rounding doesn't leave a sliver
         let init_w = usable_w - n_current as u32 * tile_w;
         let init_h = usable_h;
 
-        match Window::new(window_id, new_x, ay + OUTER_GAP as i32, init_w, init_h, req.event_send_ep) {
+        match Window::new(window_id, new_x, ay + self.outer_gap as i32, init_w, init_h, req.event_send_ep) {
             Some(window) => {
                 let shared_buf_id = window.shared_buf_id;
                 self.windows[slot_idx] = Some(window);

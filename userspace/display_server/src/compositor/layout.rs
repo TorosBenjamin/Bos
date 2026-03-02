@@ -1,4 +1,4 @@
-use super::{Compositor, MAX_WINDOWS, OUTER_GAP, INNER_GAP};
+use super::{Compositor, MAX_WINDOWS};
 use kernel_api_types::window::{ConfigureEvent, WindowEventType};
 
 impl Compositor {
@@ -55,10 +55,10 @@ impl Compositor {
         }
 
         let (ax, ay, aw, ah) = self.available_area();
-        // Distribute gaps: OUTER_GAP on every side, INNER_GAP between adjacent windows.
-        let total_h_gaps = 2 * OUTER_GAP + (n as u32 - 1) * INNER_GAP;
+        // Distribute gaps: outer_gap on every side, inner_gap between adjacent windows.
+        let total_h_gaps = 2 * self.outer_gap + (n as u32 - 1) * self.inner_gap;
         let usable_w = aw.saturating_sub(total_h_gaps);
-        let usable_h = ah.saturating_sub(2 * OUTER_GAP);
+        let usable_h = ah.saturating_sub(2 * self.outer_gap);
         let tile_w = usable_w / n as u32;
 
         // Collect (event_send_ep, ConfigureEvent) for windows that need a new buffer.
@@ -78,8 +78,8 @@ impl Compositor {
                 if window.is_panel {
                     continue;
                 }
-                let new_x = ax + OUTER_GAP as i32 + (i as u32 * (tile_w + INNER_GAP)) as i32;
-                let new_y = ay + OUTER_GAP as i32;
+                let new_x = ax + self.outer_gap as i32 + (i as u32 * (tile_w + self.inner_gap)) as i32;
+                let new_y = ay + self.outer_gap as i32;
                 // Last toplevel gets any remaining pixels so rounding doesn't leave a sliver
                 let new_w = if i == n - 1 { usable_w - tile_w * i as u32 } else { tile_w };
                 let new_h = usable_h;

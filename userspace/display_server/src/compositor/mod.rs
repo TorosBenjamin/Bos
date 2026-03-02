@@ -1,3 +1,4 @@
+use crate::compositor_config::DisplayConfig;
 use crate::cursor::{CURSOR_H, CURSOR_W};
 use crate::window::Window;
 use kernel_api_types::window::*;
@@ -9,13 +10,6 @@ mod handlers;
 
 pub const MAX_WINDOWS: usize = 32;
 const MAX_MSG_SIZE: usize = 4096;
-
-/// Pixels between a window edge and the screen / available-area boundary.
-const OUTER_GAP: u32 = 8;
-/// Pixels between two adjacent tiled windows.
-const INNER_GAP: u32 = 8;
-/// Width of the colored border drawn around each Toplevel window (in the gap area).
-const BORDER_WIDTH: i32 = 2;
 
 pub struct Compositor {
     display: ulib::display::Display,
@@ -48,10 +42,14 @@ pub struct Compositor {
     border_focused: u32,
     /// Border colour for unfocused windows (native fb pixel format)
     border_unfocused: u32,
+    /// Layout configuration (loaded from /HYPR.CONF)
+    pub(super) outer_gap: u32,
+    pub(super) inner_gap: u32,
+    pub(super) border_width: i32,
 }
 
 impl Compositor {
-    pub fn new(recv_endpoint: u64) -> Self {
+    pub fn new(recv_endpoint: u64, config: DisplayConfig) -> Self {
         let display = ulib::display::Display::new();
         let display_info = ulib::sys_get_display_info();
 
@@ -61,16 +59,18 @@ impl Compositor {
         let height = display_info.height as usize;
         let screen_pixels = width * height;
 
-        // Pre-render gradient background
+        // Pre-render gradient background using config colors
         let bg_bytes = (screen_pixels * 4) as u64;
         let background_buf = ulib::sys_mmap(bg_bytes, MMAP_WRITE) as *mut u32;
 
         if !background_buf.is_null() {
+            let (tr, tg, tb) = config.bg_top;
+            let (br, bg, bb) = config.bg_bottom;
             for y in 0..height {
                 let t = if height > 1 { y * 255 / (height - 1) } else { 0 } as u32;
-                let r = (0x1eu32 * (255 - t) + 0x0au32 * t) / 255;
-                let g = (0x3au32 * (255 - t) + 0x0au32 * t) / 255;
-                let b = (0x5fu32 * (255 - t) + 0x0fu32 * t) / 255;
+                let r = (tr as u32 * (255 - t) + br as u32 * t) / 255;
+                let g = (tg as u32 * (255 - t) + bg as u32 * t) / 255;
+                let b = (tb as u32 * (255 - t) + bb as u32 * t) / 255;
                 let pixel = display_info.build_pixel(r as u8, g as u8, b as u8);
                 unsafe {
                     for x in 0..width {
@@ -82,9 +82,10 @@ impl Compositor {
 
         let cursor_black = display_info.build_pixel(0, 0, 0);
         let cursor_white = display_info.build_pixel(255, 255, 255);
-        // Catppuccin Macchiato: blue #8aadf4 for focused, surface0 #363a4f for unfocused
-        let border_focused   = display_info.build_pixel(138, 173, 244);
-        let border_unfocused = display_info.build_pixel(54,  58,  79);
+        let (fr, fg, fb) = config.border_focused;
+        let (ur, ug, ub) = config.border_unfocused;
+        let border_focused   = display_info.build_pixel(fr, fg, fb);
+        let border_unfocused = display_info.build_pixel(ur, ug, ub);
 
         Compositor {
             display,
@@ -105,6 +106,9 @@ impl Compositor {
             prev_mouse_buttons: 0,
             border_focused,
             border_unfocused,
+            outer_gap: config.outer_gap,
+            inner_gap: config.inner_gap,
+            border_width: config.border_size,
         }
     }
 
@@ -316,6 +320,24 @@ impl Compositor {
                 if let Some(cd) = cursor_damage {
                     self.expand_pending(cd);
                 }
+
+            // Notify the focused window of the new cursor position (window-relative).
+            if let Some(fw_id) = self.focused_window {
+                let info = self.windows.iter()
+                    .filter_map(|w| w.as_ref())
+                    .find(|w| w.id == fw_id)
+                    .map(|w| (w.x, w.y, w.event_send_ep));
+                if let Some((wx, wy, ep)) = info {
+                    if ep != 0 {
+                        send_event(ep, &MouseMoveEvent {
+                            event_type: WindowEventType::MouseMove as u8,
+                            _pad: [0; 3],
+                            x: self.cursor_x - wx,
+                            y: self.cursor_y - wy,
+                        });
+                    }
+                }
+            }
             }
 
             // Click-to-focus: left button just pressed
@@ -383,7 +405,11 @@ impl Compositor {
             // Single composite for everything accumulated this iteration.
             self.flush();
 
-            ulib::sys_yield();
+            ulib::sys_wait_for_event(
+                &[self.recv_endpoint],
+                ulib::WAIT_MOUSE | ulib::WAIT_KEYBOARD,
+                0,
+            );
         }
     }
 }
