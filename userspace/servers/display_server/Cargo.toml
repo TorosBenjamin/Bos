@@ -5,8 +5,8 @@ edition = "2024"
 publish = false
 
 [dependencies]
-ulib = { path = "../ulib" }
-kernel_api_types = { path = "../../shared/kernel_api_types" }
+ulib = { path = "../../frameworks/ulib" }
+kernel_api_types = { path = "../../../shared/kernel_api_types" }
 embedded-graphics = "0.8.1"
 
 [[bin]]

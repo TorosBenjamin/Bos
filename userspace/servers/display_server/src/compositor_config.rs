@@ -1,4 +1,4 @@
-/// Display server configuration, loaded from `/HYPR.CONF` on the FAT32 filesystem.
+/// Display server configuration, loaded from `/bos_ds.conf` on the FAT32 filesystem.
 ///
 /// Format:
 /// ```

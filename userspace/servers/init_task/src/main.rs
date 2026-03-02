@@ -43,15 +43,8 @@ unsafe extern "sysv64" fn entry_point() -> ! {
         let _ = ulib::sys_spawn(utest_elf, 0);
         ulib::sys_munmap(utest_buf, utest_size);
     } else {
-        // Normal mode: spawn bouncing_cube_1 and hello_egui
-        let cube_size = ulib::sys_get_module("bouncing_cube_1", core::ptr::null_mut(), 0);
-        if cube_size > 0 {
-            let cube_buf = ulib::sys_mmap(cube_size, kernel_api_types::MMAP_WRITE);
-            let _ = ulib::sys_get_module("bouncing_cube_1", cube_buf, cube_size);
-            let cube_elf = unsafe { core::slice::from_raw_parts(cube_buf, cube_size as usize) };
-            let _ = ulib::sys_spawn(cube_elf, 0);
-            ulib::sys_munmap(cube_buf, cube_size);
-        }
+        // Normal mode: spawn files and hello_egui
+        
 
         let hello_egui_size = ulib::sys_get_module("hello_egui", core::ptr::null_mut(), 0);
         if hello_egui_size > 0 {

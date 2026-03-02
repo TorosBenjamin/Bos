@@ -20,7 +20,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
     compositor.run()
 }
 
-/// Try to load `/HYPR.CONF` from the `fatfs` service.
+/// Try to load `/bos_ds.conf` from the `fatfs` service.
 /// Polls for up to ~200 ms (200 yields), then falls back to defaults on any failure.
 fn load_config() -> DisplayConfig {
     // Wait up to 200 yields for the fatfs service to come up.
@@ -40,7 +40,7 @@ fn load_config() -> DisplayConfig {
         return DisplayConfig::default();
     }
 
-    let (buf_id, file_size) = match ulib::fs::fs_map_file(fs_ep, "/HYPR.CONF") {
+    let (buf_id, file_size) = match ulib::fs::fs_map_file(fs_ep, "/bos_ds.conf") {
         Some(v) => v,
         None => return DisplayConfig::default(),
     };

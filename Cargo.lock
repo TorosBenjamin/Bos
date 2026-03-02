@@ -1219,6 +1219,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "files"
+version = "0.1.0"
+dependencies = [
+ "bos_egui",
+ "ulib",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1633,6 +1641,7 @@ name = "hello_egui"
 version = "0.1.0"
 dependencies = [
  "bos_egui",
+ "ulib",
 ]
 
 [[package]]
@@ -2856,6 +2865,7 @@ version = "0.1.0"
 dependencies = [
  "display_server",
  "fatfs",
+ "files",
  "fs_server",
  "hello_egui",
  "init_task",

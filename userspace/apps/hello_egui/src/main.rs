@@ -13,6 +13,12 @@ struct HelloApp {
     child_open: bool,
 }
 
+impl Default for HelloApp {
+    fn default() -> Self {
+        Self { counter: 0, child_open: false }
+    }
+}
+
 impl App for HelloApp {
     fn update(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -46,18 +52,18 @@ impl App for HelloApp {
 #[cfg(not(target_os = "linux"))]
 #[unsafe(no_mangle)]
 unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
-    bos_egui::run("Hello Egui", HelloApp { counter: 0, child_open: false })
+    bos_egui::run("Hello Egui", HelloApp::default())
 }
 
 #[cfg(target_os = "linux")]
 fn main() {
-    bos_egui::run("Hello Egui", HelloApp { counter: 0, child_open: false });
+    bos_egui::run("Hello Egui", HelloApp::default());
 }
 
 #[cfg(not(target_os = "linux"))]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {
-        core::hint::spin_loop();
+        ulib::sys_yield();
     }
 }

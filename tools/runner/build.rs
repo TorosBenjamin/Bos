@@ -5,298 +5,202 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::{env, io};
 
+// ── Tables — edit these to add / remove binaries ──────────────────────────────
+
+/// Every userspace binary that lands in the ISO root.
+/// Format: (cargo dep name, binary name, filename in ISO root)
+/// Cargo sets CARGO_BIN_FILE_{DEP_UPPER}_{bin} for each artifact dependency.
+const ISO_BINARIES: &[(&str, &str, &str)] = &[
+    ("init_task",      "init_task",       "init_task"),
+    ("display_server", "display_server",  "display_server"),
+    ("fs_server",      "fs_server",       "fs_server"),
+    ("hello_egui",     "hello_egui",      "hello_egui"),
+    ("user_land",      "bouncing_cube_1", "bouncing_cube_1"),
+    ("files",          "files",           "files"),
+];
+
+/// Binaries written into the FAT32 disk image for fs_server to load at runtime.
+/// Format: (cargo dep name, binary name, 8.3 FAT filename)
+const FAT32_BINARIES: &[(&str, &str, &str)] = &[
+    ("user_land", "bouncing_cube_1", "CUBE1.ELF"),
+    ("user_land", "bouncing_cube_2", "CUBE2.ELF"),
+];
+
+/// Kernel test feature flags → test suite name passed on the kernel cmdline.
+const TEST_FEATURES: &[(&str, &str)] = &[
+    ("CARGO_FEATURE_TEST_MEM",         "mem"),
+    ("CARGO_FEATURE_TEST_TIME",        "time"),
+    ("CARGO_FEATURE_TEST_INTERRUPTS",  "interrupts"),
+    ("CARGO_FEATURE_TEST_GRAPHICS",    "graphics"),
+    ("CARGO_FEATURE_TEST_USERMODE",    "usermode"),
+    ("CARGO_FEATURE_TEST_KEYBOARD",    "keyboard"),
+    ("CARGO_FEATURE_TEST_IPC",         "ipc"),
+    ("CARGO_FEATURE_TEST_DISPLAY",     "display"),
+    ("CARGO_FEATURE_TEST_SCHEDULER",   "scheduler"),
+    ("CARGO_FEATURE_TEST_ELF",         "elf"),
+    ("CARGO_FEATURE_TEST_SCHED",       "sched"),
+    ("CARGO_FEATURE_TEST_SCHED_NOELF", "sched-noelf"),
+];
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+
 fn main() {
     check_command_exists("xorriso");
     check_command_exists("limine");
-    // This is the folder where a build script (this file) should place its output
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    // This is the `runner` folder
-    let runner_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    // This folder contains Limine files such as `BOOTX64.EFI`
-    let limine_dir = match env::var("LIMINE_PATH") {
-        Ok(path) => PathBuf::from(path),
-        Err(_) => panic!(
-            "LIMINE_PATH environment variable not set. Please set it to the Limine directory."
-        ),
-    };
 
-    // We will create an ISO file for our OS
-    // First we create a folder which will be used to generate the ISO
-    // We will use symlinks instead of copying to avoid unnecessary disk space used
+    let out_dir    = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let runner_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let limine_dir = env::var("LIMINE_PATH").map(PathBuf::from)
+        .expect("LIMINE_PATH not set — point it at the directory containing BOOTX64.EFI etc.");
+
+    // ── ISO root ──────────────────────────────────────────────────────────────
     let iso_dir = out_dir.join("iso_root");
     create_dir_all(&iso_dir).unwrap();
 
-    // Generate limine.conf, optionally with a test_suite cmdline for filtered runs.
-    let test_suite = if env::var("CARGO_FEATURE_TEST_MEM").is_ok() {
-        Some("mem")
-    } else if env::var("CARGO_FEATURE_TEST_TIME").is_ok() {
-        Some("time")
-    } else if env::var("CARGO_FEATURE_TEST_INTERRUPTS").is_ok() {
-        Some("interrupts")
-    } else if env::var("CARGO_FEATURE_TEST_GRAPHICS").is_ok() {
-        Some("graphics")
-    } else if env::var("CARGO_FEATURE_TEST_USERMODE").is_ok() {
-        Some("usermode")
-    } else if env::var("CARGO_FEATURE_TEST_KEYBOARD").is_ok() {
-        Some("keyboard")
-    } else if env::var("CARGO_FEATURE_TEST_IPC").is_ok() {
-        Some("ipc")
-    } else if env::var("CARGO_FEATURE_TEST_DISPLAY").is_ok() {
-        Some("display")
-    } else if env::var("CARGO_FEATURE_TEST_SCHEDULER").is_ok() {
-        Some("scheduler")
-    } else if env::var("CARGO_FEATURE_TEST_ELF").is_ok() {
-        Some("elf")
-    } else if env::var("CARGO_FEATURE_TEST_SCHED").is_ok() {
-        Some("sched")
-    } else if env::var("CARGO_FEATURE_TEST_SCHED_NOELF").is_ok() {
-        Some("sched-noelf")
+    // limine.conf (optionally with test_suite= cmdline)
+    let test_suite = TEST_FEATURES.iter()
+        .find_map(|&(feat, name)| env::var(feat).ok().map(|_| name));
+    let cmdline = test_suite
+        .map(|s| format!("    cmdline: test_suite={s}\n"))
+        .unwrap_or_default();
+    std::fs::write(
+        iso_dir.join("limine.conf"),
+        format!("TIMEOUT 0\nDEFAULT_ENTRY 0\n\n/Bos\n    protocol: limine\n    kernel_path: boot():/kernel\n{cmdline}"),
+    ).unwrap();
+
+    // Kernel (or test kernel)
+    let kernel_bin = if env::var("CARGO_FEATURE_KERNEL_TEST").is_ok() {
+        artifact_bin("tests", "tests")
     } else {
-        None
+        artifact_bin("kernel", "kernel")
     };
+    ensure_symlink(&kernel_bin, iso_dir.join("kernel")).unwrap();
 
-    let cmdline_line = match test_suite {
-        Some(suite) => format!("    cmdline: test_suite={suite}\n"),
-        None => String::new(),
-    };
+    // Userspace binaries
+    for &(dep, bin, iso_name) in ISO_BINARIES {
+        ensure_symlink(artifact_bin(dep, bin), iso_dir.join(iso_name)).unwrap();
+    }
 
-    let limine_conf_content = format!(
-        "TIMEOUT 0\nDEFAULT_ENTRY 0\n\n/Bos\n    protocol: limine\n    kernel_path: boot():/kernel\n{cmdline_line}"
-    );
-    let limine_conf = iso_dir.join("limine.conf");
-    std::fs::write(&limine_conf, limine_conf_content).unwrap();
-
-    let boot_dir = iso_dir.join("boot");
-    create_dir_all(&boot_dir).unwrap();
-
-    // If the 'kernel_test' feature is enabled run the tests project bin.
-    let kernel_executable_file = if env::var("CARGO_FEATURE_KERNEL_TEST").is_ok() {
-        env::var("CARGO_BIN_FILE_TESTS")
-            .expect("tests bin not built")
-    } else {
-        env::var("CARGO_BIN_FILE_KERNEL")
-            .expect("kernel bin not built")
-    };
-
-
-    // Symlink the kernel binary to `kernel`
-    let kernel_dest = iso_dir.join("kernel");
-    ensure_symlink(&kernel_executable_file, &kernel_dest).unwrap();
-
-    // Init Task
-    let init_task_executable_file = env::var("CARGO_BIN_FILE_INIT_TASK").unwrap();
-    ensure_symlink(init_task_executable_file, iso_dir.join("init_task")).unwrap();
-
-    // Display Server
-    let display_server_executable_file = env::var("CARGO_BIN_FILE_DISPLAY_SERVER").unwrap();
-    ensure_symlink(display_server_executable_file, iso_dir.join("display_server")).unwrap();
-
-    // User Land: Bouncing Cube 1
-    let bouncing_cube_1_executable_file = env::var("CARGO_BIN_FILE_USER_LAND_BOUNCING_CUBE_1")
-        .or_else(|_| env::var("CARGO_BIN_FILE_USER_LAND_bouncing_cube_1"))
-        .expect("bouncing_cube_1 binary not found");
-    ensure_symlink(bouncing_cube_1_executable_file, iso_dir.join("bouncing_cube_1")).unwrap();
-
-    // User Land: Bouncing Cube 2
-    let bouncing_cube_2_executable_file = env::var("CARGO_BIN_FILE_USER_LAND_BOUNCING_CUBE_2")
-        .or_else(|_| env::var("CARGO_BIN_FILE_USER_LAND_bouncing_cube_2"))
-        .expect("bouncing_cube_2 binary not found");
-    ensure_symlink(bouncing_cube_2_executable_file, iso_dir.join("bouncing_cube_2")).unwrap();
-
-    // Hello Egui
-    let hello_egui_executable_file = env::var("CARGO_BIN_FILE_HELLO_EGUI_hello_egui")
-        .or_else(|_| env::var("CARGO_BIN_FILE_HELLO_EGUI"))
-        .expect("hello_egui binary not found");
-    ensure_symlink(hello_egui_executable_file, iso_dir.join("hello_egui")).unwrap();
-
-    // Userspace integration test binary (only included when --features userspace_test)
+    // Optional integration-test binary
     if env::var("CARGO_FEATURE_USERSPACE_TEST").is_ok() {
-        let utest = env::var("CARGO_BIN_FILE_UTEST").expect("utest binary not built");
-        ensure_symlink(utest, iso_dir.join("utest")).unwrap();
+        ensure_symlink(artifact_bin("utest", "utest"), iso_dir.join("utest")).unwrap();
     }
 
-    // Copy files from the Limine packaeg into `boot/limine`
-    let out_limine_dir = boot_dir.join("limine");
-    create_dir_all(&out_limine_dir).unwrap();
-    for path in [
-        "limine-bios.sys",
-        "limine-bios-cd.bin",
-        "limine-uefi-cd.bin",
-    ] {
-        let from = limine_dir.join(path);
-        let to = out_limine_dir.join(path);
-        ensure_symlink(from, to).unwrap();
+    // Limine boot files
+    let limine_out = iso_dir.join("boot/limine");
+    create_dir_all(&limine_out).unwrap();
+    for file in ["limine-bios.sys", "limine-bios-cd.bin", "limine-uefi-cd.bin"] {
+        ensure_symlink(limine_dir.join(file), limine_out.join(file)).unwrap();
+    }
+    let efi_dir = iso_dir.join("EFI/BOOT");
+    create_dir_all(&efi_dir).unwrap();
+    for file in ["BOOTX64.EFI", "BOOTIA32.EFI"] {
+        ensure_symlink(limine_dir.join(file), efi_dir.join(file)).unwrap();
     }
 
-    // EFI/BOOT/BOOTX64.EFI is the executable loaded by UEFI firmware
-    // We will also copy BOOTIA32.EFI because xorisso will complain if it's not there
-    let efi_boot_dir = iso_dir.join("EFI/BOOT");
-    create_dir_all(&efi_boot_dir).unwrap();
-    for efi_file in ["BOOTX64.EFI", "BOOTIA32.EFI"] {
-        ensure_symlink(limine_dir.join(efi_file), efi_boot_dir.join(efi_file)).unwrap();
-    }
-
-    // FS Server
-    let fs_server_executable_file = env::var("CARGO_BIN_FILE_FS_SERVER").unwrap();
-    ensure_symlink(fs_server_executable_file, iso_dir.join("fs_server")).unwrap();
-
-    // ── FAT32 disk image ──────────────────────────────────────────────────────
-    // Create a 64 MB raw FAT32 image (no MBR) at out_dir/disk.img.
-    // Populate it with the app binaries so the fs_server can load them.
+    // FAT32 disk image
     let disk_img = out_dir.join("disk.img");
-    create_fat32_disk_image(&disk_img);
+    create_fat32_disk_image(&disk_img, &runner_dir);
     println!("cargo:rustc-env=DISK_IMG={}", disk_img.display());
 
-    // Symlink the out dir so we get a constant path to it
+    // Re-run if the display server config changes
+    println!("cargo:rerun-if-changed=bos_ds.conf");
+
+    // Stable symlink to out_dir for convenient inspection
     ensure_symlink(&out_dir, runner_dir.join("out_dir")).unwrap();
 
-    // We'll call the output iso `os.iso`
-    let output_iso = out_dir.join("os.iso");
-    // This command creates an ISO file from our `iso_root` folder.
-    // Symlinks will be read (the contents will be copied into the ISO file)
+    // Build the ISO
+    let iso_path = out_dir.join("os.iso");
+    xorriso_mkisofs(&iso_dir, &limine_out, &iso_path);
+    limine_bios_install(&iso_path);
+    println!("cargo:rustc-env=ISO={}", iso_path.display());
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Resolve a Cargo artifact binary path from the environment.
+///
+/// Cargo sets `CARGO_BIN_FILE_{DEP_UPPER}_{bin}` for every artifact dependency,
+/// where DEP_UPPER is the dependency name uppercased with hyphens→underscores.
+fn artifact_bin(dep: &str, bin: &str) -> String {
+    let dep_upper = dep.to_ascii_uppercase().replace('-', "_");
+    let key = format!("CARGO_BIN_FILE_{dep_upper}_{bin}");
+    env::var(&key).unwrap_or_else(|_| {
+        panic!("Artifact binary not found: {key}\nIs '{dep}' declared as an artifact build-dependency in runner/Cargo.toml?")
+    })
+}
+
+fn xorriso_mkisofs(iso_dir: &Path, limine_out: &Path, output: &Path) {
     let status = std::process::Command::new("xorriso")
-        .arg("-as")
-        .arg("mkisofs")
-        .arg("--follow-links")
-        .arg("-b")
-        .arg(
-            out_limine_dir
-                .join("limine-bios-cd.bin")
-                .strip_prefix(&iso_dir)
-                .unwrap(),
-        )
-        .arg("-no-emul-boot")
-        .arg("-boot-load-size")
-        .arg("4")
-        .arg("-boot-info-table")
-        .arg("--efi-boot")
-        .arg(
-            out_limine_dir
-                .join("limine-uefi-cd.bin")
-                .strip_prefix(&iso_dir)
-                .unwrap(),
-        )
-        .arg("-efi-boot-part")
-        .arg("--efi-boot-image")
-        .arg("--protective-msdos-label")
+        .args(["-as", "mkisofs", "--follow-links"])
+        .arg("-b").arg(limine_out.join("limine-bios-cd.bin").strip_prefix(iso_dir).unwrap())
+        .args(["-no-emul-boot", "-boot-load-size", "4", "-boot-info-table"])
+        .arg("--efi-boot").arg(limine_out.join("limine-uefi-cd.bin").strip_prefix(iso_dir).unwrap())
+        .args(["-efi-boot-part", "--efi-boot-image", "--protective-msdos-label"])
         .arg(iso_dir)
-        .arg("-o")
-        .arg(&output_iso)
-        .stderr(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .status()
-        .unwrap();
-    assert!(status.success());
+        .arg("-o").arg(output)
+        .stderr(Stdio::inherit()).stdout(Stdio::inherit())
+        .status().unwrap();
+    assert!(status.success(), "xorriso failed");
+}
 
-    // This is needed to create a hybrid ISO that boots on both BIOS and UEFI. See https://github.com/limine-bootloader/limine/blob/v9.x/USAGE.md#biosuefi-hybrid-iso-creation
+fn limine_bios_install(iso: &Path) {
     let status = std::process::Command::new("limine")
-        .arg("bios-install")
-        .arg(&output_iso)
-        .stderr(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .status()
-        .unwrap();
-    assert!(status.success());
-
-    let output_iso = output_iso.display();
-    println!("cargo:rustc-env=ISO={output_iso}");
+        .args(["bios-install"]).arg(iso)
+        .stderr(Stdio::inherit()).stdout(Stdio::inherit())
+        .status().unwrap();
+    assert!(status.success(), "limine bios-install failed");
 }
 
 pub fn ensure_symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> io::Result<()> {
     match remove_file(&link) {
         Ok(()) => Ok(()),
-        Err(error) => match error.kind() {
-            ErrorKind::NotFound => Ok(()),
-            _ => Err(error),
-        },
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
     }?;
-    symlink(original, link)?;
-    Ok(())
+    symlink(original, link)
 }
 
 fn check_command_exists(cmd: &str) {
-    if std::process::Command::new(cmd)
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        panic!("Command '{}' not found. Please install it.", cmd);
+    if std::process::Command::new(cmd).arg("--version").output().is_err() {
+        panic!("Command '{cmd}' not found. Please install it.");
     }
 }
 
-/// Create a 64 MB raw FAT32 disk image and populate it with app binaries.
-fn create_fat32_disk_image(path: &PathBuf) {
+// ── FAT32 disk image ──────────────────────────────────────────────────────────
+
+fn create_fat32_disk_image(path: &Path, runner_dir: &Path) {
     const DISK_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
 
-    // Allocate a buffer for the whole disk
     let mut disk: Cursor<Vec<u8>> = Cursor::new(vec![0u8; DISK_SIZE as usize]);
+    fatfs::format_volume(&mut disk, fatfs::FormatVolumeOptions::new().volume_label(*b"BOS_APPS   "))
+        .expect("fatfs: format_volume failed");
 
-    // Format as FAT32
-    fatfs::format_volume(
-        &mut disk,
-        fatfs::FormatVolumeOptions::new()
-            .volume_label(*b"BOS_APPS   "),
-    )
-    .expect("fatfs: format_volume failed");
-
-    // Open the filesystem and populate it
     disk.seek(SeekFrom::Start(0)).unwrap();
     {
         let fs = fatfs::FileSystem::new(&mut disk, fatfs::FsOptions::new())
             .expect("fatfs: FileSystem::new failed");
         let root = fs.root_dir();
 
-        // Write each app binary that exists as a build artefact.
-        // We add every user-land binary that is available; others are silently skipped.
-        let apps: &[(&str, &str)] = &[
-            ("BOUNCING_CUBE_1", "CUBE1.ELF"),
-            ("BOUNCING_CUBE_2", "CUBE2.ELF"),
-        ];
-        for (env_suffixes, fat_name) in apps {
-            // Try a few env var naming conventions Cargo uses for artifact bins
-            let candidates = [
-                format!("CARGO_BIN_FILE_USER_LAND_{env_suffixes}"),
-                format!("CARGO_BIN_FILE_USER_LAND_{}", env_suffixes.to_lowercase()),
-            ];
-            let bin_path = candidates.iter().find_map(|e| std::env::var(e).ok());
-            if let Some(p) = bin_path {
-                match std::fs::read(&p) {
-                    Ok(data) => {
-                        let mut f = root.create_file(fat_name)
-                            .expect("fatfs: create_file failed");
-                        f.truncate().unwrap();
-                        f.write_all(&data).unwrap();
-                    }
-                    Err(e) => eprintln!("build.rs: skipping {fat_name}: {e}"),
+        for &(dep, bin, fat_name) in FAT32_BINARIES {
+            let bin_path = artifact_bin(dep, bin);
+            match std::fs::read(&bin_path) {
+                Ok(data) => {
+                    let mut f = root.create_file(fat_name).expect("fatfs: create_file failed");
+                    f.truncate().unwrap();
+                    f.write_all(&data).unwrap();
                 }
+                Err(e) => eprintln!("build.rs: skipping {fat_name}: {e}"),
             }
         }
 
-        // Write the default display server config
-        let config_content: &[u8] = b"\
-# Bos display server config\n\
-\n\
-[general]\n\
-outer_gap = 8\n\
-inner_gap = 8\n\
-border_size = 2\n\
-\n\
-[colors]\n\
-border_focused   = #8aadf4\n\
-border_unfocused = #363a4f\n\
-bg_top           = #1e3a5f\n\
-bg_bottom        = #0a0a0f\n\
-\n\
-# [window_rules]\n\
-# hello_egui = float\n\
-# bouncing_cube_1 = tile\n\
-";
-        let mut f = root.create_file("HYPR.CONF").expect("fatfs: create HYPR.CONF");
-        f.write_all(config_content).unwrap();
+        let conf_src = runner_dir.join("bos_ds.conf");
+        let config = std::fs::read(&conf_src)
+            .unwrap_or_else(|e| panic!("build.rs: cannot read {}: {e}", conf_src.display()));
+        root.create_file("bos_ds.conf").expect("fatfs: create bos_ds.conf")
+            .write_all(&config).unwrap();
     }
 
-    // Write the image to disk
-    let buf = disk.into_inner();
-    std::fs::write(path, &buf).expect("build.rs: failed to write disk.img");
+    std::fs::write(path, disk.into_inner()).expect("build.rs: failed to write disk.img");
     println!("build.rs: wrote {} MB disk image to {}", DISK_SIZE / 1_048_576, path.display());
 }

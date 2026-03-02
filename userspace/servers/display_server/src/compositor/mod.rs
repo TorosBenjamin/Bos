@@ -42,11 +42,11 @@ pub struct Compositor {
     border_focused: u32,
     /// Border colour for unfocused windows (native fb pixel format)
     border_unfocused: u32,
-    /// Layout configuration (loaded from /HYPR.CONF)
+    /// Layout configuration (loaded from /bos_ds.conf)
     pub(super) outer_gap: u32,
     pub(super) inner_gap: u32,
     pub(super) border_width: i32,
-    /// Window placement rules loaded from /HYPR.CONF [window_rules]
+    /// Window placement rules from /bos_ds.conf [window_rules]
     window_rules:   [Option<WindowRule>; 16],
     n_window_rules: usize,
 }

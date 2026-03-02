@@ -1,0 +1,15 @@
+[package]
+name = "files"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+bos_egui = { path = "../../frameworks/bos_egui" }
+ulib = {path = "../../frameworks/ulib"}
+
+[[bin]]
+name = "files"
+path = "src/main.rs"
+test = false
+bench = false
