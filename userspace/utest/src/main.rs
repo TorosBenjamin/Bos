@@ -295,7 +295,7 @@ fn display_registered() -> bool {
 
 fn create_window_ok() -> bool {
     let ds_ep = DS_ENDPOINT.load(Ordering::Relaxed);
-    ulib::window::Window::new(ds_ep).is_some()
+    ulib::window::Window::new(ds_ep, "utest").is_some()
 }
 
 fn update_window() -> bool {
@@ -308,7 +308,7 @@ fn update_window() -> bool {
     };
 
     let ds_ep = DS_ENDPOINT.load(Ordering::Relaxed);
-    let mut window = match ulib::window::Window::new(ds_ep) {
+    let mut window = match ulib::window::Window::new(ds_ep, "utest") {
         Some(w) => w,
         None => return false,
     };

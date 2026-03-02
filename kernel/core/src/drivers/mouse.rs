@@ -1,5 +1,6 @@
 use kernel_api_types::{MouseEvent, MOUSE_LEFT, MOUSE_MIDDLE, MOUSE_RIGHT};
 use spin::Mutex;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 const MOUSE_BUFFER_SIZE: usize = 64;
 
@@ -41,17 +42,36 @@ impl MouseBuffer {
 
 static MOUSE_BUFFER: Mutex<MouseBuffer> = Mutex::new(MouseBuffer::new());
 
+/// True whenever MOUSE_BUFFER is non-empty. Set in push_event, cleared in try_read_mouse.
+static MOUSE_AVAILABLE: AtomicBool = AtomicBool::new(false);
+
+/// Waiter slot for sys_wait_for_event; woken by CAS when a mouse event arrives.
+pub static MOUSE_WAITER: crate::task::local_scheduler::EventWaiterSlot = Mutex::new(None);
+
 /// 3-byte PS/2 packet accumulator
 static PACKET: Mutex<[u8; 3]> = Mutex::new([0u8; 3]);
 static PACKET_IDX: Mutex<u8> = Mutex::new(0);
 
 fn push_event(event: MouseEvent) {
     MOUSE_BUFFER.lock().push(event);
+    MOUSE_AVAILABLE.store(true, Ordering::Release);
+    crate::task::local_scheduler::try_wake_slot(&MOUSE_WAITER);
 }
 
 /// Try to pop a mouse event from the buffer. Returns None if empty.
+/// Clears MOUSE_AVAILABLE when the buffer becomes empty after the pop.
 pub fn try_read_mouse() -> Option<MouseEvent> {
-    MOUSE_BUFFER.lock().pop()
+    let mut buf = MOUSE_BUFFER.lock();
+    let result = buf.pop();
+    if buf.count == 0 {
+        MOUSE_AVAILABLE.store(false, Ordering::Release);
+    }
+    result
+}
+
+/// Returns true if at least one mouse event is buffered (non-consuming check).
+pub fn has_mouse() -> bool {
+    MOUSE_AVAILABLE.load(Ordering::Acquire)
 }
 
 /// Called from the mouse interrupt handler. Reads one byte from port 0x60,

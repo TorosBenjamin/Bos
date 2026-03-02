@@ -111,15 +111,31 @@ pub enum WindowEventType {
     FramePresented     = 4,
     MouseButtonPress   = 5,
     MouseButtonRelease = 6,
+    /// Cursor moved while over the focused window. `x`/`y` are window-relative.
+    MouseMove          = 7,
 }
 
-/// Create toplevel window request — DS assigns position and size via tiling.
+pub const WINDOW_FLAG_FLOATING: u32 = 1;
+
+/// Create toplevel window request — DS assigns position and size via tiling unless floating.
 /// Wire: [type=0: u8][CreateWindowRequest][reply_ep: u64]
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct CreateWindowRequest {
     /// Client's event receive channel send endpoint; DS keeps this open to push events.
-    pub event_send_ep: u64,
+    pub event_send_ep: u64,      // 8
+    /// Flags: WINDOW_FLAG_FLOATING = 1
+    pub flags:         u32,      // 4
+    pub app_id_len:    u8,       // 1
+    pub _pad:          [u8; 3],  // 3
+    /// UTF-8 app identifier string (up to 32 bytes, not null-terminated)
+    pub app_id:        [u8; 32], // 32
+    /// Parent window ID (0 = no parent; non-zero → always floats)
+    pub parent_id:     u64,      // 8
+    /// Desired width for floating windows (0 = DS default 400)
+    pub init_w:        u32,      // 4
+    /// Desired height for floating windows (0 = DS default 300)
+    pub init_h:        u32,      // 4
 }
 
 /// Create panel request — client specifies anchor and size.
@@ -231,6 +247,17 @@ pub struct CreateWindowResponse {
 }
 
 // --- DS-to-client event structs (sent over the event channel) ---
+
+/// Mouse move event sent to the focused window whenever the cursor moves.
+/// `x` and `y` are the cursor position relative to the window's top-left corner.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct MouseMoveEvent {
+    pub event_type: u8,  // WindowEventType::MouseMove
+    pub _pad: [u8; 3],
+    pub x: i32,
+    pub y: i32,
+}
 
 /// Mouse button press/release event sent to the focused window.
 /// `button` holds one of the `MOUSE_LEFT` / `MOUSE_RIGHT` / `MOUSE_MIDDLE` bitmask values.

@@ -13,8 +13,22 @@
 /// border_unfocused = #363a4f
 /// bg_top           = #1e3a5f
 /// bg_bottom        = #0a0a0f
+///
+/// [window_rules]
+/// hello_egui = float
+/// bouncing_cube_1 = tile
 /// ```
 /// Unknown keys/sections are silently ignored.
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum WindowMode { Tiled, Floating }
+
+pub struct WindowRule {
+    pub app_id:     [u8; 32],
+    pub app_id_len: u8,
+    pub mode:       WindowMode,
+}
+
 pub struct DisplayConfig {
     pub outer_gap:        u32,
     pub inner_gap:        u32,
@@ -23,10 +37,13 @@ pub struct DisplayConfig {
     pub border_unfocused: (u8, u8, u8),
     pub bg_top:           (u8, u8, u8),
     pub bg_bottom:        (u8, u8, u8),
+    pub window_rules:     [Option<WindowRule>; 16],
+    pub n_window_rules:   usize,
 }
 
 impl Default for DisplayConfig {
     fn default() -> Self {
+        const NONE_RULE: Option<WindowRule> = None;
         Self {
             outer_gap:        8,
             inner_gap:        8,
@@ -35,6 +52,8 @@ impl Default for DisplayConfig {
             border_unfocused: (0x36, 0x3a, 0x4f), // #363a4f Catppuccin Macchiato surface0
             bg_top:           (0x1e, 0x3a, 0x5f), // #1e3a5f
             bg_bottom:        (0x0a, 0x0a, 0x0f), // #0a0a0f
+            window_rules:     [NONE_RULE; 16],
+            n_window_rules:   0,
         }
     }
 }
@@ -46,7 +65,7 @@ impl DisplayConfig {
         let mut cfg = Self::default();
 
         #[derive(Clone, Copy, PartialEq)]
-        enum Section { General, Colors, Unknown }
+        enum Section { General, Colors, WindowRules, Unknown }
         let mut section = Section::Unknown;
 
         for raw_line in bytes.split(|&b| b == b'\n') {
@@ -61,9 +80,10 @@ impl DisplayConfig {
             if line[0] == b'[' {
                 if let Some(end) = line.iter().position(|&b| b == b']') {
                     section = match &line[1..end] {
-                        b"general" => Section::General,
-                        b"colors"  => Section::Colors,
-                        _          => Section::Unknown,
+                        b"general"      => Section::General,
+                        b"colors"       => Section::Colors,
+                        b"window_rules" => Section::WindowRules,
+                        _               => Section::Unknown,
                     };
                 }
                 continue;
@@ -93,12 +113,44 @@ impl DisplayConfig {
                         b"bg_bottom"        => { if let Some(v) = parse_hex_color(val) { cfg.bg_bottom        = v; } }
                         _ => {}
                     },
+                    Section::WindowRules => {
+                        if cfg.n_window_rules < 16 {
+                            let mode = match val {
+                                b"float" => Some(WindowMode::Floating),
+                                b"tile"  => Some(WindowMode::Tiled),
+                                _        => None,
+                            };
+                            if let Some(mode) = mode {
+                                let len = key.len().min(32);
+                                let mut app_id = [0u8; 32];
+                                app_id[..len].copy_from_slice(&key[..len]);
+                                cfg.window_rules[cfg.n_window_rules] = Some(WindowRule {
+                                    app_id,
+                                    app_id_len: len as u8,
+                                    mode,
+                                });
+                                cfg.n_window_rules += 1;
+                            }
+                        }
+                    }
                     Section::Unknown => {}
                 }
             }
         }
 
         cfg
+    }
+
+    /// Look up any config-defined window rule for the given app_id bytes.
+    pub fn lookup_window_rule(&self, app_id: &[u8]) -> Option<WindowMode> {
+        for i in 0..self.n_window_rules {
+            if let Some(ref r) = self.window_rules[i] {
+                if &r.app_id[..r.app_id_len as usize] == app_id {
+                    return Some(r.mode);
+                }
+            }
+        }
+        None
     }
 }
 

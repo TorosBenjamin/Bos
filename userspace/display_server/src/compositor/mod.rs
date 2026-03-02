@@ -1,4 +1,4 @@
-use crate::compositor_config::DisplayConfig;
+use crate::compositor_config::{DisplayConfig, WindowMode, WindowRule};
 use crate::cursor::{CURSOR_H, CURSOR_W};
 use crate::window::Window;
 use kernel_api_types::window::*;
@@ -46,6 +46,9 @@ pub struct Compositor {
     pub(super) outer_gap: u32,
     pub(super) inner_gap: u32,
     pub(super) border_width: i32,
+    /// Window placement rules loaded from /HYPR.CONF [window_rules]
+    window_rules:   [Option<WindowRule>; 16],
+    n_window_rules: usize,
 }
 
 impl Compositor {
@@ -86,6 +89,8 @@ impl Compositor {
         let (ur, ug, ub) = config.border_unfocused;
         let border_focused   = display_info.build_pixel(fr, fg, fb);
         let border_unfocused = display_info.build_pixel(ur, ug, ub);
+        let window_rules   = config.window_rules;
+        let n_window_rules = config.n_window_rules;
 
         Compositor {
             display,
@@ -109,7 +114,24 @@ impl Compositor {
             outer_gap: config.outer_gap,
             inner_gap: config.inner_gap,
             border_width: config.border_size,
+            window_rules,
+            n_window_rules,
         }
+    }
+
+    fn resolve_floating(&self, app_id: &[u8], flags: u32, parent_id: u64) -> bool {
+        // Config rule has highest priority
+        for i in 0..self.n_window_rules {
+            if let Some(ref r) = self.window_rules[i] {
+                if &r.app_id[..r.app_id_len as usize] == app_id {
+                    return r.mode == WindowMode::Floating;
+                }
+            }
+        }
+        // Dialog parent → always float
+        if parent_id != 0 { return true; }
+        // Client flag
+        flags & kernel_api_types::window::WINDOW_FLAG_FLOATING != 0
     }
 
     // --- Z-order helpers ---

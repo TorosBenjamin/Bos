@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 use crate::task::task::{Task, TaskState};
+use crate::task::local_scheduler::EventWaiterSlot;
 
 type WaiterQueue = Mutex<VecDeque<(Arc<Task>, u32)>>;
 
@@ -34,6 +35,8 @@ pub struct Channel {
     pub recv_waiters: WaiterQueue,
     /// Tasks sleeping waiting to send (channel full); woken (one at a time) when try_recv succeeds.
     pub send_waiters: WaiterQueue,
+    /// Single task sleeping in sys_wait_for_event watching this channel; woken via CAS.
+    pub event_waiter: EventWaiterSlot,
 }
 
 pub struct ChannelInner {
@@ -68,6 +71,7 @@ pub fn create_channel(capacity: usize) -> (u64, u64) {
         recv_closed: AtomicBool::new(false),
         recv_waiters: Mutex::new(VecDeque::new()),
         send_waiters: Mutex::new(VecDeque::new()),
+        event_waiter: Mutex::new(None),
     });
 
     let send_id = NEXT_ENDPOINT_ID.fetch_add(1, Ordering::Relaxed);
@@ -128,6 +132,8 @@ pub fn try_send(endpoint_id: u64, data: &[u8]) -> Result<(), IpcError> {
     drop(inner);
     // Wake any task that was sleeping waiting to receive
     wake_waiter(&channel.recv_waiters);
+    // Wake any task sleeping in sys_wait_for_event watching this channel
+    crate::task::local_scheduler::try_wake_slot(&channel.event_waiter);
     Ok(())
 }
 
@@ -154,6 +160,19 @@ pub fn try_recv(endpoint_id: u64) -> Result<Vec<u8>, IpcError> {
     }
 
     Err(IpcError::WouldBlock)
+}
+
+/// Non-consuming peek: returns true if the recv endpoint has at least one queued message.
+pub fn channel_has_message(endpoint_id: u64) -> bool {
+    let channel = {
+        let registry = ENDPOINT_REGISTRY.lock();
+        let ep = match registry.get(&endpoint_id) {
+            Some(ep) if ep.role == EndpointRole::Recv => ep,
+            _ => return false,
+        };
+        ep.channel.clone()
+    };
+    !channel.inner.lock().queue.is_empty()
 }
 
 pub fn close_endpoint(endpoint_id: u64) -> Result<(), IpcError> {

@@ -16,6 +16,8 @@ pub struct Window {
     pub event_send_ep: u64,
     /// True for panels anchored to a screen edge.
     pub is_panel: bool,
+    /// True for floating windows (not subject to tiling layout).
+    pub is_floating: bool,
     /// PanelAnchor value (only meaningful when is_panel == true).
     pub anchor: u8,
     /// Pixels to subtract from available area for Toplevels (panels only).
@@ -52,6 +54,7 @@ impl Window {
             buf_size,
             event_send_ep,
             is_panel: false,
+            is_floating: false,
             anchor: 0,
             exclusive_zone: 0,
             pending_old_buf_id: None,

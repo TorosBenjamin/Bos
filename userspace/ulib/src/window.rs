@@ -20,7 +20,8 @@ use embedded_graphics::Pixel;
 use kernel_api_types::graphics::DisplayInfo;
 use kernel_api_types::window::{
     ConfigureEvent, CreatePanelRequest, CreateWindowRequest, CreateWindowResponse,
-    MouseButtonEvent, UpdateWindowRequest, WindowEventType, WindowMessageType, WindowResult, WindowId,
+    MouseButtonEvent, MouseMoveEvent, UpdateWindowRequest, WindowEventType, WindowMessageType,
+    WindowResult, WindowId, WINDOW_FLAG_FLOATING, CloseWindowRequest,
 };
 pub use kernel_api_types::window::DirtyRect;
 pub use kernel_api_types::{KeyEvent, KeyEventType};
@@ -41,6 +42,8 @@ pub enum WindowEvent {
     MouseButtonPress { button: u8, x: i32, y: i32 },
     /// Mouse button released. Same coordinate convention as `MouseButtonPress`.
     MouseButtonRelease { button: u8, x: i32, y: i32 },
+    /// Cursor moved while this window is focused. `x`/`y` are window-relative.
+    MouseMove { x: i32, y: i32 },
 }
 
 /// A client window backed by shared physical memory.
@@ -64,21 +67,19 @@ pub struct Window {
 }
 
 impl Window {
-    /// Create a new Toplevel window via the display_server.
-    ///
-    /// The DS assigns size and position via auto-tiling; the response contains the
-    /// actual dimensions. Pass the returned `Window` directly to the draw loop.
-    pub fn new(display_server_send_ep: u64) -> Option<Self> {
+    /// Internal IPC round-trip: send CreateWindow request, receive response, map buffer.
+    fn new_inner(display_server_send_ep: u64, req: CreateWindowRequest) -> Option<Self> {
         // Create the event channel the DS will use to push events to us.
         let (event_send, event_recv) = crate::sys_channel_create(32);
+
+        // Inject the actual event endpoint into the request
+        let req = CreateWindowRequest { event_send_ep: event_send, ..req };
 
         let (our_send, our_recv) = crate::sys_channel_create(1);
 
         const MSG_SIZE: usize = 1 + core::mem::size_of::<CreateWindowRequest>() + 8;
         let mut msg = [0u8; MSG_SIZE];
         msg[0] = WindowMessageType::CreateWindow as u8;
-
-        let req = CreateWindowRequest { event_send_ep: event_send };
         unsafe {
             core::ptr::copy_nonoverlapping(
                 &req as *const CreateWindowRequest as *const u8,
@@ -86,7 +87,6 @@ impl Window {
                 core::mem::size_of::<CreateWindowRequest>(),
             );
         }
-
         let ep_offset = 1 + core::mem::size_of::<CreateWindowRequest>();
         msg[ep_offset..ep_offset + 8].copy_from_slice(&our_send.to_le_bytes());
 
@@ -139,8 +139,7 @@ impl Window {
         }
 
         // event_send stays open; DS holds a reference to it and sends events through it.
-        // It will be cleaned up when the task exits (owned_endpoints) or DS closes it.
-        let _ = event_send; // suppress unused warning; still in owned_endpoints
+        let _ = event_send;
 
         let info = crate::sys_get_display_info();
 
@@ -156,6 +155,79 @@ impl Window {
             dirty: None,
             event_recv_ep: event_recv,
         })
+    }
+
+    /// Create a new Toplevel window via the display_server.
+    ///
+    /// The DS assigns size and position via auto-tiling; the response contains the
+    /// actual dimensions. `app_id` is a string identifier used for config-based rules.
+    pub fn new(display_server_send_ep: u64, app_id: &str) -> Option<Self> {
+        let mut id_bytes = [0u8; 32];
+        let len = app_id.len().min(32);
+        id_bytes[..len].copy_from_slice(app_id.as_bytes()[..len].as_ref());
+
+        let req = CreateWindowRequest {
+            event_send_ep: 0, // overridden by new_inner
+            flags: 0,
+            app_id_len: len as u8,
+            _pad: [0; 3],
+            app_id: id_bytes,
+            parent_id: 0,
+            init_w: 0,
+            init_h: 0,
+        };
+        Self::new_inner(display_server_send_ep, req)
+    }
+
+    /// Create a floating window with a specific size, optionally parented to another window.
+    ///
+    /// `parent_id` should be the `window_id()` of the owning window (0 = no parent).
+    /// `w` / `h` are the desired pixel dimensions (0 = DS default 400×300).
+    pub fn new_floating(
+        display_server_send_ep: u64,
+        app_id: &str,
+        parent_id: u64,
+        w: u32,
+        h: u32,
+    ) -> Option<Self> {
+        let mut id_bytes = [0u8; 32];
+        let len = app_id.len().min(32);
+        id_bytes[..len].copy_from_slice(app_id.as_bytes()[..len].as_ref());
+
+        let req = CreateWindowRequest {
+            event_send_ep: 0,
+            flags: WINDOW_FLAG_FLOATING,
+            app_id_len: len as u8,
+            _pad: [0; 3],
+            app_id: id_bytes,
+            parent_id,
+            init_w: w,
+            init_h: h,
+        };
+        Self::new_inner(display_server_send_ep, req)
+    }
+
+    /// Return the window ID assigned by the display server.
+    pub fn window_id(&self) -> u64 { self.window_id }
+
+    /// Close the window, unmapping its buffer and closing the event channel.
+    ///
+    /// Sends a non-blocking CloseWindow notification to the DS.
+    pub fn close(self) {
+        const MSG_SIZE: usize = 1 + core::mem::size_of::<CloseWindowRequest>();
+        let mut msg = [0u8; MSG_SIZE];
+        msg[0] = WindowMessageType::CloseWindow as u8;
+        let req = CloseWindowRequest { window_id: self.window_id };
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                &req as *const CloseWindowRequest as *const u8,
+                msg.as_mut_ptr().add(1),
+                core::mem::size_of::<CloseWindowRequest>(),
+            );
+        }
+        crate::sys_try_channel_send(self.send_endpoint, &msg);
+        crate::sys_munmap(self.buffer as *mut u8, self.buf_size);
+        crate::sys_channel_close(self.event_recv_ep);
     }
 
     /// Create a Panel anchored to a screen edge.
@@ -313,6 +385,13 @@ impl Window {
                 } else {
                     WindowEvent::MouseButtonRelease { button: ev.button, x: ev.x, y: ev.y }
                 });
+            }
+        } else if event_type == WindowEventType::MouseMove as u8 {
+            if bytes_read >= core::mem::size_of::<MouseMoveEvent>() as u64 {
+                let ev: MouseMoveEvent = unsafe {
+                    core::ptr::read_unaligned(buf.as_ptr() as *const _)
+                };
+                return Some(WindowEvent::MouseMove { x: ev.x, y: ev.y });
             }
         }
 

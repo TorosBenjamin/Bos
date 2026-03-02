@@ -5,15 +5,12 @@
 extern crate alloc;
 #[cfg(not(target_os = "linux"))]
 use alloc::format;
-#[cfg(not(target_os = "linux"))]
-use alloc::string::String;
-#[cfg(not(target_os = "linux"))]
-use alloc::string::ToString;
 
 use bos_egui::{App, egui};
 
 struct HelloApp {
     counter: i32,
+    child_open: bool,
 }
 
 impl App for HelloApp {
@@ -22,12 +19,26 @@ impl App for HelloApp {
             ui.heading("Hello from Bos!");
             ui.label("A cross-platform egui app running on a custom OS.");
             ui.separator();
-            let mut text: String = "Hello".to_string();
-            ui.text_edit_multiline(&mut text);
             if ui.button("Increment").clicked() {
                 self.counter += 1;
             }
             ui.label(format!("Count: {}", self.counter));
+            ui.separator();
+            if !self.child_open {
+                if ui.button("Open Window").clicked() {
+                    self.child_open = true;
+                    bos_egui::open_child_window(400, 300);
+                }
+            } else {
+                ui.label("(floating window is open)");
+            }
+        });
+    }
+
+    fn child_update(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("Floating Window");
+            ui.label("Opened from hello_egui via bos_egui::open_child_window.");
         });
     }
 }
@@ -35,12 +46,12 @@ impl App for HelloApp {
 #[cfg(not(target_os = "linux"))]
 #[unsafe(no_mangle)]
 unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
-    bos_egui::run("Hello Egui", HelloApp { counter: 0 })
+    bos_egui::run("Hello Egui", HelloApp { counter: 0, child_open: false })
 }
 
 #[cfg(target_os = "linux")]
 fn main() {
-    bos_egui::run("Hello Egui", HelloApp { counter: 0 });
+    bos_egui::run("Hello Egui", HelloApp { counter: 0, child_open: false });
 }
 
 #[cfg(not(target_os = "linux"))]

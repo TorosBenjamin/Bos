@@ -31,7 +31,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
     };
 
     // Create a toplevel window — DS assigns size via tiling
-    let mut window = match Window::new(display_server_ep) {
+    let mut window = match Window::new(display_server_ep, "bouncing_cube_2") {
         Some(w) => w,
         None => {
             loop {

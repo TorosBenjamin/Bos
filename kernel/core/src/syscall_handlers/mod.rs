@@ -5,6 +5,7 @@ mod graphics;
 mod misc;
 mod service;
 mod disk;
+mod event;
 
 pub use task::{sys_exit, sys_yield, sys_spawn, sys_waitpid, sys_thread_create, sys_set_exit_channel};
 pub use memory::{sys_mmap, sys_munmap, sys_create_shared_buf, sys_map_shared_buf, sys_destroy_shared_buf};
@@ -13,6 +14,7 @@ pub use graphics::{sys_get_bounding_box, sys_get_display_info, sys_transfer_disp
 pub use misc::{sys_debug_log, sys_read_key, sys_try_read_key, sys_read_mouse, sys_get_module, sys_shutdown};
 pub use service::{sys_register_service, sys_lookup_service};
 pub use disk::{sys_block_read_sectors, sys_block_write_sectors};
+pub use event::{sys_wait_for_event, check_timeout_waiters};
 
 use alloc::sync::Arc;
 use crate::memory::cpu_local_data::{get_cpu, get_local, local_apic_id_of};

@@ -7,6 +7,7 @@ pub mod test_framework;
 
 use core::arch::asm;
 use kernel_api_types::{SysCallNumber, SVC_ERR_NOT_FOUND, SVC_OK};
+pub use kernel_api_types::{WAIT_KEYBOARD, WAIT_MOUSE};
 use kernel_api_types::graphics::{DisplayInfo, GraphicsResult, Rect};
 
 pub fn syscall(inputs_and_ouputs: &mut [u64; 7]) {
@@ -332,6 +333,24 @@ pub fn sys_block_write_sectors(lba: u64, count: u32, buf: &[u8]) -> u64 {
     args[1] = lba;
     args[2] = count as u64;
     args[3] = buf.as_ptr() as u64;
+    syscall(&mut args);
+    args[6]
+}
+
+/// Block until any of the watched channels, mouse, or keyboard has data, or a timeout expires.
+///
+/// - `channels`: recv endpoint IDs to watch for incoming messages
+/// - `flags`: `WAIT_KEYBOARD | WAIT_MOUSE` bitfield
+/// - `timeout_ms`: 0 = infinite; non-zero = maximum wait in milliseconds
+///
+/// Returns: 0 = event available, 1 = timed out, 2 = invalid args
+pub fn sys_wait_for_event(channels: &[u64], flags: u32, timeout_ms: u64) -> u64 {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::WaitForEvent as u64;
+    args[1] = channels.as_ptr() as u64;
+    args[2] = channels.len() as u64;
+    args[3] = flags as u64;
+    args[4] = timeout_ms;
     syscall(&mut args);
     args[6]
 }

@@ -69,6 +69,9 @@ static KEY_AVAILABLE: AtomicBool = AtomicBool::new(false);
 /// Task sleeping on keyboard input: (task_arc, cpu_kernel_id)
 pub static KEYBOARD_WAITER: Mutex<Option<(Arc<Task>, u32)>> = Mutex::new(None);
 
+/// Waiter slot for sys_wait_for_event; woken by CAS when a key event arrives.
+pub static KEYBOARD_EVENT_WAITER: crate::task::local_scheduler::EventWaiterSlot = Mutex::new(None);
+
 // Keyboard state
 static SHIFT_PRESSED: Mutex<bool> = Mutex::new(false);
 static CAPSLOCK_ON: Mutex<bool> = Mutex::new(false);
@@ -169,6 +172,8 @@ fn push_event(event: KeyEvent) {
             crate::apic::send_fixed_ipi(apic_id, u8::from(crate::interrupt::InterruptVector::Reschedule));
         }
     }
+    // Wake any task sleeping in sys_wait_for_event watching keyboard
+    crate::task::local_scheduler::try_wake_slot(&KEYBOARD_EVENT_WAITER);
 }
 
 /// Try to pop a key event from the buffer. Returns None if empty.

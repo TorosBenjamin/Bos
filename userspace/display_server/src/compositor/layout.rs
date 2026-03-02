@@ -5,7 +5,7 @@ impl Compositor {
     pub(super) fn count_toplevels(&self) -> usize {
         self.windows.iter()
             .filter_map(|w| w.as_ref())
-            .filter(|w| !w.is_panel)
+            .filter(|w| !w.is_panel && !w.is_floating)
             .count()
     }
 
@@ -75,7 +75,7 @@ impl Compositor {
         let mut i = 0usize;
         for slot in &mut self.windows {
             if let Some(window) = slot {
-                if window.is_panel {
+                if window.is_panel || window.is_floating {
                     continue;
                 }
                 let new_x = ax + self.outer_gap as i32 + (i as u32 * (tile_w + self.inner_gap)) as i32;

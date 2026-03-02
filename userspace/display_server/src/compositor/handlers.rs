@@ -21,21 +21,34 @@ impl Compositor {
         let window_id = self.next_window_id;
         self.next_window_id += 1;
 
-        // Compute this window's initial tile position (it will be the n_current-th toplevel).
-        let n_current = self.count_toplevels();
-        let (ax, ay, aw, ah) = self.available_area();
-        let n_new = n_current + 1;
-        let total_h_gaps = 2 * self.outer_gap + n_current as u32 * self.inner_gap; // (n_new-1) inner gaps
-        let usable_w = aw.saturating_sub(total_h_gaps);
-        let usable_h = ah.saturating_sub(2 * self.outer_gap);
-        let tile_w = usable_w / n_new as u32;
-        let new_x = ax + self.outer_gap as i32 + (n_current as u32 * (tile_w + self.inner_gap)) as i32;
-        // Last window gets remainder so rounding doesn't leave a sliver
-        let init_w = usable_w - n_current as u32 * tile_w;
-        let init_h = usable_h;
+        let app_id = &req.app_id[..req.app_id_len.min(32) as usize];
+        let is_floating = self.resolve_floating(app_id, req.flags, req.parent_id);
 
-        match Window::new(window_id, new_x, ay + self.outer_gap as i32, init_w, init_h, req.event_send_ep) {
-            Some(window) => {
+        let (ax, ay, aw, ah) = self.available_area();
+
+        let (init_x, init_y, init_w, init_h) = if is_floating {
+            let fw = if req.init_w > 0 { req.init_w } else { 400 };
+            let fh = if req.init_h > 0 { req.init_h } else { 300 };
+            let fx = ax + (aw.saturating_sub(fw)) as i32 / 2;
+            let fy = ay + (ah.saturating_sub(fh)) as i32 / 2;
+            (fx, fy, fw, fh)
+        } else {
+            // Tiled: compute initial position as the n_current-th column.
+            let n_current = self.count_toplevels();
+            let n_new = n_current + 1;
+            let total_h_gaps = 2 * self.outer_gap + n_current as u32 * self.inner_gap;
+            let usable_w = aw.saturating_sub(total_h_gaps);
+            let usable_h = ah.saturating_sub(2 * self.outer_gap);
+            let tile_w = usable_w / n_new as u32;
+            let new_x = ax + self.outer_gap as i32
+                + (n_current as u32 * (tile_w + self.inner_gap)) as i32;
+            let init_w = usable_w - n_current as u32 * tile_w;
+            (new_x, ay + self.outer_gap as i32, init_w, usable_h)
+        };
+
+        match Window::new(window_id, init_x, init_y, init_w, init_h, req.event_send_ep) {
+            Some(mut window) => {
+                window.is_floating = is_floating;
                 let shared_buf_id = window.shared_buf_id;
                 self.windows[slot_idx] = Some(window);
                 self.z_push_toplevel(window_id);
@@ -48,12 +61,14 @@ impl Compositor {
                     height: init_h,
                 });
 
-                // Focus the new window
                 self.set_focus(Some(window_id));
 
-                // Recalculate layout: redistributes existing toplevels (new window already
-                // has the correct size, so its reconfigure() will return false).
-                self.recalculate_toplevel_layout();
+                if !is_floating {
+                    // Recalculate layout: redistributes existing tiled toplevels.
+                    self.recalculate_toplevel_layout();
+                } else {
+                    self.mark_full_redraw();
+                }
             }
             None => {
                 self.send_response(reply_ep, &CreateWindowResponse {

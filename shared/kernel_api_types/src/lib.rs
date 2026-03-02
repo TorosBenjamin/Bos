@@ -40,7 +40,11 @@ pub enum SysCallNumber {
     TryReadKey     = 29,
     TryChannelRecv = 30,
     TryChannelSend = 31,
+    WaitForEvent   = 32,
 }
+
+pub const WAIT_KEYBOARD: u32 = 1;
+pub const WAIT_MOUSE: u32 = 2;
 
 pub const MAX_SERVICE_NAME_LEN: usize = 64;
 

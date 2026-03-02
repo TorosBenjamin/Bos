@@ -286,6 +286,10 @@ border_focused   = #8aadf4\n\
 border_unfocused = #363a4f\n\
 bg_top           = #1e3a5f\n\
 bg_bottom        = #0a0a0f\n\
+\n\
+# [window_rules]\n\
+# hello_egui = float\n\
+# bouncing_cube_1 = tile\n\
 ";
         let mut f = root.create_file("HYPR.CONF").expect("fatfs: create HYPR.CONF");
         f.write_all(config_content).unwrap();

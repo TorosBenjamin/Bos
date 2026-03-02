@@ -18,7 +18,19 @@ pub mod egui {
 /// real egui context on Linux and our software stub on Bos.
 pub trait App {
     fn update(&mut self, ctx: &egui::Context);
+    fn child_update(&mut self, _ctx: &egui::Context) {}
 }
+
+/// Request a new floating OS window to be opened.
+///
+/// On Bos the next run-loop iteration will create a compositor-managed floating window
+/// and call `App::child_update` each frame for its contents.
+/// On Linux this is a no-op (child windows are not supported in the eframe backend).
+#[cfg(not(target_os = "linux"))]
+pub fn open_child_window(w: u32, h: u32) { bos::request_open_child(w, h); }
+
+#[cfg(target_os = "linux")]
+pub fn open_child_window(_w: u32, _h: u32) {}
 
 // ── Linux ────────────────────────────────────────────────────────────────────
 
