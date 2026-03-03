@@ -44,7 +44,15 @@ unsafe extern "sysv64" fn entry_point() -> ! {
         ulib::sys_munmap(utest_buf, utest_size);
     } else {
         // Normal mode: spawn files and hello_egui
-        
+        let files_size = ulib::sys_get_module("files", core::ptr::null_mut(), 0);
+        if files_size > 0 {
+            let hello_egui_buf = ulib::sys_mmap(files_size, kernel_api_types::MMAP_WRITE);
+            let _ = ulib::sys_get_module("files", hello_egui_buf, hello_egui_size);
+            let hello_egui_elf =
+                unsafe { core::slice::from_raw_parts(hello_egui_buf, hello_egui_size as usize) };
+            let _ = ulib::sys_spawn(hello_egui_elf, 0);
+            ulib::sys_munmap(hello_egui_buf, hello_egui_size);
+        }
 
         let hello_egui_size = ulib::sys_get_module("hello_egui", core::ptr::null_mut(), 0);
         if hello_egui_size > 0 {

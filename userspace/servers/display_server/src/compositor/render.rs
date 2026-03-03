@@ -41,44 +41,6 @@ impl Compositor {
         }
     }
 
-    /// Draw a `BORDER_WIDTH`-pixel border around Toplevels.
-    /// `clip` limits writes to within a damage rect (pass `None` for full-scene draws).
-    /// `floating_only` selects which subset to draw borders for.
-    fn draw_borders(&mut self, clip: Option<DirtyRect>, floating_only: bool) {
-        let focused = self.focused_window;
-        let focused_color   = self.border_focused;
-        let unfocused_color = self.border_unfocused;
-
-        // Collect window geometry to avoid borrow conflict with fill_back_rect_clipped.
-        let mut infos: [(i32, i32, u32, u32, u32); MAX_WINDOWS] =
-            [(0, 0, 0, 0, 0); MAX_WINDOWS];
-        let mut n = 0usize;
-        for slot in &self.windows {
-            if let Some(w) = slot {
-                if w.is_panel || w.is_floating != floating_only {
-                    continue;
-                }
-                let color = if focused == Some(w.id) { focused_color } else { unfocused_color };
-                infos[n] = (w.x, w.y, w.width, w.height, color);
-                n += 1;
-            }
-        }
-
-        for i in 0..n {
-            let (wx, wy, ww, wh, color) = infos[i];
-            let bw = self.border_width;
-            let bwu = bw as u32;
-            // Top strip
-            self.fill_back_rect_clipped(wx - bw, wy - bw, ww + 2 * bwu, bwu, clip, color);
-            // Bottom strip
-            self.fill_back_rect_clipped(wx - bw, wy + wh as i32, ww + 2 * bwu, bwu, clip, color);
-            // Left strip (side only, corners already covered by top/bottom)
-            self.fill_back_rect_clipped(wx - bw, wy, bwu, wh, clip, color);
-            // Right strip
-            self.fill_back_rect_clipped(wx + ww as i32, wy, bwu, wh, clip, color);
-        }
-    }
-
     /// Blit `w×h` pixels from `src` into the back buffer at `(dst_x, dst_y)`,
     /// clipped to both screen bounds and the optional `clip` rect.
     fn blit_to_back(
@@ -127,30 +89,58 @@ impl Compositor {
         }
     }
 
-    /// Blit all windows in z-order whose `is_floating` matches `floating_only`.
-    /// `clip` restricts writes to the given damage rect (pass `None` for full-scene draws).
-    fn blit_windows(&mut self, floating_only: bool, clip: Option<DirtyRect>) {
+    /// Composite all windows and their borders in z-order (bottom to top).
+    ///
+    /// Each window is blitted first, then its border is drawn immediately after.
+    /// This means a floating window blitted at z+1 will overwrite any tiled border
+    /// drawn at z, so floating windows correctly appear on top of tiled borders.
+    /// `clip` restricts all writes to the given damage rect (pass `None` for full-scene draws).
+    fn composite_in_z_order(&mut self, clip: Option<DirtyRect>) {
+        let focused = self.focused_window;
+        let focused_color   = self.border_focused;
+        let unfocused_color = self.border_unfocused;
+
+        // Collect window data in z-order into local arrays to avoid
+        // borrow conflicts when calling fill_back_rect_clipped / blit_to_back.
+        let mut wxs    = [0i32; MAX_WINDOWS];
+        let mut wys    = [0i32; MAX_WINDOWS];
+        let mut wws    = [0u32; MAX_WINDOWS];
+        let mut whs    = [0u32; MAX_WINDOWS];
+        let mut bufs   = [core::ptr::null::<u32>(); MAX_WINDOWS];
+        let mut panels = [false; MAX_WINDOWS];
+        let mut colors = [0u32; MAX_WINDOWS];
+        let mut n = 0usize;
+
         for i in 0..self.n_windows {
             let id = self.z_order[i];
-            let info = self.windows.iter()
-                .filter_map(|w| w.as_ref())
-                .find(|w| w.id == id)
-                .map(|w| (w.x, w.y, w.width, w.height, w.buffer as *const u32, w.is_floating));
+            if let Some(w) = self.windows.iter().filter_map(|w| w.as_ref()).find(|w| w.id == id) {
+                wxs[n]    = w.x;
+                wys[n]    = w.y;
+                wws[n]    = w.width;
+                whs[n]    = w.height;
+                bufs[n]   = w.buffer as *const u32;
+                panels[n] = w.is_panel;
+                colors[n] = if focused == Some(id) { focused_color } else { unfocused_color };
+                n += 1;
+            }
+        }
 
-            if let Some((wx, wy, ww, wh, wbuf, is_floating)) = info {
-                if is_floating != floating_only {
-                    continue;
-                }
-                if let Some(d) = clip {
-                    let wx1 = wx + ww as i32;
-                    let wy1 = wy + wh as i32;
-                    let dx1 = d.x as i32 + d.w as i32;
-                    let dy1 = d.y as i32 + d.h as i32;
-                    if wx >= dx1 || wx1 <= d.x as i32 || wy >= dy1 || wy1 <= d.y as i32 {
-                        continue;
-                    }
-                }
-                self.blit_to_back(wbuf, ww, wx, wy, ww, wh, clip);
+        for i in 0..n {
+            let (wx, wy, ww, wh) = (wxs[i], wys[i], wws[i], whs[i]);
+            self.blit_to_back(bufs[i], ww, wx, wy, ww, wh, clip);
+
+            if !panels[i] {
+                let bw = self.border_width;
+                let bwu = bw as u32;
+                let color = colors[i];
+                // Top strip
+                self.fill_back_rect_clipped(wx - bw, wy - bw, ww + 2 * bwu, bwu, clip, color);
+                // Bottom strip
+                self.fill_back_rect_clipped(wx - bw, wy + wh as i32, ww + 2 * bwu, bwu, clip, color);
+                // Left strip (side only, corners already covered by top/bottom)
+                self.fill_back_rect_clipped(wx - bw, wy, bwu, wh, clip, color);
+                // Right strip
+                self.fill_back_rect_clipped(wx + ww as i32, wy, bwu, wh, clip, color);
             }
         }
     }
@@ -163,14 +153,7 @@ impl Compositor {
             };
             self.blit_to_back(src, screen_w, damage.x as i32, damage.y as i32, damage.w, damage.h, None);
         }
-
-        // Phase 1: tiled windows + their borders (borders stay behind floating windows)
-        self.blit_windows(false, Some(damage));
-        self.draw_borders(Some(damage), false);
-
-        // Phase 2: floating windows on top (overwrite any tiled border that overlaps them)
-        self.blit_windows(true, Some(damage));
-        self.draw_borders(Some(damage), true);
+        self.composite_in_z_order(Some(damage));
     }
 
     fn update_scene_full(&mut self) {
@@ -182,14 +165,7 @@ impl Compositor {
             let n = self.display_info.width as usize * self.display_info.height as usize;
             unsafe { core::ptr::copy_nonoverlapping(self.background_buf, dst, n) };
         }
-
-        // Phase 1: tiled windows + their borders (borders stay behind floating windows)
-        self.blit_windows(false, None);
-        self.draw_borders(None, false);
-
-        // Phase 2: floating windows on top (overwrite any tiled border that overlaps them)
-        self.blit_windows(true, None);
-        self.draw_borders(None, true);
+        self.composite_in_z_order(None);
     }
 
     pub(super) fn flush(&mut self) {
