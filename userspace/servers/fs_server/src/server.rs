@@ -15,6 +15,9 @@ impl BlockDev for SysDisk {
     fn write(&mut self, lba: u64, buf: &[u8; 512]) -> bool {
         ulib::sys_block_write_sectors(lba, 1, buf) != 0
     }
+    fn read_sectors(&mut self, lba: u64, count: u32, buf: &mut [u8]) -> bool {
+        ulib::sys_block_read_sectors(lba, count, buf) != 0
+    }
 }
 
 // ─── Server loop ───────────────────────────────────────────────────────────────

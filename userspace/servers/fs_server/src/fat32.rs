@@ -11,6 +11,16 @@
 pub trait BlockDev {
     fn read(&mut self, lba: u64, buf: &mut [u8; 512]) -> bool;
     fn write(&mut self, lba: u64, buf: &[u8; 512]) -> bool;
+    /// Read `count` contiguous sectors into `buf` (must be `count * 512` bytes).
+    /// Default: falls back to single-sector reads.
+    fn read_sectors(&mut self, lba: u64, count: u32, buf: &mut [u8]) -> bool {
+        for i in 0..count as usize {
+            let mut sec = [0u8; 512];
+            if !self.read(lba + i as u64, &mut sec) { return false; }
+            buf[i * 512..(i + 1) * 512].copy_from_slice(&sec);
+        }
+        true
+    }
 }
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
@@ -115,6 +125,11 @@ pub struct Fat32<D> {
     pub root_cluster:      u32,
     pub first_data_sector: u32,
     pub bytes_per_sector:  u32,
+    // One-sector FAT read cache — avoids re-reading the same FAT sector for each
+    // cluster in a chain (consecutive clusters share a FAT sector for typical files).
+    fat_cache_lba:   u64,
+    fat_cache:       [u8; 512],
+    fat_cache_valid: bool,
 }
 
 /// A single file or directory entry returned by `lookup` / `read_dir`.
@@ -154,7 +169,8 @@ impl<D: BlockDev> Fat32<D> {
         let first_data_sector = reserved_sectors + num_fats * fat_size;
 
         Some(Self { disk, reserved_sectors, fat_size, sectors_per_clus,
-                    root_cluster, first_data_sector, bytes_per_sector })
+                    root_cluster, first_data_sector, bytes_per_sector,
+                    fat_cache_lba: 0, fat_cache: [0u8; 512], fat_cache_valid: false })
     }
 
     fn cluster_to_lba(&self, cluster: u32) -> u64 {
@@ -165,8 +181,12 @@ impl<D: BlockDev> Fat32<D> {
         let fat_offset = cluster as u64 * 4;
         let fat_sector = self.reserved_sectors as u64 + fat_offset / self.bytes_per_sector as u64;
         let off        = (fat_offset % self.bytes_per_sector as u64) as usize;
-        let mut sec = [0u8; 512];
-        if !self.disk.read(fat_sector, &mut sec) { return None; }
+        if !self.fat_cache_valid || self.fat_cache_lba != fat_sector {
+            if !self.disk.read(fat_sector, &mut self.fat_cache) { return None; }
+            self.fat_cache_lba   = fat_sector;
+            self.fat_cache_valid = true;
+        }
+        let sec = &self.fat_cache;
         Some(u32::from_le_bytes([sec[off], sec[off+1], sec[off+2], sec[off+3]]) & 0x0FFF_FFFF)
     }
 
@@ -232,16 +252,27 @@ impl<D: BlockDev> Fat32<D> {
         let mut cluster = start_cluster;
         let mut written = 0usize;
         let total = size as usize;
+        let cluster_bytes = (self.sectors_per_clus * self.bytes_per_sector) as usize;
 
         while !Self::is_eoc(cluster) && cluster >= 2 && written < total {
             let lba = self.cluster_to_lba(cluster);
-            for s in 0..self.sectors_per_clus {
-                if written >= total { break; }
-                let mut sec = [0u8; 512];
-                if !self.disk.read(lba + s as u64, &mut sec) { return written; }
-                let to_copy = (total - written).min(512);
-                unsafe { core::ptr::copy_nonoverlapping(sec.as_ptr(), buf.add(written), to_copy); }
-                written += to_copy;
+            let remaining = total - written;
+
+            if remaining >= cluster_bytes {
+                // Full cluster: one multi-sector syscall, write directly into destination.
+                let dst = unsafe { core::slice::from_raw_parts_mut(buf.add(written), cluster_bytes) };
+                if !self.disk.read_sectors(lba, self.sectors_per_clus, dst) { return written; }
+                written += cluster_bytes;
+            } else {
+                // Partial last cluster: read sector by sector to avoid overrun.
+                for s in 0..self.sectors_per_clus {
+                    if written >= total { break; }
+                    let mut sec = [0u8; 512];
+                    if !self.disk.read(lba + s as u64, &mut sec) { return written; }
+                    let to_copy = (total - written).min(512);
+                    unsafe { core::ptr::copy_nonoverlapping(sec.as_ptr(), buf.add(written), to_copy); }
+                    written += to_copy;
+                }
             }
             cluster = self.fat_entry(cluster).unwrap_or(FAT32_EOC);
         }
@@ -378,11 +409,14 @@ impl<D: BlockDev> Fat32<D> {
         let fat_offset = cluster as u64 * 4;
         let fat_lba = self.reserved_sectors as u64 + fat_offset / self.bytes_per_sector as u64;
         let off = (fat_offset % self.bytes_per_sector as u64) as usize;
-        let mut sec = [0u8; 512];
-        if !self.disk.read(fat_lba, &mut sec) { return false; }
+        if !self.fat_cache_valid || self.fat_cache_lba != fat_lba {
+            if !self.disk.read(fat_lba, &mut self.fat_cache) { return false; }
+            self.fat_cache_lba   = fat_lba;
+            self.fat_cache_valid = true;
+        }
         let val = (next & 0x0FFF_FFFF).to_le_bytes();
-        sec[off..off+4].copy_from_slice(&val);
-        self.disk.write(fat_lba, &sec)
+        self.fat_cache[off..off+4].copy_from_slice(&val);
+        self.disk.write(fat_lba, &self.fat_cache)
     }
 }
 

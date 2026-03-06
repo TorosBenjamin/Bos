@@ -84,6 +84,10 @@ pub struct DisplayConfig {
     pub inactive_opacity_floating: u8,
     pub shortcuts:        [Option<ShortcutBinding>; MAX_SHORTCUTS],
     pub n_shortcuts:      usize,
+    /// App IDs that cannot be killed with the CloseWindow shortcut (Super+Q).
+    pub protected:        [[u8; 32]; 16],
+    pub protected_lens:   [u8; 16],
+    pub n_protected:      usize,
 }
 
 impl Default for DisplayConfig {
@@ -118,6 +122,9 @@ impl Default for DisplayConfig {
             inactive_opacity_floating: 255,
             shortcuts,
             n_shortcuts: n,
+            protected:      [[0u8; 32]; 16],
+            protected_lens: [0u8; 16],
+            n_protected:    0,
         }
     }
 }
@@ -129,7 +136,7 @@ impl DisplayConfig {
         let mut cfg = Self::default();
 
         #[derive(Clone, Copy, PartialEq)]
-        enum Section { General, Colors, WindowRules, Shortcuts, Unknown }
+        enum Section { General, Colors, WindowRules, Shortcuts, ProtectedWindows, Unknown }
         let mut section = Section::Unknown;
 
         for raw_line in bytes.split(|&b| b == b'\n') {
@@ -144,12 +151,24 @@ impl DisplayConfig {
             if line[0] == b'[' {
                 if let Some(end) = line.iter().position(|&b| b == b']') {
                     section = match &line[1..end] {
-                        b"general"      => Section::General,
-                        b"colors"       => Section::Colors,
-                        b"window_rules" => Section::WindowRules,
-                        b"shortcuts"    => Section::Shortcuts,
-                        _               => Section::Unknown,
+                        b"general"            => Section::General,
+                        b"colors"             => Section::Colors,
+                        b"window_rules"       => Section::WindowRules,
+                        b"shortcuts"          => Section::Shortcuts,
+                        b"protected_windows"  => Section::ProtectedWindows,
+                        _                     => Section::Unknown,
                     };
+                }
+                continue;
+            }
+
+            // [protected_windows] entries are bare names (no `=`)
+            if section == Section::ProtectedWindows {
+                if cfg.n_protected < 16 {
+                    let len = line.len().min(32);
+                    cfg.protected[cfg.n_protected][..len].copy_from_slice(&line[..len]);
+                    cfg.protected_lens[cfg.n_protected] = len as u8;
+                    cfg.n_protected += 1;
                 }
                 continue;
             }
@@ -233,7 +252,7 @@ impl DisplayConfig {
                             }
                         }
                     }
-                    Section::Unknown => {}
+                    Section::ProtectedWindows | Section::Unknown => {}
                 }
             }
         }

@@ -89,6 +89,10 @@ pub struct Compositor {
     /// Keyboard shortcuts from /bos_ds.conf [shortcuts]
     shortcuts:   [Option<ShortcutBinding>; MAX_SHORTCUTS],
     n_shortcuts: usize,
+    /// App IDs that cannot be killed by the CloseWindow shortcut.
+    protected:      [[u8; 32]; 16],
+    protected_lens: [u8; 16],
+    n_protected:    usize,
     /// Previous focus before the launcher was shown (restored on hide).
     launcher_prev_focus: Option<WindowId>,
     /// Tiling layout direction (changed via Super+drag to screen edge)
@@ -170,12 +174,29 @@ impl Compositor {
             inactive_opacity_floating: config.inactive_opacity_floating,
             shortcuts:   config.shortcuts,
             n_shortcuts: config.n_shortcuts,
+            protected:      config.protected,
+            protected_lens: config.protected_lens,
+            n_protected:    config.n_protected,
             launcher_prev_focus: None,
             layout_dir: LayoutDir::Horizontal,
             tiled_ratios: [0.0f32; MAX_WINDOWS],
             n_tiled_ratios: 0,
             drag_state: None,
         }
+    }
+
+    fn is_protected(&self, id: WindowId) -> bool {
+        let w = match self.windows.iter().filter_map(|w| w.as_ref()).find(|w| w.id == id) {
+            Some(w) => w,
+            None    => return false,
+        };
+        let app_id = &w.app_id[..w.app_id_len as usize];
+        for i in 0..self.n_protected {
+            if &self.protected[i][..self.protected_lens[i] as usize] == app_id {
+                return true;
+            }
+        }
+        false
     }
 
     fn resolve_floating(&self, app_id: &[u8], flags: u32, parent_id: u64) -> bool {
@@ -446,7 +467,9 @@ impl Compositor {
                 match b.action {
                     ShortcutAction::CloseWindow => {
                         if let Some(id) = self.focused_window {
-                            self.initiate_close(id);
+                            if !self.is_protected(id) {
+                                self.initiate_close(id);
+                            }
                         }
                     }
                     ShortcutAction::FocusNext | ShortcutAction::FocusRight | ShortcutAction::FocusDown => {

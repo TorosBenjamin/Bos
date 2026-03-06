@@ -3,6 +3,7 @@
 /// Sections:
 ///   [apps]    — `Name = FILE.ELF` entries
 ///   [pinned]  — one app name per line (marks that app as pinned)
+///   [preload] — one app name per line (ELF pre-loaded at launcher startup)
 ///   [visual]  — `width = N`
 
 pub const MAX_APPS: usize = 32;
@@ -13,6 +14,7 @@ pub struct AppEntry {
     pub path:     [u8; 16],
     pub path_len: u8,
     pub pinned:   bool,
+    pub preload:  bool,
 }
 
 pub struct LauncherConfig {
@@ -27,6 +29,7 @@ const EMPTY_ENTRY: AppEntry = AppEntry {
     path:     [0u8; 16],
     path_len: 0,
     pinned:   false,
+    preload:  false,
 };
 
 impl Default for LauncherConfig {
@@ -44,7 +47,7 @@ impl LauncherConfig {
         let mut cfg = LauncherConfig::default();
 
         #[derive(Clone, Copy, PartialEq)]
-        enum Section { Apps, Pinned, Visual, Unknown }
+        enum Section { Apps, Pinned, Preload, Visual, Unknown }
         let mut section = Section::Unknown;
 
         for raw_line in bytes.split(|&b| b == b'\n') {
@@ -54,10 +57,11 @@ impl LauncherConfig {
             if line[0] == b'[' {
                 if let Some(end) = line.iter().position(|&b| b == b']') {
                     section = match &line[1..end] {
-                        b"apps"   => Section::Apps,
-                        b"pinned" => Section::Pinned,
-                        b"visual" => Section::Visual,
-                        _         => Section::Unknown,
+                        b"apps"    => Section::Apps,
+                        b"pinned"  => Section::Pinned,
+                        b"preload" => Section::Preload,
+                        b"visual"  => Section::Visual,
+                        _          => Section::Unknown,
                     };
                 }
                 continue;
@@ -82,12 +86,20 @@ impl LauncherConfig {
                     }
                 }
                 Section::Pinned => {
-                    // Mark any app whose name matches this line as pinned
                     let name = line;
                     for i in 0..cfg.n_apps {
                         let entry = &mut cfg.apps[i];
                         if &entry.name[..entry.name_len as usize] == name {
                             entry.pinned = true;
+                        }
+                    }
+                }
+                Section::Preload => {
+                    let name = line;
+                    for i in 0..cfg.n_apps {
+                        let entry = &mut cfg.apps[i];
+                        if &entry.name[..entry.name_len as usize] == name {
+                            entry.preload = true;
                         }
                     }
                 }

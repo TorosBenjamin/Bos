@@ -56,6 +56,10 @@ struct Launcher {
     nfilt:           usize,
     sel:             usize,
     fs_ep:           u64,
+    /// Pre-loaded ELF shared buffers: (shared_buf_id, file_size) per config app slot.
+    /// Only populated for apps with `preload = true`; never destroyed so subsequent
+    /// launches only need map → spawn → unmap without disk I/O.
+    preloaded:       [Option<(u64, u64)>; MAX_APPS],
     dirty:           bool,
     frame_presented: bool,
     cursor_x:        f32,
@@ -65,6 +69,19 @@ struct Launcher {
 
 impl Launcher {
     fn new(config: LauncherConfig, fs_ep: u64) -> Self {
+        // Pre-load apps marked with `preload = true` in the config while the window
+        // is still hidden. Shared buffers are never destroyed so future launches only
+        // need sys_map_shared_buf + sys_spawn_named + sys_munmap (no disk I/O).
+        let mut preloaded: [Option<(u64, u64)>; MAX_APPS] = [None; MAX_APPS];
+        for i in 0..config.n_apps {
+            let entry = &config.apps[i];
+            if !entry.preload { continue; }
+            let path_len = entry.path_len as usize;
+            if let Ok(path) = core::str::from_utf8(&entry.path[..path_len]) {
+                preloaded[i] = ulib::fs::fs_map_file(fs_ep, path);
+            }
+        }
+
         let mut s = Launcher {
             config,
             search: String::new(),
@@ -72,6 +89,7 @@ impl Launcher {
             nfilt: 0,
             sel: 0,
             fs_ep,
+            preloaded,
             dirty: true,
             frame_presented: true,
             cursor_x: 0.0,
@@ -133,27 +151,36 @@ impl Launcher {
     }
 
     fn do_launch(&self, idx: usize, window: &mut Window) {
-        let entry = &self.config.apps[idx];
-        let path_len = entry.path_len as usize;
-        let path_bytes = &entry.path[..path_len];
+        // Hide immediately so the launcher can't be spammed while the spawn runs.
+        window.hide();
 
-        // Build null-terminated path string for fs_map_file
-        let mut path_str = [0u8; 17];
-        path_str[..path_len].copy_from_slice(path_bytes);
-        // Convert to &str (ASCII 8.3 FAT name)
-        if let Ok(path) = core::str::from_utf8(&path_str[..path_len]) {
-            if let Some((buf_id, size)) = ulib::fs::fs_map_file(self.fs_ep, path) {
-                let ptr = ulib::sys_map_shared_buf(buf_id);
-                if !ptr.is_null() {
-                    let elf = unsafe { core::slice::from_raw_parts(ptr as *const u8, size as usize) };
-                    let name = &entry.name[..entry.name_len as usize];
-                    let _ = ulib::sys_spawn_named(elf, 0, name);
-                    ulib::sys_munmap(ptr, size);
+        let entry = &self.config.apps[idx];
+        let name = &entry.name[..entry.name_len as usize];
+
+        if let Some((buf_id, size)) = self.preloaded[idx] {
+            // Fast path: ELF already in RAM — just map, spawn, unmap.
+            // Do NOT destroy the shared buf; keep it alive for future launches.
+            let ptr = ulib::sys_map_shared_buf(buf_id);
+            if !ptr.is_null() {
+                let elf = unsafe { core::slice::from_raw_parts(ptr as *const u8, size as usize) };
+                let _ = ulib::sys_spawn_named(elf, 0, name);
+                ulib::sys_munmap(ptr, size);
+            }
+        } else {
+            // Slow path: app not preloaded — read from disk.
+            let path_len = entry.path_len as usize;
+            if let Ok(path) = core::str::from_utf8(&entry.path[..path_len]) {
+                if let Some((buf_id, size)) = ulib::fs::fs_map_file(self.fs_ep, path) {
+                    let ptr = ulib::sys_map_shared_buf(buf_id);
+                    if !ptr.is_null() {
+                        let elf = unsafe { core::slice::from_raw_parts(ptr as *const u8, size as usize) };
+                        let _ = ulib::sys_spawn_named(elf, 0, name);
+                        ulib::sys_munmap(ptr, size);
+                    }
+                    ulib::sys_destroy_shared_buf(buf_id);
                 }
-                ulib::sys_destroy_shared_buf(buf_id);
             }
         }
-        window.hide();
     }
 
     fn handle_key(&mut self, k: kernel_api_types::KeyEvent) -> Action {
