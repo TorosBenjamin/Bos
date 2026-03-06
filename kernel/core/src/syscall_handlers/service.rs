@@ -32,6 +32,8 @@ pub fn sys_register_service(name_ptr: u64, name_len: u64, send_ep: u64, _: u64, 
 
     match crate::service_registry::register(name_bytes, send_ep, task_id.0) {
         Ok(()) => {
+            let name_str = core::str::from_utf8(name_bytes).unwrap_or("?");
+            log::info!("sys_register_service: ok name={:?} ep={}", name_str, send_ep);
             // Record the registration in the task so sys_exit can clean it up
             let mut name_arr = [0u8; MAX_SERVICE_NAME_LEN];
             let copy_len = name_bytes.len().min(MAX_SERVICE_NAME_LEN);
@@ -39,7 +41,11 @@ pub fn sys_register_service(name_ptr: u64, name_len: u64, send_ep: u64, _: u64, 
             task.inner.lock().registered_services.push(name_arr);
             SVC_OK
         }
-        Err(code) => code,
+        Err(code) => {
+            let name_str = core::str::from_utf8(name_bytes).unwrap_or("?");
+            log::warn!("sys_register_service: FAILED name={:?} code={}", name_str, code);
+            code
+        }
     }
 }
 

@@ -7,11 +7,13 @@ publish = false
 [build-dependencies]
 kernel = { path = "../../kernel/core", artifact = "bin", target = "x86_64-unknown-none" }
 tests = { path = "../../kernel/tests", artifact = "bin", target = "x86_64-unknown-none" }
-init_task = {path = "../../userspace/init_task", artifact = "bin", target = "x86_64-unknown-none"}
-display_server = {path = "../../userspace/display_server", artifact = "bin", target = "x86_64-unknown-none"}
-fs_server = {path = "../../userspace/fs_server", artifact = "bin", target = "x86_64-unknown-none"}
-user_land = {path = "../../userspace/user_land", artifact = "bin", target = "x86_64-unknown-none"}
-utest = { path = "../../userspace/utest", artifact = "bin", target = "x86_64-unknown-none", optional = true }
+init_task = {path = "../../userspace/servers/init_task", artifact = "bin", target = "x86_64-unknown-none"}
+display_server = {path = "../../userspace/servers/display_server", artifact = "bin", target = "x86_64-unknown-none"}
+fs_server = {path = "../../userspace/servers/fs_server", artifact = "bin", target = "x86_64-unknown-none"}
+user_land = {path = "../../userspace/apps/user_land", artifact = "bin", target = "x86_64-unknown-none"}
+hello_egui = {path = "../../userspace/apps/hello_egui", artifact = "bin", target = "x86_64-unknown-none"}
+files = {path = "../../userspace/apps/files", artifact = "bin", target = "x86_64-unknown-none"}
+utest = { path = "../../userspace/apps/utest", artifact = "bin", target = "x86_64-unknown-none", optional = true }
 fatfs = "0.3"
 
 [features]

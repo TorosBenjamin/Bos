@@ -285,7 +285,7 @@ pub fn create_user_task_from_elf() -> Task {
     let user_cs = gdt.user_code_selector().0;
     let user_ss = gdt.user_data_selector().0;
 
-    Task::new_user(entry_point.get(), rsp, l4_frame, cr3, user_cs, user_ss, user_vaddr_set, 0)
+    Task::new_user(entry_point.get(), rsp, l4_frame, cr3, user_cs, user_ss, user_vaddr_set, 0, b"init_task")
 }
 
 #[derive(Debug)]
@@ -298,9 +298,13 @@ pub enum SpawnError {
 ///
 /// Unlike `create_user_task_from_elf`, this allocates fresh physical frames and copies
 /// ELF segment data into them, giving the child fully independent memory.
-pub fn create_user_task_from_elf_bytes(elf_bytes: &[u8], child_arg: u64) -> Result<Task, SpawnError> {
+pub fn create_user_task_from_elf_bytes(elf_bytes: &[u8], child_arg: u64, name: &[u8]) -> Result<Task, SpawnError> {
     let elf = ElfBytes::<AnyEndian>::minimal_parse(elf_bytes)
-        .map_err(|_| SpawnError::InvalidElf)?;
+        .map_err(|_| {
+            let magic = if elf_bytes.len() >= 4 { &elf_bytes[..4] } else { elf_bytes };
+            log::warn!("create_user_task_from_elf_bytes: ELF parse failed, first 4 bytes: {:02x?}", magic);
+            SpawnError::InvalidElf
+        })?;
 
     let mut user_vaddr_set: NoditSet<u64, Interval<u64>> = NoditSet::default();
 
@@ -448,7 +452,7 @@ pub fn create_user_task_from_elf_bytes(elf_bytes: &[u8], child_arg: u64) -> Resu
     let user_cs = gdt.user_code_selector().0;
     let user_ss = gdt.user_data_selector().0;
 
-    Ok(Task::new_user(entry_point.get(), rsp, l4_frame, cr3, user_cs, user_ss, user_vaddr_set, child_arg))
+    Ok(Task::new_user(entry_point.get(), rsp, l4_frame, cr3, user_cs, user_ss, user_vaddr_set, child_arg, name))
 }
 
 bitflags! {

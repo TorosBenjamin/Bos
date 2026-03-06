@@ -69,7 +69,7 @@ pub type WindowId = u64;
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowMessageType {
-    /// Create a new window with given dimensions
+    /// Create a new toplevel window (DS assigns size via tiling)
     CreateWindow = 0,
     /// Update a window's pixel buffer
     UpdateWindow = 1,
@@ -83,16 +83,79 @@ pub enum WindowMessageType {
     RaiseWindow = 5,
     /// Send window to back (change z-order)
     LowerWindow = 6,
+    /// Create a panel anchored to a screen edge
+    CreatePanel = 7,
 }
 
-/// Create window request
+/// Panel anchor edge
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelAnchor {
+    Top    = 0,
+    Bottom = 1,
+    Left   = 2,
+    Right  = 3,
+}
+
+/// DS-to-client event type sent over the event channel
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowEventType {
+    KeyPress           = 0,
+    FocusGained        = 1,
+    FocusLost          = 2,
+    Configure          = 3,
+    /// Sent once per frame after display.present() completes, for every window whose
+    /// pixels were composited that frame. Clients should wait for this before drawing
+    /// the next frame so they pace themselves to the compositor's actual output rate.
+    FramePresented     = 4,
+    MouseButtonPress   = 5,
+    MouseButtonRelease = 6,
+    /// Cursor moved while over the focused window. `x`/`y` are window-relative.
+    MouseMove          = 7,
+    /// DS is tearing down this window. Client must stop accessing the buffer and exit.
+    Close              = 8,
+}
+
+pub const WINDOW_FLAG_FLOATING: u32 = 1;
+/// Set on CreateWindowRequest / CreatePanelRequest to opt into premultiplied-alpha compositing.
+/// When set, the compositor reads bits 31–24 of each pixel as the premultiplied alpha value.
+pub const WINDOW_FLAG_ALPHA: u32 = 2;
+
+/// Create toplevel window request — DS assigns position and size via tiling unless floating.
+/// Wire: [type=0: u8][CreateWindowRequest][reply_ep: u64]
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct CreateWindowRequest {
+    /// Client's event receive channel send endpoint; DS keeps this open to push events.
+    pub event_send_ep: u64,      // 8
+    /// Flags: WINDOW_FLAG_FLOATING = 1, WINDOW_FLAG_ALPHA = 2
+    pub flags:         u32,      // 4
+    pub app_id_len:    u8,       // 1
+    pub _pad:          [u8; 3],  // 3
+    /// UTF-8 app identifier string (up to 32 bytes, not null-terminated)
+    pub app_id:        [u8; 32], // 32
+    /// Parent window ID (0 = no parent; non-zero → always floats)
+    pub parent_id:     u64,      // 8
+    /// Desired width for floating windows (0 = DS default 400)
+    pub init_w:        u32,      // 4
+    /// Desired height for floating windows (0 = DS default 300)
+    pub init_h:        u32,      // 4
+}
+
+/// Create panel request — client specifies anchor and size.
+/// Wire: [type=7: u8][CreatePanelRequest][reply_ep: u64]
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct CreatePanelRequest {
+    pub anchor: u8,
+    /// Flags: WINDOW_FLAG_ALPHA = 2
+    pub flags: u8,
+    pub _pad: [u8; 2],
+    pub exclusive_zone: u32,
     pub width: u32,
     pub height: u32,
-    pub x: i32,
-    pub y: i32,
+    pub event_send_ep: u64,
 }
 
 /// Update window request — dirty-rect notification only (no pixel data).
@@ -176,7 +239,7 @@ impl WindowResult {
     }
 }
 
-/// Response to CreateWindow
+/// Response to CreateWindow / CreatePanel
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct CreateWindowResponse {
@@ -184,5 +247,61 @@ pub struct CreateWindowResponse {
     pub window_id: WindowId,
     /// Opaque shared-buffer ID — client passes this to sys_map_shared_buf
     /// to get a writable pointer to the window's pixel backing store.
+    pub shared_buf_id: u64,
+    /// DS-assigned dimensions
+    pub width: u32,
+    pub height: u32,
+}
+
+// --- DS-to-client event structs (sent over the event channel) ---
+
+/// Mouse move event sent to the focused window whenever the cursor moves.
+/// `x` and `y` are the cursor position relative to the window's top-left corner.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct MouseMoveEvent {
+    pub event_type: u8,  // WindowEventType::MouseMove
+    pub _pad: [u8; 3],
+    pub x: i32,
+    pub y: i32,
+}
+
+/// Mouse button press/release event sent to the focused window.
+/// `button` holds one of the `MOUSE_LEFT` / `MOUSE_RIGHT` / `MOUSE_MIDDLE` bitmask values.
+/// `x` and `y` are the cursor position relative to the window's top-left corner.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct MouseButtonEvent {
+    pub event_type: u8,  // WindowEventType::MouseButtonPress or MouseButtonRelease
+    pub button: u8,
+    pub _pad: [u8; 2],
+    pub x: i32,
+    pub y: i32,
+}
+
+/// Key press event from DS to focused window.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct KeyPressEvent {
+    pub event_type: u8,  // WindowEventType::KeyPress
+    pub key: crate::KeyEvent,
+}
+
+/// Focus gained/lost event.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct FocusEvent {
+    pub event_type: u8,  // WindowEventType::FocusGained or FocusLost
+}
+
+/// Configure event: DS has resized the window and allocated a new shared buffer.
+/// Client must call apply_configure() to map the new buffer and start using it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ConfigureEvent {
+    pub event_type: u8,  // WindowEventType::Configure
+    pub _pad: [u8; 3],
+    pub width: u32,
+    pub height: u32,
     pub shared_buf_id: u64,
 }

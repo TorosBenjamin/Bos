@@ -7,8 +7,6 @@ use limine::request::{ExecutableFileRequest, FramebufferRequest, HhdmRequest, Me
 pub const INIT_TASK_PATH: &CStr = c"/init_task";
 pub const DISPLAY_SERVER_PATH: &CStr = c"/display_server";
 pub const FS_SERVER_PATH: &CStr = c"/fs_server";
-pub const BOUNCING_CUBE_1_PATH: &CStr = c"/bouncing_cube_1";
-pub const BOUNCING_CUBE_2_PATH: &CStr = c"/bouncing_cube_2";
 
 #[used]
 #[unsafe(link_section = ".requests")]
@@ -41,8 +39,6 @@ pub static MODULE_REQUEST: ModuleRequest =
         &InternalModule::new().with_path(INIT_TASK_PATH),
         &InternalModule::new().with_path(DISPLAY_SERVER_PATH),
         &InternalModule::new().with_path(FS_SERVER_PATH),
-        &InternalModule::new().with_path(BOUNCING_CUBE_1_PATH),
-        &InternalModule::new().with_path(BOUNCING_CUBE_2_PATH),
     ]);
 
 #[used]

@@ -12,6 +12,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use embedded_graphics::geometry::Point;
 use embedded_graphics::pixelcolor::{Rgb888, RgbColor};
 use kernel::graphics::display::{self, DISPLAY, DISPLAY_OWNER};
+use kernel::graphics::pat;
 use kernel::graphics::writer::Writer;
 use kernel::limine_requests::{BASE_REVISION, MP_REQUEST, RSDP_REQUEST};
 use kernel::user_task_from_elf::create_user_task_from_elf;
@@ -61,6 +62,7 @@ extern "sysv64" fn init_bsp() -> ! {
     log::info!("BSP NMI handler initialized.");
 
     gdt::init();
+    pat::init();
     interrupt::idt::init();
 
     let rsdp = RSDP_REQUEST.get_response().unwrap();
@@ -131,6 +133,7 @@ extern "sysv64" fn init_ap() -> ! {
     let cpu_id = get_local().kernel_id;
     log::info!("AP {}: on new stack, calling gdt::init", cpu_id);
     gdt::init();
+    pat::init();
     log::info!("AP {}: gdt done, calling idt::init", cpu_id);
     interrupt::idt::init();
     log::info!("AP {}: idt done, calling apic::init_local_apic", cpu_id);

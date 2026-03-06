@@ -78,9 +78,9 @@ pub fn sys_yield(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
 
 /// Syscall: spawn a new user task from ELF bytes in the caller's memory.
 ///
-/// Arguments: elf_ptr, elf_len, child_arg
+/// Arguments: elf_ptr, elf_len, child_arg, name_ptr, name_len
 /// Returns: task ID on success, 0 on failure.
-pub fn sys_spawn(elf_ptr: u64, elf_len: u64, child_arg: u64, _: u64, _: u64, _: u64) -> u64 {
+pub fn sys_spawn(elf_ptr: u64, elf_len: u64, child_arg: u64, name_ptr: u64, name_len: u64, _: u64) -> u64 {
     if elf_len == 0 || elf_len > 64 * 1024 * 1024 {
         return 0;
     }
@@ -101,13 +101,32 @@ pub fn sys_spawn(elf_ptr: u64, elf_len: u64, child_arg: u64, _: u64, _: u64, _: 
         core::slice::from_raw_parts(elf_ptr as *const u8, elf_len as usize)
     };
 
-    match crate::user_task_from_elf::create_user_task_from_elf_bytes(elf_bytes, child_arg) {
+    let mut name_buf = [0u8; 32];
+    let name: &[u8] = if name_ptr != 0 && name_len != 0 {
+        let capped = name_len.min(32) as usize;
+        if super::validate_user_ptr(name_ptr, capped as u64) {
+            unsafe { core::ptr::copy_nonoverlapping(name_ptr as *const u8, name_buf.as_mut_ptr(), capped); }
+            &name_buf[..capped]
+        } else {
+            b""
+        }
+    } else {
+        b""
+    };
+
+    match crate::user_task_from_elf::create_user_task_from_elf_bytes(elf_bytes, child_arg, name) {
         Ok(task) => {
             let id = task.id.to_u64();
+            let name_str = core::str::from_utf8(name).unwrap_or("?");
+            log::info!("sys_spawn: ok task={} name={:?} entry={:#x}", id, name_str, elf_bytes.as_ptr() as u64);
             crate::task::global_scheduler::spawn_task(task);
             id
         }
-        Err(_) => 0,
+        Err(e) => {
+            let name_str = core::str::from_utf8(name).unwrap_or("?");
+            log::warn!("sys_spawn: FAILED name={:?} err={:?} elf_len={}", name_str, e, elf_len);
+            0
+        }
     }
 }
 
@@ -137,9 +156,9 @@ pub fn sys_sleep_ms(ms: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
 
 /// Syscall: create a new thread sharing the caller's address space.
 ///
-/// Arguments: entry_rip, stack_top, arg
+/// Arguments: entry_rip, stack_top, arg, name_ptr, name_len
 /// Returns: task ID on success, 0 on failure.
-pub fn sys_thread_create(entry: u64, stack_top: u64, arg: u64, _: u64, _: u64, _: u64) -> u64 {
+pub fn sys_thread_create(entry: u64, stack_top: u64, arg: u64, name_ptr: u64, name_len: u64, _: u64) -> u64 {
     let cpu = get_local();
 
     let (parent_cr3, vaddr_set) = {
@@ -152,11 +171,24 @@ pub fn sys_thread_create(entry: u64, stack_top: u64, arg: u64, _: u64, _: u64, _
         (task.cr3, inner.user_vaddr_set.clone())
     };
 
+    let mut name_buf = [0u8; 32];
+    let name: &[u8] = if name_ptr != 0 && name_len != 0 {
+        let capped = name_len.min(32) as usize;
+        if super::validate_user_ptr(name_ptr, capped as u64) {
+            unsafe { core::ptr::copy_nonoverlapping(name_ptr as *const u8, name_buf.as_mut_ptr(), capped); }
+            &name_buf[..capped]
+        } else {
+            b""
+        }
+    } else {
+        b""
+    };
+
     let gdt = cpu.gdt.get().unwrap();
     let user_cs = gdt.user_code_selector().0;
     let user_ss = gdt.user_data_selector().0;
 
-    let task = Task::new_thread(entry, stack_top, parent_cr3, user_cs, user_ss, vaddr_set, arg);
+    let task = Task::new_thread(entry, stack_top, parent_cr3, user_cs, user_ss, vaddr_set, arg, name);
     let id = task.id.to_u64();
     crate::task::global_scheduler::spawn_task(task);
     id

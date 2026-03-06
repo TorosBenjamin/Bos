@@ -451,6 +451,8 @@ extern "C" fn timer_interrupt_handler_inner() -> *mut CpuContext {
         }
     }
 
+    crate::syscall_handlers::check_timeout_waiters();
+
     crate::task::local_scheduler::schedule_from_interrupt(cpu)
 }
 

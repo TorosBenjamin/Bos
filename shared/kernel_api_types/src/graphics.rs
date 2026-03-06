@@ -46,6 +46,9 @@ pub struct DisplayInfo {
     pub green_mask_shift: u8,
     pub blue_mask_size: u8,
     pub blue_mask_shift: u8,
+    /// Row stride in bytes (may be larger than width * bytes_per_pixel due to hardware alignment).
+    /// Callers must use this when calculating row offsets into the VRAM front buffer.
+    pub pitch: u32,
 }
 
 impl DisplayInfo {
@@ -56,5 +59,11 @@ impl DisplayInfo {
         n |= ((g as u32) & ((1 << self.green_mask_size) - 1)) << self.green_mask_shift;
         n |= ((b as u32) & ((1 << self.blue_mask_size) - 1)) << self.blue_mask_shift;
         n
+    }
+
+    /// Encode a premultiplied ARGB pixel. `a` is stored in bits 31–24;
+    /// the RGB channels must already be premultiplied by the caller (`r * a / 255`, etc.).
+    pub fn build_pixel_alpha(&self, r: u8, g: u8, b: u8, a: u8) -> u32 {
+        self.build_pixel(r, g, b) | ((a as u32) << 24)
     }
 }

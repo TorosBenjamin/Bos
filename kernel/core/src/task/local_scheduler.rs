@@ -1,6 +1,11 @@
-use crate::memory::cpu_local_data::{CpuLocalData, get_local};
+use crate::memory::cpu_local_data::{CpuLocalData, get_local, get_cpu, local_apic_id_of};
 use crate::memory::MEMORY;
 use crate::task::task::{CpuContext, Task, TaskState};
+
+/// A waiter slot used by `sys_wait_for_event` to register a sleeping task
+/// against a single event source. Woken via `try_wake_slot` which uses a CAS
+/// to ensure the task is woken at most once even if multiple sources fire.
+pub type EventWaiterSlot = spin::Mutex<Option<(Arc<Task>, u32)>>;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
@@ -33,6 +38,24 @@ pub fn add(cpu: &CpuLocalData, task: Arc<Task>) {
         rq.ready.push_back(task);
         cpu.ready_count.fetch_add(1, Ordering::Relaxed);
     });
+}
+
+/// Wake the task in `slot` (if any) using a CAS to guard against double-wakeup.
+///
+/// Takes the Arc out of the slot atomically, then tries `compare_exchange(Sleeping, Ready)`.
+/// If the task has already been woken by another source the CAS fails and the Arc is dropped.
+pub fn try_wake_slot(slot: &EventWaiterSlot) {
+    if let Some((task, cpu_id)) = slot.lock().take() {
+        use core::sync::atomic::Ordering::{AcqRel, Relaxed};
+        if task.state.compare_exchange(TaskState::Sleeping, TaskState::Ready, AcqRel, Relaxed).is_ok() {
+            add(get_cpu(cpu_id), task);
+            let local_id = get_local().kernel_id;
+            if cpu_id != local_id {
+                let apic_id = local_apic_id_of(cpu_id);
+                crate::apic::send_fixed_ipi(apic_id, u8::from(crate::interrupt::InterruptVector::Reschedule));
+            }
+        }
+    }
 }
 
 /// Interrupt-safe scheduling: returns pointer to next task's CpuContext.

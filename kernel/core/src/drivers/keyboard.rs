@@ -69,10 +69,26 @@ static KEY_AVAILABLE: AtomicBool = AtomicBool::new(false);
 /// Task sleeping on keyboard input: (task_arc, cpu_kernel_id)
 pub static KEYBOARD_WAITER: Mutex<Option<(Arc<Task>, u32)>> = Mutex::new(None);
 
+/// Waiter slot for sys_wait_for_event; woken by CAS when a key event arrives.
+pub static KEYBOARD_EVENT_WAITER: crate::task::local_scheduler::EventWaiterSlot = Mutex::new(None);
+
 // Keyboard state
 static SHIFT_PRESSED: Mutex<bool> = Mutex::new(false);
-static CAPSLOCK_ON: Mutex<bool> = Mutex::new(false);
-static EXTENDED: Mutex<bool> = Mutex::new(false);
+static CAPSLOCK_ON:   Mutex<bool> = Mutex::new(false);
+static EXTENDED:      Mutex<bool> = Mutex::new(false);
+static ALT_PRESSED:   Mutex<bool> = Mutex::new(false);
+static CTRL_PRESSED:  Mutex<bool> = Mutex::new(false);
+static SUPER_PRESSED: Mutex<bool> = Mutex::new(false);
+
+pub fn current_modifiers() -> u8 {
+    use kernel_api_types::{KEY_MOD_SHIFT, KEY_MOD_CTRL, KEY_MOD_ALT, KEY_MOD_SUPER};
+    let mut m = 0u8;
+    if *SHIFT_PRESSED.lock() { m |= KEY_MOD_SHIFT; }
+    if *CTRL_PRESSED.lock()  { m |= KEY_MOD_CTRL;  }
+    if *ALT_PRESSED.lock()   { m |= KEY_MOD_ALT;   }
+    if *SUPER_PRESSED.lock() { m |= KEY_MOD_SUPER;  }
+    m
+}
 
 fn scancode_to_ascii(code: u8, uppercase: bool) -> Option<char> {
     let table = if uppercase { SHIFTED } else { NORMAL };
@@ -104,9 +120,17 @@ pub fn handle_scancode(scancode: u8) {
     *extended = false;
     drop(extended);
 
-    // Extended keys (arrow keys)
+    // Extended keys: modifiers first, then arrow keys
     if is_extended {
+        // Right Alt / AltGr
+        if code == 0x38 { *ALT_PRESSED.lock() = pressed; return; }
+        // Right Ctrl
+        if code == 0x1D { *CTRL_PRESSED.lock() = pressed; return; }
+        // Left Super (0x5B) / Right Super (0x5C)
+        if code == 0x5B || code == 0x5C { *SUPER_PRESSED.lock() = pressed; return; }
+
         if pressed {
+            let mods = current_modifiers();
             let event = match code {
                 0x48 => Some(KeyEvent::arrow_up()),
                 0x50 => Some(KeyEvent::arrow_down()),
@@ -114,16 +138,29 @@ pub fn handle_scancode(scancode: u8) {
                 0x4D => Some(KeyEvent::arrow_right()),
                 _ => None,
             };
-            if let Some(ev) = event {
+            if let Some(mut ev) = event {
+                ev.modifiers = mods;
                 push_event(ev);
             }
         }
         return;
     }
 
-    // Shift keys
+    // Left Shift / Right Shift
     if code == 0x2A || code == 0x36 {
         *SHIFT_PRESSED.lock() = pressed;
+        return;
+    }
+
+    // Left Alt
+    if code == 0x38 {
+        *ALT_PRESSED.lock() = pressed;
+        return;
+    }
+
+    // Left Ctrl
+    if code == 0x1D {
+        *CTRL_PRESSED.lock() = pressed;
         return;
     }
 
@@ -137,6 +174,8 @@ pub fn handle_scancode(scancode: u8) {
     if !pressed {
         return;
     }
+
+    let mods = current_modifiers();
 
     // Special keys
     let event = match code {
@@ -152,7 +191,8 @@ pub fn handle_scancode(scancode: u8) {
         }
     };
 
-    if let Some(ev) = event {
+    if let Some(mut ev) = event {
+        ev.modifiers = mods;
         push_event(ev);
     }
 }
@@ -169,6 +209,8 @@ fn push_event(event: KeyEvent) {
             crate::apic::send_fixed_ipi(apic_id, u8::from(crate::interrupt::InterruptVector::Reschedule));
         }
     }
+    // Wake any task sleeping in sys_wait_for_event watching keyboard
+    crate::task::local_scheduler::try_wake_slot(&KEYBOARD_EVENT_WAITER);
 }
 
 /// Try to pop a key event from the buffer. Returns None if empty.
@@ -202,5 +244,8 @@ pub fn reset() {
     *SHIFT_PRESSED.lock() = false;
     *CAPSLOCK_ON.lock() = false;
     *EXTENDED.lock() = false;
+    *ALT_PRESSED.lock() = false;
+    *CTRL_PRESSED.lock() = false;
+    *SUPER_PRESSED.lock() = false;
     KEY_AVAILABLE.store(false, Ordering::Release);
 }

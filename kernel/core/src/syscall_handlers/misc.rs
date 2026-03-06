@@ -56,6 +56,25 @@ pub fn sys_read_key(key_event_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u
     }
 }
 
+/// Syscall: try to read a key event (non-blocking).
+///
+/// Writes a KeyEvent to `key_event_out_ptr` if one is available.
+/// Returns 0 (key available) or 1 (no key).
+pub fn sys_try_read_key(key_event_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    if !validate_user_ptr(key_event_out_ptr, core::mem::size_of::<kernel_api_types::KeyEvent>() as u64) {
+        return 1;
+    }
+    let out = key_event_out_ptr as *mut kernel_api_types::KeyEvent;
+
+    match crate::drivers::keyboard::try_read_key() {
+        Some(event) => {
+            unsafe { core::ptr::write(out, event) };
+            0
+        }
+        None => 1,
+    }
+}
+
 /// Syscall: try to read a mouse event (non-blocking).
 ///
 /// Returns 0 and writes the event if one is available, or 1 if the buffer is empty.
@@ -107,7 +126,10 @@ pub fn sys_get_module(name_ptr: u64, name_len: u64, buf_ptr: u64, buf_cap: u64, 
 
     let module = match response.modules().iter().find(|m| m.path().to_bytes() == path) {
         Some(m) => m,
-        None => return 0,
+        None => {
+            log::warn!("sys_get_module: module {:?} not found", name);
+            return 0;
+        }
     };
 
     let module_size = module.size();
@@ -124,9 +146,13 @@ pub fn sys_get_module(name_ptr: u64, name_len: u64, buf_ptr: u64, buf_cap: u64, 
         return 0;
     }
 
+    let src = module.addr() as *const u8;
+    let magic = unsafe { core::slice::from_raw_parts(src, module_size.min(4) as usize) };
+    log::info!("sys_get_module: {:?} size={} magic={:02x?}", name, module_size, magic);
+
     unsafe {
         core::ptr::copy_nonoverlapping(
-            module.addr() as *const u8,
+            src,
             buf_ptr as *mut u8,
             module_size as usize,
         );

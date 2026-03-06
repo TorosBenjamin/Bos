@@ -219,6 +219,9 @@ pub struct Task {
     pub exit_notification_ep: AtomicU64,
     /// Number of scheduler quanta this task has consumed. One tick ≈ 1 ms.
     pub cpu_ticks: AtomicU64,
+    /// Human-readable name (up to 32 bytes, not null-terminated).
+    pub name: [u8; 32],
+    pub name_len: u8,
 }
 
 impl Task {
@@ -247,12 +250,15 @@ impl Task {
             r15: entry as u64, // trampoline reads entry fn from r15
             r14: 0, r13: 0, r12: 0, r11: 0, r10: 0, r9: 0, r8: 0,
             rdi: 0, rsi: 0, rbp: 0, rbx: 0, rdx: 0, rcx: 0, rax: 0,
-            rip: task_trampoline as u64,
+            rip: task_trampoline as *const() as u64,
             cs,
             rflags: 0x200, // IF=1 (interrupts enabled on entry)
             rsp: stack_top, // after iretq, task uses full stack from the top
             ss,
         };
+
+        let mut name = [0u8; 32];
+        name[..6].copy_from_slice(b"kernel");
 
         Task {
             inner: Mutex::new(TaskInner {
@@ -272,6 +278,8 @@ impl Task {
             exit_waiter: Mutex::new(None),
             exit_notification_ep: AtomicU64::new(0),
             cpu_ticks: AtomicU64::new(0),
+            name,
+            name_len: 6,
         }
     }
 
@@ -292,6 +300,7 @@ impl Task {
         user_ss: u16,
         user_vaddr_set: NoditSet<u64, Interval<u64>>,
         arg: u64,
+        task_name: &[u8],
     ) -> Self {
         // Allocate a kernel stack for this user task (used for interrupts/syscalls)
         let kernel_stack = GuardedStack::new_kernel(
@@ -316,6 +325,10 @@ impl Task {
             ss: user_ss as u64,
         };
 
+        let name_len = task_name.len().min(32) as u8;
+        let mut name = [0u8; 32];
+        name[..name_len as usize].copy_from_slice(&task_name[..name_len as usize]);
+
         Task {
             inner: Mutex::new(TaskInner {
                 context,
@@ -334,6 +347,8 @@ impl Task {
             exit_waiter: Mutex::new(None),
             exit_notification_ep: AtomicU64::new(0),
             cpu_ticks: AtomicU64::new(0),
+            name,
+            name_len,
         }
     }
 
@@ -349,6 +364,7 @@ impl Task {
         user_ss: u16,
         user_vaddr_set: NoditSet<u64, Interval<u64>>,
         arg: u64,
+        task_name: &[u8],
     ) -> Self {
         let kernel_stack = GuardedStack::new_kernel(
             NORMAL_STACK_SIZE,
@@ -369,6 +385,10 @@ impl Task {
             ss: user_ss as u64,
         };
 
+        let name_len = task_name.len().min(32) as u8;
+        let mut name = [0u8; 32];
+        name[..name_len as usize].copy_from_slice(&task_name[..name_len as usize]);
+
         Task {
             inner: Mutex::new(TaskInner {
                 context,
@@ -387,6 +407,8 @@ impl Task {
             exit_waiter: Mutex::new(None),
             exit_notification_ep: AtomicU64::new(0),
             cpu_ticks: AtomicU64::new(0),
+            name,
+            name_len,
         }
     }
 

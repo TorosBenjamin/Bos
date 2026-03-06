@@ -152,6 +152,53 @@ pub fn sys_channel_recv(endpoint_id: u64, buf_ptr: u64, buf_cap: u64, bytes_read
     }
 }
 
+/// Syscall: try to receive a message from a channel endpoint (non-blocking).
+///
+/// Returns IPC_OK and writes the message if one is available,
+/// or IPC_ERR_CHANNEL_FULL immediately if the channel is empty.
+pub fn sys_try_channel_recv(endpoint_id: u64, buf_ptr: u64, buf_cap: u64, bytes_read_out_ptr: u64, _: u64, _: u64) -> u64 {
+    if !validate_user_ptr(buf_ptr, buf_cap) || !validate_user_ptr(bytes_read_out_ptr, 8) {
+        return kernel_api_types::IPC_ERR_INVALID_ARGS;
+    }
+
+    match crate::ipc::try_recv(endpoint_id) {
+        Ok(msg) => {
+            let copy_len = msg.len().min(buf_cap as usize);
+            unsafe {
+                core::ptr::copy_nonoverlapping(msg.as_ptr(), buf_ptr as *mut u8, copy_len);
+                core::ptr::write(bytes_read_out_ptr as *mut u64, copy_len as u64);
+            }
+            kernel_api_types::IPC_OK
+        }
+        Err(crate::ipc::IpcError::WouldBlock) => kernel_api_types::IPC_ERR_CHANNEL_FULL,
+        Err(e) => ipc_error_to_code(e),
+    }
+}
+
+/// Syscall: try to send a message on a channel endpoint (non-blocking).
+///
+/// Returns IPC_OK if the message was enqueued, or IPC_ERR_CHANNEL_FULL immediately
+/// if the channel is at capacity. Never blocks.
+pub fn sys_try_channel_send(endpoint_id: u64, msg_ptr: u64, msg_len: u64, _: u64, _: u64, _: u64) -> u64 {
+    if msg_len > crate::ipc::MAX_MESSAGE_SIZE as u64 {
+        return kernel_api_types::IPC_ERR_MSG_TOO_LARGE;
+    }
+    if msg_len > 0 && !validate_user_ptr(msg_ptr, msg_len) {
+        return kernel_api_types::IPC_ERR_INVALID_ARGS;
+    }
+
+    let data = if msg_len > 0 {
+        unsafe { core::slice::from_raw_parts(msg_ptr as *const u8, msg_len as usize) }
+    } else {
+        &[]
+    };
+
+    match crate::ipc::try_send(endpoint_id, data) {
+        Ok(()) => kernel_api_types::IPC_OK,
+        Err(e) => ipc_error_to_code(e),
+    }
+}
+
 /// Syscall: close a channel endpoint.
 ///
 /// Arguments: endpoint_id
