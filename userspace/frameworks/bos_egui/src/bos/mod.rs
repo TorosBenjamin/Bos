@@ -119,7 +119,7 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
         };
         if let Some((cw, ch)) = child_req {
             if child.is_none() {
-                if let Some(cwin) = Window::new_floating(display_ep, name, main_id, cw, ch) {
+                if let Some(cwin) = Window::new_floating(display_ep, name, main_id, cw, ch, 0) {
                     child = Some(ChildState {
                         window: cwin,
                         frame_presented: true,

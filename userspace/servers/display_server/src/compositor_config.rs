@@ -52,6 +52,7 @@ pub enum ShortcutAction {
     FocusRight  = 4,   // focus window to the right (default: Super+Right)
     FocusUp     = 5,   // focus window above        (default: Super+Up)
     FocusDown   = 6,   // focus window below        (default: Super+Down)
+    ToggleLauncher = 7, // toggle the launcher window (default: Super+Space)
 }
 
 /// A single key binding: modifier bitmask + key type + optional character.
@@ -100,7 +101,8 @@ impl Default for DisplayConfig {
         shortcuts[n] = Some(ShortcutBinding { action: ShortcutAction::FocusLeft,   modifiers: KEY_MOD_SUPER,                key_type: KeyEventType::ArrowLeft,  character: 0   }); n += 1;
         shortcuts[n] = Some(ShortcutBinding { action: ShortcutAction::FocusRight,  modifiers: KEY_MOD_SUPER,                key_type: KeyEventType::ArrowRight, character: 0   }); n += 1;
         shortcuts[n] = Some(ShortcutBinding { action: ShortcutAction::FocusUp,     modifiers: KEY_MOD_SUPER,                key_type: KeyEventType::ArrowUp,    character: 0   }); n += 1;
-        shortcuts[n] = Some(ShortcutBinding { action: ShortcutAction::FocusDown,   modifiers: KEY_MOD_SUPER,                key_type: KeyEventType::ArrowDown,  character: 0   }); n += 1;
+        shortcuts[n] = Some(ShortcutBinding { action: ShortcutAction::FocusDown,       modifiers: KEY_MOD_SUPER,                key_type: KeyEventType::ArrowDown,  character: 0   }); n += 1;
+        shortcuts[n] = Some(ShortcutBinding { action: ShortcutAction::ToggleLauncher,  modifiers: KEY_MOD_SUPER,                key_type: KeyEventType::Char,        character: b' ' }); n += 1;
 
         Self {
             outer_gap:        8,
@@ -251,7 +253,8 @@ fn parse_shortcut_action(key: &[u8]) -> Option<ShortcutAction> {
         b"focus_left"   => Some(ShortcutAction::FocusLeft),
         b"focus_right"  => Some(ShortcutAction::FocusRight),
         b"focus_up"     => Some(ShortcutAction::FocusUp),
-        b"focus_down"   => Some(ShortcutAction::FocusDown),
+        b"focus_down"      => Some(ShortcutAction::FocusDown),
+        b"toggle_launcher" => Some(ShortcutAction::ToggleLauncher),
         _ => None,
     }
 }

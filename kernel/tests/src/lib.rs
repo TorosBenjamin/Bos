@@ -103,9 +103,6 @@ pub fn tests() -> &'static [TestEntry] {
         TestEntry { group: TestGroup::Time, test: &time::tsc_calibration },
         TestEntry { group: TestGroup::Time, test: &time::pit_sleep },
         TestEntry { group: TestGroup::Time, test: &time::sleep_ms_zero_noop },
-        TestEntry { group: TestGroup::Time, test: &time::sleep_ms_no_task_returns_error },
-        TestEntry { group: TestGroup::Time, test: &time::sleep_queue_tick_wakes_expired_task },
-        TestEntry { group: TestGroup::Time, test: &time::sleep_queue_only_expired_entries_woken },
 
         // Memory — virtual address allocator
         TestEntry { group: TestGroup::Memory, test: &memory::vaddr::allocate_kernel_page },

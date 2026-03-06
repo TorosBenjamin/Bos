@@ -33,6 +33,12 @@ pub struct Window {
     pub closing: bool,
     /// How many probe cycles have elapsed since closing was initiated.
     pub close_attempts: u32,
+    /// True when the window is hidden (removed from z-order without being closed).
+    pub hidden: bool,
+    /// Application identifier string (up to 32 bytes).
+    pub app_id: [u8; 32],
+    /// Number of valid bytes in app_id.
+    pub app_id_len: u8,
 }
 
 impl Window {
@@ -68,6 +74,9 @@ impl Window {
             has_alpha: false,
             closing: false,
             close_attempts: 0,
+            hidden: false,
+            app_id: [0u8; 32],
+            app_id_len: 0,
         })
     }
 

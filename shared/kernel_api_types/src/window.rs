@@ -85,6 +85,10 @@ pub enum WindowMessageType {
     LowerWindow = 6,
     /// Create a panel anchored to a screen edge
     CreatePanel = 7,
+    /// Hide a window (remove from compositing/z-order without closing)
+    HideWindow = 8,
+    /// Show a previously hidden window
+    ShowWindow = 9,
 }
 
 /// Panel anchor edge
@@ -121,6 +125,8 @@ pub const WINDOW_FLAG_FLOATING: u32 = 1;
 /// Set on CreateWindowRequest / CreatePanelRequest to opt into premultiplied-alpha compositing.
 /// When set, the compositor reads bits 31–24 of each pixel as the premultiplied alpha value.
 pub const WINDOW_FLAG_ALPHA: u32 = 2;
+/// Window starts hidden (not added to z-order until ShowWindow is received).
+pub const WINDOW_FLAG_HIDDEN: u32 = 4;
 
 /// Create toplevel window request — DS assigns position and size via tiling unless floating.
 /// Wire: [type=0: u8][CreateWindowRequest][reply_ep: u64]
@@ -206,6 +212,20 @@ pub struct RaiseWindowRequest {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct LowerWindowRequest {
+    pub window_id: WindowId,
+}
+
+/// Hide window request — removes the window from compositing/z-order without closing it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct HideWindowRequest {
+    pub window_id: WindowId,
+}
+
+/// Show window request — re-adds a previously hidden window to the z-order.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ShowWindowRequest {
     pub window_id: WindowId,
 }
 

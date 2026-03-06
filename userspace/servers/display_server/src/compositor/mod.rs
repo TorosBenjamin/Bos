@@ -89,6 +89,8 @@ pub struct Compositor {
     /// Keyboard shortcuts from /bos_ds.conf [shortcuts]
     shortcuts:   [Option<ShortcutBinding>; MAX_SHORTCUTS],
     n_shortcuts: usize,
+    /// Previous focus before the launcher was shown (restored on hide).
+    launcher_prev_focus: Option<WindowId>,
     /// Tiling layout direction (changed via Super+drag to screen edge)
     layout_dir: LayoutDir,
     /// Per-window split ratios for tiled layout (sum ≈ 1.0)
@@ -168,6 +170,7 @@ impl Compositor {
             inactive_opacity_floating: config.inactive_opacity_floating,
             shortcuts:   config.shortcuts,
             n_shortcuts: config.n_shortcuts,
+            launcher_prev_focus: None,
             layout_dir: LayoutDir::Horizontal,
             tiled_ratios: [0.0f32; MAX_WINDOWS],
             n_tiled_ratios: 0,
@@ -280,6 +283,41 @@ impl Compositor {
         }
     }
 
+    // --- Hide / show helpers ---
+
+    /// Find a window by its app_id string. Returns the WindowId if found.
+    fn find_by_app_id(&self, id: &[u8]) -> Option<WindowId> {
+        for slot in &self.windows {
+            if let Some(w) = slot.as_ref() {
+                if &w.app_id[..w.app_id_len as usize] == id {
+                    return Some(w.id);
+                }
+            }
+        }
+        None
+    }
+
+    /// Hide a window: remove from z-order without closing it.
+    pub(super) fn hide_window(&mut self, id: WindowId) {
+        if let Some(w) = self.windows.iter_mut().filter_map(|w| w.as_mut()).find(|w| w.id == id) {
+            w.hidden = true;
+        }
+        self.z_remove(id);
+        if self.focused_window == Some(id) {
+            self.focused_window = None;
+        }
+        self.pending_full_redraw = true;
+    }
+
+    /// Show a previously hidden window: add it back to the z-order.
+    pub(super) fn show_window(&mut self, id: WindowId) {
+        if let Some(w) = self.windows.iter_mut().filter_map(|w| w.as_mut()).find(|w| w.id == id) {
+            w.hidden = false;
+        }
+        self.z_push_toplevel(id);
+        self.pending_full_redraw = true;
+    }
+
     // --- Damage / pending state helpers ---
 
     fn screen_rect(&self, x: i32, y: i32, w: u32, h: u32) -> Option<DirtyRect> {
@@ -316,12 +354,12 @@ impl Compositor {
 
     // --- Focus management ---
 
-    /// Hit-test (x, y) against Toplevels in z-order (top-to-bottom). Panels are skipped.
+    /// Hit-test (x, y) against Toplevels in z-order (top-to-bottom). Panels and hidden windows are skipped.
     fn hit_test(&self, x: i32, y: i32) -> Option<WindowId> {
         for i in (0..self.n_windows).rev() {
             let id = self.z_order[i];
             if let Some(w) = self.windows.iter().filter_map(|w| w.as_ref()).find(|w| w.id == id) {
-                if w.is_panel {
+                if w.is_panel || w.hidden {
                     continue;
                 }
                 if x >= w.x && x < w.x + w.width as i32
@@ -353,6 +391,11 @@ impl Compositor {
     }
 
     fn set_focus(&mut self, new_id: Option<WindowId>) {
+        // Don't focus a hidden window
+        let new_id = new_id.filter(|&id| {
+            !self.windows.iter().filter_map(|w| w.as_ref()).find(|w| w.id == id).map(|w| w.hidden).unwrap_or(false)
+        });
+
         if self.focused_window == new_id {
             return;
         }
@@ -412,6 +455,24 @@ impl Compositor {
                     ShortcutAction::FocusPrev | ShortcutAction::FocusLeft | ShortcutAction::FocusUp => {
                         self.cycle_focus(false);
                     }
+                    ShortcutAction::ToggleLauncher => {
+                        if let Some(wid) = self.find_by_app_id(b"launcher") {
+                            let is_hidden = self.windows.iter()
+                                .filter_map(|w| w.as_ref())
+                                .find(|w| w.id == wid)
+                                .map(|w| w.hidden)
+                                .unwrap_or(true);
+                            if is_hidden {
+                                self.launcher_prev_focus = self.focused_window;
+                                self.show_window(wid);
+                                self.set_focus(Some(wid));
+                            } else {
+                                self.hide_window(wid);
+                                let prev = self.launcher_prev_focus.take();
+                                self.set_focus(prev);
+                            }
+                        }
+                    }
                 }
                 return true;
             }
@@ -429,7 +490,7 @@ impl Compositor {
             let is_panel = self.windows.iter()
                 .filter_map(|w| w.as_ref())
                 .find(|w| w.id == id)
-                .map(|w| w.is_panel || w.closing)
+                .map(|w| w.is_panel || w.closing || w.hidden)
                 .unwrap_or(true);
             if !is_panel {
                 ids[n] = id;

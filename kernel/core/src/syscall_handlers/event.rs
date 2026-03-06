@@ -11,25 +11,64 @@ use crate::time::tsc;
 
 use super::{current_task_and_cpu, validate_user_ptr};
 
-/// Global timeout waiter: (deadline_tsc, task, cpu_id). One slot (sufficient for single DS task).
-static TIMEOUT_WAITER: Mutex<Option<(u64, Arc<Task>, u32)>> = Mutex::new(None);
+const MAX_TIMEOUT_WAITERS: usize = 16;
+const NONE_TW: Option<(u64, Arc<Task>, u32)> = None;
+static TIMEOUT_WAITERS: Mutex<[Option<(u64, Arc<Task>, u32)>; MAX_TIMEOUT_WAITERS]>
+    = Mutex::new([NONE_TW; MAX_TIMEOUT_WAITERS]);
+
+fn add_timeout_waiter(deadline: u64, task: Arc<Task>, cpu_id: u32) {
+    let mut slots = TIMEOUT_WAITERS.lock();
+    for slot in slots.iter_mut() {
+        if slot.is_none() {
+            *slot = Some((deadline, task, cpu_id));
+            return;
+        }
+    }
+    // 16 slots full — silently drop (won't happen in practice)
+}
+
+fn remove_timeout_waiter(task: &Arc<Task>) {
+    let mut slots = TIMEOUT_WAITERS.lock();
+    for slot in slots.iter_mut() {
+        if let Some((_, t, _)) = slot {
+            if Arc::ptr_eq(t, task) {
+                *slot = None;
+                return;
+            }
+        }
+    }
+}
 
 /// Called by `timer_interrupt_handler_inner` every ~1 ms.
 /// Wakes any task whose TSC deadline has expired.
 pub fn check_timeout_waiters() {
     let now = tsc::value();
-    let mut guard = TIMEOUT_WAITER.lock();
-    if let Some(&(deadline, ref task, cpu_id)) = guard.as_ref() {
-        if now >= deadline {
-            let task = task.clone();
-            *guard = None;
-            drop(guard);
-            if task.state.compare_exchange(TaskState::Sleeping, TaskState::Ready, AcqRel, Relaxed).is_ok() {
+    loop {
+        let entry = {
+            let mut slots = TIMEOUT_WAITERS.lock();
+            let pos = slots.iter().position(|s| {
+                s.as_ref().map(|(d, _, _)| now >= *d).unwrap_or(false)
+            });
+            pos.and_then(|i| slots[i].take())
+        };
+        let (_, task, cpu_id) = match entry { Some(e) => e, None => break };
+        if task.state.compare_exchange(TaskState::Sleeping, TaskState::Ready, AcqRel, Relaxed).is_ok() {
+            let local_id = get_local().kernel_id;
+            if cpu_id != local_id {
                 local_scheduler::add(get_cpu(cpu_id), task);
-                let local_id = get_local().kernel_id;
-                if cpu_id != local_id {
-                    let apic_id = local_apic_id_of(cpu_id);
-                    crate::apic::send_fixed_ipi(apic_id, u8::from(crate::interrupt::InterruptVector::Reschedule));
+                let apic_id = local_apic_id_of(cpu_id);
+                crate::apic::send_fixed_ipi(apic_id, u8::from(crate::interrupt::InterruptVector::Reschedule));
+            } else {
+                // Same CPU: only add to the run queue if the task is NOT the current
+                // task. If it IS (sleeping in hlt), schedule_from_interrupt will see
+                // state=Ready and re-queue it exactly once. Adding here would create a
+                // duplicate entry that accumulates over time → OOM.
+                let is_current = {
+                    let rq = get_cpu(cpu_id).run_queue.get().unwrap().lock();
+                    rq.current_task.as_ref().map(|t| Arc::ptr_eq(t, &task)).unwrap_or(false)
+                };
+                if !is_current {
+                    local_scheduler::add(get_cpu(cpu_id), task);
                 }
             }
         }
@@ -146,7 +185,7 @@ pub fn sys_wait_for_event(
 
         // Register timeout waiter
         if deadline_tsc != 0 {
-            *TIMEOUT_WAITER.lock() = Some((deadline_tsc, task.clone(), cpu_id));
+            add_timeout_waiter(deadline_tsc, task.clone(), cpu_id);
         }
 
         // Mark sleeping — any ISR that fires after this point will CAS successfully
@@ -159,10 +198,7 @@ pub fn sys_wait_for_event(
 
         // Clear our timeout registration if we woke due to a different event
         if deadline_tsc != 0 {
-            let mut tw = TIMEOUT_WAITER.lock();
-            if tw.as_ref().map(|(_, t, _)| Arc::ptr_eq(t, &task)).unwrap_or(false) {
-                *tw = None;
-            }
+            remove_timeout_waiter(&task);
         }
 
         // Loop back: check what woke us and return, or re-register and sleep again

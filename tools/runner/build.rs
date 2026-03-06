@@ -23,6 +23,7 @@ const FAT32_BINARIES: &[(&str, &str, &str)] = &[
     ("user_land",  "bouncing_cube_2", "CUBE2.ELF"),
     ("hello_egui", "hello_egui",      "HELLO.ELF"),
     ("files",      "files",           "FILES.ELF"),
+    ("launcher",   "launcher",        "LAUNCH.ELF"),
 ];
 
 /// Kernel test feature flags → test suite name passed on the kernel cmdline.
@@ -102,8 +103,9 @@ fn main() {
     create_fat32_disk_image(&disk_img, &runner_dir);
     println!("cargo:rustc-env=DISK_IMG={}", disk_img.display());
 
-    // Re-run if the display server config changes
+    // Re-run if configs change
     println!("cargo:rerun-if-changed=bos_ds.conf");
+    println!("cargo:rerun-if-changed=launcher.conf");
 
     // Stable symlink to out_dir for convenient inspection
     ensure_symlink(&out_dir, runner_dir.join("out_dir")).unwrap();
@@ -202,6 +204,11 @@ fn create_fat32_disk_image(path: &Path, runner_dir: &Path) {
             .unwrap_or_else(|e| panic!("build.rs: cannot read {}: {e}", conf_src.display()));
         root.create_file("bos_ds.conf").expect("fatfs: create bos_ds.conf")
             .write_all(&config).unwrap();
+
+        // Launcher config
+        let launcher_conf = std::fs::read(runner_dir.join("launcher.conf")).unwrap_or_default();
+        root.create_file("LAUNCH.CFG").expect("fatfs: create LAUNCH.CFG")
+            .write_all(&launcher_conf).unwrap();
     }
 
     std::fs::write(path, disk.into_inner()).expect("build.rs: failed to write disk.img");

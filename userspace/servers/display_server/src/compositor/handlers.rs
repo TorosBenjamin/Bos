@@ -3,6 +3,10 @@ use crate::window::Window;
 use kernel_api_types::window::*;
 use kernel_api_types::IPC_ERR_PEER_CLOSED;
 
+fn read_unaligned_at<T: Copy>(msg: &[u8], offset: usize) -> T {
+    unsafe { core::ptr::read_unaligned(msg.as_ptr().add(offset) as *const T) }
+}
+
 impl Compositor {
     pub(super) fn handle_create_toplevel(&mut self, req: &CreateWindowRequest, reply_ep: u64) {
         let slot_idx = match self.windows.iter().position(|w| w.is_none()) {
@@ -47,13 +51,21 @@ impl Compositor {
             (new_x, ay + self.outer_gap as i32, init_w, usable_h)
         };
 
+        let starts_hidden = req.flags & WINDOW_FLAG_HIDDEN != 0;
+
         match Window::new(window_id, init_x, init_y, init_w, init_h, req.event_send_ep) {
             Some(mut window) => {
                 window.is_floating = is_floating;
                 window.has_alpha = req.flags & WINDOW_FLAG_ALPHA != 0;
+                window.hidden = starts_hidden;
+                let app_id_len = req.app_id_len.min(32) as usize;
+                window.app_id[..app_id_len].copy_from_slice(&req.app_id[..app_id_len]);
+                window.app_id_len = app_id_len as u8;
                 let shared_buf_id = window.shared_buf_id;
                 self.windows[slot_idx] = Some(window);
-                self.z_push_toplevel(window_id);
+                if !starts_hidden {
+                    self.z_push_toplevel(window_id);
+                }
 
                 self.send_response(reply_ep, &CreateWindowResponse {
                     result: WindowResult::Ok,
@@ -63,9 +75,11 @@ impl Compositor {
                     height: init_h,
                 });
 
-                self.set_focus(Some(window_id));
+                if !starts_hidden {
+                    self.set_focus(Some(window_id));
+                }
 
-                if !is_floating {
+                if !is_floating && !starts_hidden {
                     // Recalculate layout: redistributes existing tiled toplevels.
                     self.recalculate_toplevel_layout();
                 } else {
@@ -439,6 +453,34 @@ impl Compositor {
                     core::ptr::read_unaligned(msg.as_ptr().add(1) as *const LowerWindowRequest)
                 };
                 self.handle_lower_window(&req);
+            }
+            t if t == WindowMessageType::HideWindow as u8 => {
+                if msg.len() < 1 + core::mem::size_of::<HideWindowRequest>() {
+                    return;
+                }
+                let req: HideWindowRequest = read_unaligned_at(msg, 1);
+                let is_visible = self.windows.iter()
+                    .filter_map(|w| w.as_ref())
+                    .find(|w| w.id == req.window_id)
+                    .map(|w| !w.hidden)
+                    .unwrap_or(false);
+                if is_visible {
+                    self.hide_window(req.window_id);
+                }
+            }
+            t if t == WindowMessageType::ShowWindow as u8 => {
+                if msg.len() < 1 + core::mem::size_of::<ShowWindowRequest>() {
+                    return;
+                }
+                let req: ShowWindowRequest = read_unaligned_at(msg, 1);
+                let is_hidden = self.windows.iter()
+                    .filter_map(|w| w.as_ref())
+                    .find(|w| w.id == req.window_id)
+                    .map(|w| w.hidden)
+                    .unwrap_or(false);
+                if is_hidden {
+                    self.show_window(req.window_id);
+                }
             }
             _ => {}
         }

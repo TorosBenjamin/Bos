@@ -46,6 +46,12 @@ struct Inner {
     draw_y: i32,
     /// Left margin.
     margin: i32,
+    /// Current horizontal drawing position (used inside `horizontal` layout).
+    draw_x: i32,
+    /// True when inside a `horizontal` layout group.
+    in_horizontal: bool,
+    /// Maximum widget height seen so far in the current horizontal group.
+    horiz_max_h: i32,
 }
 
 pub struct Context {
@@ -77,6 +83,9 @@ impl Context {
                 click,
                 draw_y: 0,
                 margin: 12,
+                draw_x: 0,
+                in_horizontal: false,
+                horiz_max_h: 0,
             }),
         }
     }
@@ -165,7 +174,7 @@ impl<'a> Ui<'a> {
         // Measure approximate button size: each char ≈ 8px wide, 13px tall + padding
         let btn_w = (s.len() as i32) * 8 + 16; // 8px padding per side
         let btn_h = 22i32;
-        let bx = inner.margin;
+        let bx = if inner.in_horizontal { inner.draw_x } else { inner.margin };
         let by_ = inner.draw_y;
 
         // Hit-test
@@ -203,8 +212,109 @@ impl<'a> Ui<'a> {
         // Label centred vertically: btn_h=22, font_h=13 → top at (22-13)/2 = 4
         draw_text(&mut buf, &s, bx + 8, by_ + 4, BTN_FG, &FONT_8X13);
 
-        inner.draw_y += btn_h + 8;
+        if inner.in_horizontal {
+            inner.draw_x += btn_w + 6;
+            if btn_h > inner.horiz_max_h { inner.horiz_max_h = btn_h; }
+        } else {
+            inner.draw_y += btn_h + 8;
+        }
         Response { clicked }
+    }
+
+    pub fn text_edit_singleline(&mut self, text: &mut String) -> Response {
+        let mut inner = self.ctx.inner.borrow_mut();
+
+        let box_h = 28i32;
+        let padding = 6;
+        let box_w = inner.width as i32 - (inner.margin * 2);
+        let bx = inner.margin;
+        let by = inner.draw_y;
+
+        let mut buf = self.ctx.pixels_mut(&mut inner);
+
+        let _ = Rectangle::new(
+            embedded_graphics::geometry::Point::new(bx, by),
+            embedded_graphics::geometry::Size::new(box_w as u32, box_h as u32),
+        )
+        .into_styled(PrimitiveStyle::with_fill(INPUT_BG))
+        .draw(&mut buf);
+
+        let _ = Rectangle::new(
+            embedded_graphics::geometry::Point::new(bx, by),
+            embedded_graphics::geometry::Size::new(box_w as u32, box_h as u32),
+        )
+        .into_styled(PrimitiveStyle::with_stroke(INPUT_BR, 1))
+        .draw(&mut buf);
+
+        // Draw text + cursor
+        let mut display_text = text.clone();
+        display_text.push('|');
+        draw_text(&mut buf, &display_text, bx + padding, by + padding, INPUT_FG, &FONT_8X13);
+
+        inner.draw_y += box_h + 8;
+        Response { clicked: false }
+    }
+
+    pub fn selectable_label(&mut self, selected: bool, text: impl ToString) -> Response {
+        let s = text.to_string();
+        let mut inner = self.ctx.inner.borrow_mut();
+
+        let row_h = 30i32;
+        let bx = inner.margin;
+        let by_ = inner.draw_y;
+        let row_w = inner.width as i32 - (inner.margin * 2);
+
+        let (cx_i, cy_i) = (inner.cursor_x as i32, inner.cursor_y as i32);
+        let hovered = cx_i >= bx && cx_i < bx + row_w && cy_i >= by_ && cy_i < by_ + row_h;
+        let clicked = if let Some((clx, cly)) = inner.click {
+            let (clx, cly) = (clx as i32, cly as i32);
+            clx >= bx && clx < bx + row_w && cly >= by_ && cly < by_ + row_h
+        } else {
+            false
+        };
+        if clicked { inner.click = None; }
+
+        let mut buf = self.ctx.pixels_mut(&mut inner);
+
+        if selected {
+            let _ = Rectangle::new(
+                embedded_graphics::geometry::Point::new(bx, by_),
+                embedded_graphics::geometry::Size::new(row_w as u32, row_h as u32),
+            )
+            .into_styled(PrimitiveStyle::with_fill(BTN_HOV))
+            .draw(&mut buf);
+        } else if hovered {
+            let _ = Rectangle::new(
+                embedded_graphics::geometry::Point::new(bx, by_),
+                embedded_graphics::geometry::Size::new(row_w as u32, row_h as u32),
+            )
+            .into_styled(PrimitiveStyle::with_stroke(HEADING, 1))
+            .draw(&mut buf);
+        }
+
+        draw_text(&mut buf, &s, bx + 8, by_ + 8, FG, &FONT_8X13);
+
+        inner.draw_y += row_h + 2;
+        Response { clicked }
+    }
+
+    pub fn horizontal<R, F>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut Ui) -> R,
+    {
+        {
+            let mut inner = self.ctx.inner.borrow_mut();
+            inner.in_horizontal = true;
+            inner.draw_x = inner.margin;
+            inner.horiz_max_h = 0;
+        }
+        let result = f(self);
+        {
+            let mut inner = self.ctx.inner.borrow_mut();
+            inner.in_horizontal = false;
+            inner.draw_y += inner.horiz_max_h + 8;
+        }
+        result
     }
 
     pub fn text_edit_multiline(&mut self, text: &mut String) -> Response {

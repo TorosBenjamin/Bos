@@ -13,6 +13,7 @@ fs_server = {path = "../../userspace/servers/fs_server", artifact = "bin", targe
 user_land = {path = "../../userspace/apps/user_land", artifact = "bin", target = "x86_64-unknown-none"}
 hello_egui = {path = "../../userspace/apps/hello_egui", artifact = "bin", target = "x86_64-unknown-none"}
 files = {path = "../../userspace/apps/files", artifact = "bin", target = "x86_64-unknown-none"}
+launcher = {path = "../../userspace/apps/launcher", artifact = "bin", target = "x86_64-unknown-none"}
 utest = { path = "../../userspace/apps/utest", artifact = "bin", target = "x86_64-unknown-none", optional = true }
 fatfs = "0.3"
 

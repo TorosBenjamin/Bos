@@ -22,8 +22,9 @@ use kernel_api_types::window::{
     ConfigureEvent, CreatePanelRequest, CreateWindowRequest, CreateWindowResponse,
     MouseButtonEvent, MouseMoveEvent, UpdateWindowRequest, WindowEventType, WindowMessageType,
     WindowResult, WindowId, WINDOW_FLAG_FLOATING, CloseWindowRequest,
+    HideWindowRequest, ShowWindowRequest,
 };
-pub use kernel_api_types::window::DirtyRect;
+pub use kernel_api_types::window::{DirtyRect, WINDOW_FLAG_HIDDEN};
 pub use kernel_api_types::{KeyEvent, KeyEventType};
 
 /// Events delivered from the display server to this window.
@@ -186,12 +187,14 @@ impl Window {
     ///
     /// `parent_id` should be the `window_id()` of the owning window (0 = no parent).
     /// `w` / `h` are the desired pixel dimensions (0 = DS default 400×300).
+    /// `extra_flags` are OR'd with `WINDOW_FLAG_FLOATING` (e.g. `WINDOW_FLAG_HIDDEN`).
     pub fn new_floating(
         display_server_send_ep: u64,
         app_id: &str,
         parent_id: u64,
         w: u32,
         h: u32,
+        extra_flags: u32,
     ) -> Option<Self> {
         let mut id_bytes = [0u8; 32];
         let len = app_id.len().min(32);
@@ -199,7 +202,7 @@ impl Window {
 
         let req = CreateWindowRequest {
             event_send_ep: 0,
-            flags: WINDOW_FLAG_FLOATING,
+            flags: WINDOW_FLAG_FLOATING | extra_flags,
             app_id_len: len as u8,
             _pad: [0; 3],
             app_id: id_bytes,
@@ -212,6 +215,41 @@ impl Window {
 
     /// Return the window ID assigned by the display server.
     pub fn window_id(&self) -> u64 { self.window_id }
+
+    /// Return the event receive endpoint (for use with `sys_wait_for_event`).
+    pub fn event_recv_ep(&self) -> u64 { self.event_recv_ep }
+
+    /// Hide this window (remove from compositor z-order without closing).
+    pub fn hide(&mut self) {
+        const MSG_SIZE: usize = 1 + core::mem::size_of::<HideWindowRequest>();
+        let mut msg = [0u8; MSG_SIZE];
+        msg[0] = WindowMessageType::HideWindow as u8;
+        let req = HideWindowRequest { window_id: self.window_id };
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                &req as *const HideWindowRequest as *const u8,
+                msg.as_mut_ptr().add(1),
+                core::mem::size_of::<HideWindowRequest>(),
+            );
+        }
+        crate::sys_try_channel_send(self.send_endpoint, &msg);
+    }
+
+    /// Show a previously hidden window (re-add to compositor z-order).
+    pub fn show(&mut self) {
+        const MSG_SIZE: usize = 1 + core::mem::size_of::<ShowWindowRequest>();
+        let mut msg = [0u8; MSG_SIZE];
+        msg[0] = WindowMessageType::ShowWindow as u8;
+        let req = ShowWindowRequest { window_id: self.window_id };
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                &req as *const ShowWindowRequest as *const u8,
+                msg.as_mut_ptr().add(1),
+                core::mem::size_of::<ShowWindowRequest>(),
+            );
+        }
+        crate::sys_try_channel_send(self.send_endpoint, &msg);
+    }
 
     /// Close the window, unmapping its buffer and closing the event channel.
     ///

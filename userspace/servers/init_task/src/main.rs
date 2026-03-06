@@ -47,7 +47,8 @@ unsafe extern "sysv64" fn entry_point() -> ! {
         let fs_ep = ulib::fs::fs_lookup();
 
         for (path, name) in [
-            ("HELLO.ELF", b"hello_egui" as &[u8]),
+            ("LAUNCH.ELF", b"launcher" as &[u8]),
+            ("HELLO.ELF", b"hello_egui"),
             ("FILES.ELF", b"files"),
         ] {
             if let Some((buf_id, size)) = ulib::fs::fs_map_file(fs_ep, path) {
