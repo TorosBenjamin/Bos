@@ -12,6 +12,16 @@ unsafe extern "sysv64" fn entry_point() -> ! {
     let utest_size = ulib::sys_get_module("utest", core::ptr::null_mut(), 0);
     let is_test_mode = utest_size > 0;
 
+    // Load and spawn fs_server (registers "fatfs" service)
+    let fss_size = ulib::sys_get_module("fs_server", core::ptr::null_mut(), 0);
+    if fss_size > 0 {
+        let fss_buf = ulib::sys_mmap(fss_size, kernel_api_types::MMAP_WRITE);
+        let _ = ulib::sys_get_module("fs_server", fss_buf, fss_size);
+        let fss_elf = unsafe { core::slice::from_raw_parts(fss_buf, fss_size as usize) };
+        let _ = ulib::sys_spawn(fss_elf, 0);
+        ulib::sys_munmap(fss_buf, fss_size);
+    }
+
     // Load and spawn display_server (it will self-register the "display" service)
     let ds_size = ulib::sys_get_module("display_server", core::ptr::null_mut(), 0);
     let ds_buf = ulib::sys_mmap(ds_size, kernel_api_types::MMAP_WRITE);
@@ -23,16 +33,6 @@ unsafe extern "sysv64" fn entry_point() -> ! {
 
     // Transfer display ownership to display_server
     ulib::sys_transfer_display(ds_id);
-
-    // Load and spawn fs_server (registers "fatfs" service)
-    let fss_size = ulib::sys_get_module("fs_server", core::ptr::null_mut(), 0);
-    if fss_size > 0 {
-        let fss_buf = ulib::sys_mmap(fss_size, kernel_api_types::MMAP_WRITE);
-        let _ = ulib::sys_get_module("fs_server", fss_buf, fss_size);
-        let fss_elf = unsafe { core::slice::from_raw_parts(fss_buf, fss_size as usize) };
-        let _ = ulib::sys_spawn(fss_elf, 0);
-        ulib::sys_munmap(fss_buf, fss_size);
-    }
 
     if is_test_mode {
         // Test mode: spawn utest; skip normal apps

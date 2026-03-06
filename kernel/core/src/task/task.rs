@@ -247,7 +247,7 @@ impl Task {
             r15: entry as u64, // trampoline reads entry fn from r15
             r14: 0, r13: 0, r12: 0, r11: 0, r10: 0, r9: 0, r8: 0,
             rdi: 0, rsi: 0, rbp: 0, rbx: 0, rdx: 0, rcx: 0, rax: 0,
-            rip: task_trampoline as u64,
+            rip: task_trampoline as *const() as u64,
             cs,
             rflags: 0x200, // IF=1 (interrupts enabled on entry)
             rsp: stack_top, // after iretq, task uses full stack from the top
