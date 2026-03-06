@@ -30,7 +30,9 @@ pub trait App {
 pub fn open_child_window(w: u32, h: u32) { bos::request_open_child(w, h); }
 
 #[cfg(target_os = "linux")]
-pub fn open_child_window(_w: u32, _h: u32) {}
+pub fn open_child_window(_w: u32, _h: u32) {
+    
+}
 
 // ── Linux ────────────────────────────────────────────────────────────────────
 
