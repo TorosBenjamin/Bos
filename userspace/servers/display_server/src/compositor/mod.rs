@@ -5,7 +5,8 @@ use crate::compositor_config::{
 use crate::cursor::{CURSOR_H, CURSOR_W};
 use crate::window::Window;
 use kernel_api_types::window::*;
-use kernel_api_types::{IPC_OK, MMAP_WRITE, MOUSE_LEFT, MOUSE_RIGHT, MOUSE_MIDDLE};
+use kernel_api_types::{IPC_OK, MMAP_WRITE, MOUSE_LEFT, MOUSE_RIGHT, MOUSE_MIDDLE, KEY_MOD_SUPER};
+use layout::LayoutDir;
 
 mod layout;
 mod render;
@@ -15,6 +16,33 @@ pub const MAX_WINDOWS: usize = 32;
 const MAX_MSG_SIZE: usize = 4096;
 pub(super) const CLOSE_MAX_ATTEMPTS: u32 = 20;   // 20 × 100 ms ≈ 2-second timeout
 const CLOSE_POLL_TIMEOUT_MS: u64 = 100;
+
+const MIN_SIZE: u32 = 100;
+const MIN_RATIO: f32 = 0.1;
+
+#[derive(Clone, Copy)]
+enum DragKind {
+    MoveFloating { start_x: i32, start_y: i32 },
+    MoveTiled,
+    ResizeFloating {
+        start_x: i32, start_y: i32,
+        start_w: u32, start_h: u32,
+        resize_left: bool, resize_top: bool,
+    },
+    ResizeTiled {
+        tiled_index: usize,
+        start_ratios: [f32; MAX_WINDOWS],
+        n_tiled: usize,
+    },
+}
+
+#[derive(Clone, Copy)]
+struct DragState {
+    window_id: WindowId,
+    kind: DragKind,
+    start_cx: i32,
+    start_cy: i32,
+}
 
 pub struct Compositor {
     display: ulib::display::Display,
@@ -61,6 +89,14 @@ pub struct Compositor {
     /// Keyboard shortcuts from /bos_ds.conf [shortcuts]
     shortcuts:   [Option<ShortcutBinding>; MAX_SHORTCUTS],
     n_shortcuts: usize,
+    /// Tiling layout direction (changed via Super+drag to screen edge)
+    layout_dir: LayoutDir,
+    /// Per-window split ratios for tiled layout (sum ≈ 1.0)
+    tiled_ratios: [f32; MAX_WINDOWS],
+    /// Number of valid entries in tiled_ratios
+    n_tiled_ratios: usize,
+    /// Active Super+drag operation, if any
+    drag_state: Option<DragState>,
 }
 
 impl Compositor {
@@ -132,6 +168,10 @@ impl Compositor {
             inactive_opacity_floating: config.inactive_opacity_floating,
             shortcuts:   config.shortcuts,
             n_shortcuts: config.n_shortcuts,
+            layout_dir: LayoutDir::Horizontal,
+            tiled_ratios: [0.0f32; MAX_WINDOWS],
+            n_tiled_ratios: 0,
+            drag_state: None,
         }
     }
 
@@ -294,6 +334,24 @@ impl Compositor {
         None
     }
 
+    /// Hit-test against tiled (non-floating, non-panel) windows only.
+    fn hit_test_tiled(&self, x: i32, y: i32) -> Option<WindowId> {
+        for i in (0..self.n_windows).rev() {
+            let id = self.z_order[i];
+            if let Some(w) = self.windows.iter().filter_map(|w| w.as_ref()).find(|w| w.id == id) {
+                if w.is_panel || w.is_floating {
+                    continue;
+                }
+                if x >= w.x && x < w.x + w.width as i32
+                    && y >= w.y && y < w.y + w.height as i32
+                {
+                    return Some(id);
+                }
+            }
+        }
+        None
+    }
+
     fn set_focus(&mut self, new_id: Option<WindowId>) {
         if self.focused_window == new_id {
             return;
@@ -394,6 +452,254 @@ impl Compositor {
         self.set_focus(Some(next_id)); // set_focus calls mark_full_redraw internally
     }
 
+    // --- Drag helpers ---
+
+    /// Move tiled window `id` to the front of the tiled zone (z_order[0]).
+    fn move_tiled_to_front(&mut self, id: WindowId) {
+        self.z_remove(id);
+        if self.n_windows < MAX_WINDOWS {
+            for i in (0..self.n_windows).rev() {
+                self.z_order[i + 1] = self.z_order[i];
+            }
+            self.z_order[0] = id;
+            self.n_windows += 1;
+        }
+    }
+
+    /// Move tiled window `id` to the back of the tiled zone (just before first float/panel).
+    fn move_tiled_to_back(&mut self, id: WindowId) {
+        self.z_remove(id);
+        // Find end of tiled zone
+        let tiled_end = (0..self.n_windows)
+            .find(|&i| {
+                let zid = self.z_order[i];
+                self.windows.iter().filter_map(|w| w.as_ref())
+                    .find(|w| w.id == zid)
+                    .map(|w| w.is_floating || w.is_panel)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(self.n_windows);
+        if self.n_windows < MAX_WINDOWS {
+            for i in (tiled_end..self.n_windows).rev() {
+                self.z_order[i + 1] = self.z_order[i];
+            }
+            self.z_order[tiled_end] = id;
+            self.n_windows += 1;
+        }
+    }
+
+    fn swap_tiled_windows(&mut self, id1: WindowId, id2: WindowId) {
+        let pos1 = self.z_order[..self.n_windows].iter().position(|&x| x == id1);
+        let pos2 = self.z_order[..self.n_windows].iter().position(|&x| x == id2);
+        if let (Some(p1), Some(p2)) = (pos1, pos2) {
+            self.z_order.swap(p1, p2);
+        }
+    }
+
+    fn start_move_drag(&mut self, id: WindowId) {
+        let info = self.windows.iter()
+            .filter_map(|w| w.as_ref())
+            .find(|w| w.id == id)
+            .map(|w| (w.x, w.y, w.is_floating));
+        let (wx, wy, is_floating) = match info { Some(v) => v, None => return };
+
+        let kind = if is_floating {
+            DragKind::MoveFloating { start_x: wx, start_y: wy }
+        } else {
+            DragKind::MoveTiled
+        };
+        self.drag_state = Some(DragState {
+            window_id: id,
+            kind,
+            start_cx: self.cursor_x,
+            start_cy: self.cursor_y,
+        });
+    }
+
+    fn start_resize_drag(&mut self, id: WindowId) {
+        let info = self.windows.iter()
+            .filter_map(|w| w.as_ref())
+            .find(|w| w.id == id)
+            .map(|w| (w.x, w.y, w.width, w.height, w.is_floating));
+        let (wx, wy, ww, wh, is_floating) = match info { Some(v) => v, None => return };
+
+        let resize_left = self.cursor_x < wx + ww as i32 / 2;
+        let resize_top  = self.cursor_y < wy + wh as i32 / 2;
+
+        let kind = if is_floating {
+            DragKind::ResizeFloating {
+                start_x: wx, start_y: wy,
+                start_w: ww, start_h: wh,
+                resize_left, resize_top,
+            }
+        } else {
+            let (tiled, n_tiled) = self.tiled_ids();
+            let tiled_index = match (0..n_tiled).find(|&i| tiled[i] == id) {
+                Some(idx) => idx,
+                None => return,
+            };
+            let mut start_ratios = [0.0f32; MAX_WINDOWS];
+            start_ratios[..n_tiled].copy_from_slice(&self.tiled_ratios[..n_tiled]);
+            DragKind::ResizeTiled { tiled_index, start_ratios, n_tiled }
+        };
+        self.drag_state = Some(DragState {
+            window_id: id,
+            kind,
+            start_cx: self.cursor_x,
+            start_cy: self.cursor_y,
+        });
+    }
+
+    fn update_drag(&mut self) {
+        let drag = match self.drag_state { Some(d) => d, None => return };
+
+        match drag.kind {
+            DragKind::MoveFloating { start_x, start_y } => {
+                let new_x = (start_x + (self.cursor_x - drag.start_cx))
+                    .clamp(0, self.display_info.width as i32 - 1);
+                let new_y = (start_y + (self.cursor_y - drag.start_cy))
+                    .clamp(0, self.display_info.height as i32 - 1);
+
+                // Read old geometry before the mutable borrow.
+                let old_info = self.windows.iter()
+                    .filter_map(|w| w.as_ref())
+                    .find(|w| w.id == drag.window_id)
+                    .map(|w| (w.x, w.y, w.width, w.height));
+
+                if let Some((old_x, old_y, ww, wh)) = old_info {
+                    if old_x != new_x || old_y != new_y {
+                        if let Some(w) = self.windows.iter_mut()
+                            .filter_map(|w| w.as_mut())
+                            .find(|w| w.id == drag.window_id)
+                        {
+                            w.x = new_x;
+                            w.y = new_y;
+                        }
+
+                        // Dirty = old_rect ∪ new_rect, both padded by border_width.
+                        // Avoids a full-screen redraw: only the vacated area and the
+                        // new area need compositing, typically a small delta per frame.
+                        let bw = self.border_width;
+                        let bwu = bw.max(0) as u32;
+                        let old_rect = self.screen_rect(old_x - bw, old_y - bw, ww + 2 * bwu, wh + 2 * bwu);
+                        let new_rect = self.screen_rect(new_x - bw, new_y - bw, ww + 2 * bwu, wh + 2 * bwu);
+                        let damage = match (old_rect, new_rect) {
+                            (Some(mut a), Some(b)) => { a.expand(b.x, b.y, b.w, b.h); Some(a) }
+                            (Some(a), None) => Some(a),
+                            (None, Some(b)) => Some(b),
+                            (None, None) => None,
+                        };
+                        if let Some(d) = damage {
+                            self.mark_damage(d);
+                        }
+                    }
+                }
+            }
+            DragKind::MoveTiled => {
+                // Nothing during drag; snap layout applied on button release.
+            }
+            DragKind::ResizeFloating { start_x, start_y, start_w, start_h, resize_left, resize_top } => {
+                let dx = self.cursor_x - drag.start_cx;
+                let dy = self.cursor_y - drag.start_cy;
+
+                let (new_x, new_w) = if resize_left {
+                    let clamped_h = (start_w as i32 - dx).max(MIN_SIZE as i32) as u32;
+                    let actual_dx = start_w as i32 - clamped_h as i32;
+                    (start_x + actual_dx, clamped_h)
+                } else {
+                    (start_x, (start_w as i32 + dx).max(MIN_SIZE as i32) as u32)
+                };
+
+                let (new_y, new_h) = if resize_top {
+                    let clamped_h = (start_h as i32 - dy).max(MIN_SIZE as i32) as u32;
+                    let actual_dy = start_h as i32 - clamped_h as i32;
+                    (start_y + actual_dy, clamped_h)
+                } else {
+                    (start_y, (start_h as i32 + dy).max(MIN_SIZE as i32) as u32)
+                };
+
+                let mut configure_info: Option<(u64, u32, u32, u64)> = None;
+                if let Some(w) = self.windows.iter_mut()
+                    .filter_map(|w| w.as_mut())
+                    .find(|w| w.id == drag.window_id)
+                {
+                    if w.reconfigure(new_x, new_y, new_w, new_h) {
+                        configure_info = Some((w.event_send_ep, new_w, new_h, w.shared_buf_id));
+                    }
+                }
+                if let Some((ep, w, h, buf_id)) = configure_info {
+                    send_event(ep, &ConfigureEvent {
+                        event_type: WindowEventType::Configure as u8,
+                        _pad: [0; 3],
+                        width: w,
+                        height: h,
+                        shared_buf_id: buf_id,
+                    });
+                }
+                self.mark_full_redraw();
+            }
+            DragKind::ResizeTiled { tiled_index, start_ratios, n_tiled } => {
+                if n_tiled < 2 { return; }
+
+                let (ax_unused, ay_unused, aw, ah) = self.available_area();
+                let _ = (ax_unused, ay_unused);
+                let total_gaps = 2 * self.outer_gap + (n_tiled as u32 - 1) * self.inner_gap;
+                let usable_span = match self.layout_dir {
+                    LayoutDir::Horizontal => aw.saturating_sub(total_gaps) as f32,
+                    LayoutDir::Vertical   => ah.saturating_sub(total_gaps) as f32,
+                };
+
+                let delta = match self.layout_dir {
+                    LayoutDir::Horizontal => self.cursor_x - drag.start_cx,
+                    LayoutDir::Vertical   => self.cursor_y - drag.start_cy,
+                };
+                let ratio_delta = if usable_span > 0.0 { delta as f32 / usable_span } else { 0.0 };
+
+                let adj = if tiled_index + 1 < n_tiled { tiled_index + 1 } else { tiled_index - 1 };
+                let sum = start_ratios[tiled_index] + start_ratios[adj];
+                let new_main = (start_ratios[tiled_index] + ratio_delta).clamp(MIN_RATIO, sum - MIN_RATIO);
+                let new_adj  = sum - new_main;
+
+                self.tiled_ratios[tiled_index] = new_main;
+                self.tiled_ratios[adj] = new_adj;
+                self.recalculate_toplevel_layout();
+            }
+        }
+    }
+
+    fn apply_tiled_drop(&mut self, id: WindowId, cx: i32, cy: i32) {
+        let (ax, ay, aw, ah) = self.available_area();
+        let zone_w = (aw / 5) as i32;
+        let zone_h = (ah / 5) as i32;
+
+        let (_, n_tiled) = self.tiled_ids();
+
+        if cx < ax + zone_w {
+            self.layout_dir = LayoutDir::Horizontal;
+            self.move_tiled_to_front(id);
+        } else if cx > ax + aw as i32 - zone_w {
+            self.layout_dir = LayoutDir::Horizontal;
+            self.move_tiled_to_back(id);
+        } else if cy < ay + zone_h {
+            self.layout_dir = LayoutDir::Vertical;
+            self.move_tiled_to_front(id);
+        } else if cy > ay + ah as i32 - zone_h {
+            self.layout_dir = LayoutDir::Vertical;
+            self.move_tiled_to_back(id);
+        } else {
+            // Swap with the tiled window under the cursor
+            if let Some(target) = self.hit_test_tiled(cx, cy) {
+                if target != id {
+                    self.swap_tiled_windows(id, target);
+                }
+            }
+        }
+
+        self.reset_tiled_ratios(n_tiled);
+        self.recalculate_toplevel_layout();
+        self.mark_full_redraw();
+    }
+
     // --- Main loop ---
 
     pub fn run(&mut self) -> ! {
@@ -409,8 +715,9 @@ impl Compositor {
             // Poll any windows that are in the process of graceful close.
             self.poll_closing_windows();
 
-            // Drain all pending IPC messages (non-blocking) before compositing.
-            loop {
+            // Drain pending IPC messages (non-blocking) before compositing.
+            // Capped at 64 per frame so a spamming client can't starve the compositor.
+            for _ in 0..64 {
                 let msg_slice = unsafe { core::slice::from_raw_parts_mut(msg_buf, MAX_MSG_SIZE) };
                 let (result, bytes_read) = ulib::sys_try_channel_recv(self.recv_endpoint, msg_slice);
                 if result != IPC_OK || bytes_read == 0 {
@@ -424,10 +731,12 @@ impl Compositor {
             let mut total_dx = 0i32;
             let mut total_dy = 0i32;
             let mut cur_buttons = self.prev_mouse_buttons;
+            let mut cur_modifiers = 0u8;
             while let Some(ev) = ulib::sys_read_mouse() {
                 total_dx += ev.dx as i32;
                 total_dy += ev.dy as i32;
                 cur_buttons = ev.buttons;
+                cur_modifiers = ev.modifiers;
             }
 
             if total_dx != 0 || total_dy != 0 {
@@ -447,41 +756,76 @@ impl Compositor {
                 if let Some(cd) = cursor_damage {
                     self.expand_pending(cd);
                 }
+            }
 
-            // Notify the focused window of the new cursor position (window-relative).
-            if let Some(fw_id) = self.focused_window {
-                let info = self.windows.iter()
-                    .filter_map(|w| w.as_ref())
-                    .find(|w| w.id == fw_id)
-                    .map(|w| (w.x, w.y, w.event_send_ep));
-                if let Some((wx, wy, ep)) = info {
-                    if ep != 0 {
-                        send_event(ep, &MouseMoveEvent {
-                            event_type: WindowEventType::MouseMove as u8,
-                            _pad: [0; 3],
-                            x: self.cursor_x - wx,
-                            y: self.cursor_y - wy,
-                        });
+            // Update any active drag (position/size/ratio changes based on cursor movement).
+            if self.drag_state.is_some() {
+                self.update_drag();
+            }
+
+            // Notify the focused window of the new cursor position (window-relative),
+            // but only when no drag is consuming mouse input.
+            if self.drag_state.is_none() && (total_dx != 0 || total_dy != 0) {
+                if let Some(fw_id) = self.focused_window {
+                    let info = self.windows.iter()
+                        .filter_map(|w| w.as_ref())
+                        .find(|w| w.id == fw_id)
+                        .map(|w| (w.x, w.y, w.event_send_ep));
+                    if let Some((wx, wy, ep)) = info {
+                        if ep != 0 {
+                            send_event(ep, &MouseMoveEvent {
+                                event_type: WindowEventType::MouseMove as u8,
+                                _pad: [0; 3],
+                                x: self.cursor_x - wx,
+                                y: self.cursor_y - wy,
+                            });
+                        }
                     }
                 }
             }
-            }
 
-            // Click-to-focus: left button just pressed
+            let had_drag = self.drag_state.is_some();
             let just_pressed  = cur_buttons & !self.prev_mouse_buttons;
             let just_released = self.prev_mouse_buttons & !cur_buttons;
-            if just_pressed & MOUSE_LEFT != 0 {
-                let hit = self.hit_test(self.cursor_x, self.cursor_y);
-                if let Some(id) = hit {
-                    self.z_raise(id);
+            let super_held    = cur_modifiers & KEY_MOD_SUPER != 0;
+
+            // Complete drag on button release
+            if had_drag && just_released & (MOUSE_LEFT | MOUSE_RIGHT) != 0 {
+                if let Some(drag) = self.drag_state.take() {
+                    if matches!(drag.kind, DragKind::MoveTiled) {
+                        self.apply_tiled_drop(drag.window_id, self.cursor_x, self.cursor_y);
+                    }
                     self.mark_full_redraw();
                 }
-                self.set_focus(hit);
             }
+
+            // Start drag or handle regular click (only when no drag was already active)
+            if !had_drag {
+                if just_pressed & MOUSE_LEFT != 0 {
+                    if super_held {
+                        if let Some(id) = self.hit_test(self.cursor_x, self.cursor_y) {
+                            self.start_move_drag(id);
+                        }
+                    } else {
+                        let hit = self.hit_test(self.cursor_x, self.cursor_y);
+                        if let Some(id) = hit {
+                            self.z_raise(id);
+                            self.mark_full_redraw();
+                        }
+                        self.set_focus(hit);
+                    }
+                }
+                if just_pressed & MOUSE_RIGHT != 0 && super_held {
+                    if let Some(id) = self.hit_test(self.cursor_x, self.cursor_y) {
+                        self.start_resize_drag(id);
+                    }
+                }
+            }
+
             self.prev_mouse_buttons = cur_buttons;
 
-            // Route mouse button events to the focused window
-            if (just_pressed | just_released) != 0 {
+            // Route mouse button events to the focused window (skip during drag)
+            if !had_drag && self.drag_state.is_none() && (just_pressed | just_released) != 0 {
                 if let Some(fw_id) = self.focused_window {
                     let pos = self.windows.iter()
                         .filter_map(|w| w.as_ref())

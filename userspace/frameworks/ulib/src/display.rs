@@ -9,7 +9,8 @@ use kernel_api_types::MMAP_WRITE;
 use crate::window::DirtyRect;
 
 /// Maximum number of independent dirty rectangles tracked before falling back to a bounding box.
-const MAX_DIRTY: usize = 8;
+/// Set to 32 to match the compositor's MAX_WINDOWS so every window always gets its own entry.
+const MAX_DIRTY: usize = 32;
 
 pub struct Display {
     back_buffer: &'static mut [u32],

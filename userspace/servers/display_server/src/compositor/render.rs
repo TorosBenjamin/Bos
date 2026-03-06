@@ -217,8 +217,13 @@ impl Compositor {
                     }
                     let dst_off = dst_row_off + col;
                     if effective_alpha >= 255 {
-                        // Fully opaque: strip the alpha byte and write directly.
-                        *dst.add(dst_off) = src_px & 0x00FF_FFFF;
+                        // Fully opaque: reconstruct via channel fields so the result
+                        // is correct regardless of pixel format (avoids hardcoding
+                        // alpha in bits 24-31).
+                        let r = (src_px >> info.red_mask_shift)   & 0xFF;
+                        let g = (src_px >> info.green_mask_shift) & 0xFF;
+                        let b = (src_px >> info.blue_mask_shift)  & 0xFF;
+                        *dst.add(dst_off) = info.build_pixel(r as u8, g as u8, b as u8);
                         continue;
                     }
                     // src channels are already premultiplied by pixel_alpha; scale by dim.
@@ -302,7 +307,7 @@ impl Compositor {
                 self.blit_to_back(bufs[i], ww, wx, wy, ww, wh, clip);
             }
 
-            if !panels[i] {
+            if !panels[i] && self.border_width > 0 {
                 let bw = self.border_width;
                 let bwu = bw as u32;
                 let color = colors[i];

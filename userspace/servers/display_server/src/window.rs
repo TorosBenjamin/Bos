@@ -95,6 +95,12 @@ impl Window {
         // Unmap old buffer from DS address space (physical pages kept alive by shared_buf object)
         ulib::sys_munmap(self.buffer as *mut u8, self.buf_size);
 
+        // If a previous reconfigure went unacknowledged, destroy its buffer now so it
+        // isn't leaked (the client will never send UpdateWindow for the skipped size).
+        if let Some(stale_id) = self.pending_old_buf_id.take() {
+            ulib::sys_destroy_shared_buf(stale_id);
+        }
+
         // Store old shared_buf_id so we can destroy it after the client acknowledges
         self.pending_old_buf_id = Some(self.shared_buf_id);
 

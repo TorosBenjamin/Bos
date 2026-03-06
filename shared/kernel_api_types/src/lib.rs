@@ -56,13 +56,15 @@ pub const MOUSE_MIDDLE: u8 = 1 << 2;
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct MouseEvent {
-    pub dx:      i16,
-    pub dy:      i16,
-    pub buttons: u8,
+    pub dx:        i16,
+    pub dy:        i16,
+    pub buttons:   u8,
+    /// KEY_MOD_* bitmask of modifier keys held at event time.
+    pub modifiers: u8,
 }
 
 impl MouseEvent {
-    pub const EMPTY: Self = Self { dx: 0, dy: 0, buttons: 0 };
+    pub const EMPTY: Self = Self { dx: 0, dy: 0, buttons: 0, modifiers: 0 };
 }
 
 // IPC error codes

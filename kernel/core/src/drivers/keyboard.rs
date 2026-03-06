@@ -80,7 +80,7 @@ static ALT_PRESSED:   Mutex<bool> = Mutex::new(false);
 static CTRL_PRESSED:  Mutex<bool> = Mutex::new(false);
 static SUPER_PRESSED: Mutex<bool> = Mutex::new(false);
 
-fn current_modifiers() -> u8 {
+pub fn current_modifiers() -> u8 {
     use kernel_api_types::{KEY_MOD_SHIFT, KEY_MOD_CTRL, KEY_MOD_ALT, KEY_MOD_SUPER};
     let mut m = 0u8;
     if *SHIFT_PRESSED.lock() { m |= KEY_MOD_SHIFT; }

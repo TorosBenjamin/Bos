@@ -239,17 +239,6 @@ impl DisplayConfig {
         cfg
     }
 
-    /// Look up any config-defined window rule for the given app_id bytes.
-    pub fn lookup_window_rule(&self, app_id: &[u8]) -> Option<WindowMode> {
-        for i in 0..self.n_window_rules {
-            if let Some(ref r) = self.window_rules[i] {
-                if &r.app_id[..r.app_id_len as usize] == app_id {
-                    return Some(r.mode);
-                }
-            }
-        }
-        None
-    }
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────

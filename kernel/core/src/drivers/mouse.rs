@@ -116,7 +116,7 @@ pub fn on_mouse_interrupt() {
         drop(pkt);
         drop(idx);
 
-        push_event(MouseEvent { dx, dy, buttons });
+        push_event(MouseEvent { dx, dy, buttons, modifiers: super::keyboard::current_modifiers() });
     }
 }
 
