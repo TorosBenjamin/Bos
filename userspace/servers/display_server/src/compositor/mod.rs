@@ -1,4 +1,7 @@
-use crate::compositor_config::{DisplayConfig, WindowMode, WindowRule};
+use crate::compositor_config::{
+    DisplayConfig, WindowMode, WindowRule,
+    ShortcutAction, ShortcutBinding, MAX_SHORTCUTS,
+};
 use crate::cursor::{CURSOR_H, CURSOR_W};
 use crate::window::Window;
 use kernel_api_types::window::*;
@@ -55,6 +58,9 @@ pub struct Compositor {
     inactive_opacity: u8,
     /// Opacity for inactive (unfocused) floating windows: 0–255. 255 = no dimming.
     inactive_opacity_floating: u8,
+    /// Keyboard shortcuts from /bos_ds.conf [shortcuts]
+    shortcuts:   [Option<ShortcutBinding>; MAX_SHORTCUTS],
+    n_shortcuts: usize,
 }
 
 impl Compositor {
@@ -124,6 +130,8 @@ impl Compositor {
             n_window_rules,
             inactive_opacity: config.inactive_opacity,
             inactive_opacity_floating: config.inactive_opacity_floating,
+            shortcuts:   config.shortcuts,
+            n_shortcuts: config.n_shortcuts,
         }
     }
 
@@ -320,6 +328,72 @@ impl Compositor {
             .unwrap_or(0)
     }
 
+    // --- Keyboard shortcuts ---
+
+    /// Check `key` against configured shortcuts. Returns `true` if the event was consumed.
+    fn handle_shortcut(&mut self, key: &kernel_api_types::KeyEvent) -> bool {
+        use kernel_api_types::KeyEventType;
+        for i in 0..self.n_shortcuts {
+            if let Some(b) = self.shortcuts[i] {
+                if key.modifiers != b.modifiers { continue; }
+                if key.event_type != b.key_type  { continue; }
+                if b.key_type == KeyEventType::Char
+                    && key.character.to_ascii_lowercase() != b.character
+                {
+                    continue;
+                }
+                match b.action {
+                    ShortcutAction::CloseWindow => {
+                        if let Some(id) = self.focused_window {
+                            self.initiate_close(id);
+                        }
+                    }
+                    ShortcutAction::FocusNext | ShortcutAction::FocusRight | ShortcutAction::FocusDown => {
+                        self.cycle_focus(true);
+                    }
+                    ShortcutAction::FocusPrev | ShortcutAction::FocusLeft | ShortcutAction::FocusUp => {
+                        self.cycle_focus(false);
+                    }
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Cycle focus through non-panel toplevels in z-order. `forward = true` → next window.
+    fn cycle_focus(&mut self, forward: bool) {
+        // Collect toplevels (non-panel) in current z-order (bottom → top).
+        let mut ids = [0u64; MAX_WINDOWS];
+        let mut n = 0usize;
+        for i in 0..self.n_windows {
+            let id = self.z_order[i];
+            let is_panel = self.windows.iter()
+                .filter_map(|w| w.as_ref())
+                .find(|w| w.id == id)
+                .map(|w| w.is_panel || w.closing)
+                .unwrap_or(true);
+            if !is_panel {
+                ids[n] = id;
+                n += 1;
+            }
+        }
+        if n <= 1 { return; }
+
+        let cur_idx = self.focused_window
+            .and_then(|id| (0..n).find(|&i| ids[i] == id));
+
+        let next_idx = if forward {
+            cur_idx.map(|i| (i + 1) % n).unwrap_or(0)
+        } else {
+            cur_idx.map(|i| (i + n - 1) % n).unwrap_or(n - 1)
+        };
+
+        let next_id = ids[next_idx];
+        self.z_raise(next_id);
+        self.set_focus(Some(next_id)); // set_focus calls mark_full_redraw internally
+    }
+
     // --- Main loop ---
 
     pub fn run(&mut self) -> ! {
@@ -441,8 +515,11 @@ impl Compositor {
                 }
             }
 
-            // Route keyboard events to the focused window
+            // Route keyboard events to the focused window, intercepting shortcuts first.
             while let Some(key) = ulib::sys_try_read_key() {
+                if self.handle_shortcut(&key) {
+                    continue;
+                }
                 if let Some(fw_id) = self.focused_window {
                     let ep = self.window_event_ep(fw_id);
                     if ep != 0 {

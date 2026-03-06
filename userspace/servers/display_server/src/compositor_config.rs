@@ -18,8 +18,19 @@
 /// [window_rules]
 /// hello_egui = float
 /// bouncing_cube_1 = tile
+///
+/// [shortcuts]
+/// close_window  = super+q
+/// focus_next    = alt+tab
+/// focus_prev    = alt+shift+tab
+/// focus_left    = super+left
+/// focus_right   = super+right
+/// focus_up      = super+up
+/// focus_down    = super+down
 /// ```
 /// Unknown keys/sections are silently ignored.
+
+use kernel_api_types::{KeyEventType, KEY_MOD_SHIFT, KEY_MOD_ALT, KEY_MOD_SUPER};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum WindowMode { Tiled, Floating }
@@ -29,6 +40,32 @@ pub struct WindowRule {
     pub app_id_len: u8,
     pub mode:       WindowMode,
 }
+
+/// Actions that can be triggered by a keyboard shortcut.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum ShortcutAction {
+    CloseWindow = 0,
+    FocusNext   = 1,   // cycle focus forward  (default: Alt+Tab)
+    FocusPrev   = 2,   // cycle focus backward (default: Alt+Shift+Tab)
+    FocusLeft   = 3,   // focus window to the left  (default: Super+Left)
+    FocusRight  = 4,   // focus window to the right (default: Super+Right)
+    FocusUp     = 5,   // focus window above        (default: Super+Up)
+    FocusDown   = 6,   // focus window below        (default: Super+Down)
+}
+
+/// A single key binding: modifier bitmask + key type + optional character.
+#[derive(Clone, Copy)]
+pub struct ShortcutBinding {
+    pub action:    ShortcutAction,
+    /// Bitmask of required modifiers (KEY_MOD_* from kernel_api_types).
+    pub modifiers: u8,
+    pub key_type:  KeyEventType,
+    /// For Char events: the expected character (lowercase). Ignored for non-Char keys.
+    pub character: u8,
+}
+
+pub const MAX_SHORTCUTS: usize = 16;
 
 pub struct DisplayConfig {
     pub outer_gap:        u32,
@@ -44,23 +81,41 @@ pub struct DisplayConfig {
     pub inactive_opacity: u8,
     /// Opacity for inactive (unfocused) floating windows, 0–255.
     pub inactive_opacity_floating: u8,
+    pub shortcuts:        [Option<ShortcutBinding>; MAX_SHORTCUTS],
+    pub n_shortcuts:      usize,
 }
 
 impl Default for DisplayConfig {
     fn default() -> Self {
-        const NONE_RULE: Option<WindowRule> = None;
+        const NONE_RULE:     Option<WindowRule>      = None;
+        const NONE_SHORTCUT: Option<ShortcutBinding> = None;
+
+        let mut shortcuts = [NONE_SHORTCUT; MAX_SHORTCUTS];
+        let mut n = 0usize;
+
+        // Default shortcuts — mirrors the [shortcuts] section in bos_ds.conf.
+        shortcuts[n] = Some(ShortcutBinding { action: ShortcutAction::CloseWindow, modifiers: KEY_MOD_SUPER,                key_type: KeyEventType::Char,       character: b'q' }); n += 1;
+        shortcuts[n] = Some(ShortcutBinding { action: ShortcutAction::FocusNext,   modifiers: KEY_MOD_ALT,                  key_type: KeyEventType::Tab,        character: 0   }); n += 1;
+        shortcuts[n] = Some(ShortcutBinding { action: ShortcutAction::FocusPrev,   modifiers: KEY_MOD_ALT | KEY_MOD_SHIFT,  key_type: KeyEventType::Tab,        character: 0   }); n += 1;
+        shortcuts[n] = Some(ShortcutBinding { action: ShortcutAction::FocusLeft,   modifiers: KEY_MOD_SUPER,                key_type: KeyEventType::ArrowLeft,  character: 0   }); n += 1;
+        shortcuts[n] = Some(ShortcutBinding { action: ShortcutAction::FocusRight,  modifiers: KEY_MOD_SUPER,                key_type: KeyEventType::ArrowRight, character: 0   }); n += 1;
+        shortcuts[n] = Some(ShortcutBinding { action: ShortcutAction::FocusUp,     modifiers: KEY_MOD_SUPER,                key_type: KeyEventType::ArrowUp,    character: 0   }); n += 1;
+        shortcuts[n] = Some(ShortcutBinding { action: ShortcutAction::FocusDown,   modifiers: KEY_MOD_SUPER,                key_type: KeyEventType::ArrowDown,  character: 0   }); n += 1;
+
         Self {
             outer_gap:        8,
             inner_gap:        8,
             border_size:      2,
-            border_focused:   (0x8a, 0xad, 0xf4), // #8aadf4 Catppuccin Macchiato blue
-            border_unfocused: (0x36, 0x3a, 0x4f), // #363a4f Catppuccin Macchiato surface0
-            bg_top:           (0x1e, 0x3a, 0x5f), // #1e3a5f
-            bg_bottom:        (0x0a, 0x0a, 0x0f), // #0a0a0f
+            border_focused:   (0x8a, 0xad, 0xf4),
+            border_unfocused: (0x36, 0x3a, 0x4f),
+            bg_top:           (0x1e, 0x3a, 0x5f),
+            bg_bottom:        (0x0a, 0x0a, 0x0f),
             window_rules:     [NONE_RULE; 16],
             n_window_rules:   0,
-            inactive_opacity: 204,          // 80%
-            inactive_opacity_floating: 255, // 100% (solid)
+            inactive_opacity: 204,
+            inactive_opacity_floating: 255,
+            shortcuts,
+            n_shortcuts: n,
         }
     }
 }
@@ -72,7 +127,7 @@ impl DisplayConfig {
         let mut cfg = Self::default();
 
         #[derive(Clone, Copy, PartialEq)]
-        enum Section { General, Colors, WindowRules, Unknown }
+        enum Section { General, Colors, WindowRules, Shortcuts, Unknown }
         let mut section = Section::Unknown;
 
         for raw_line in bytes.split(|&b| b == b'\n') {
@@ -90,6 +145,7 @@ impl DisplayConfig {
                         b"general"      => Section::General,
                         b"colors"       => Section::Colors,
                         b"window_rules" => Section::WindowRules,
+                        b"shortcuts"    => Section::Shortcuts,
                         _               => Section::Unknown,
                     };
                 }
@@ -150,6 +206,31 @@ impl DisplayConfig {
                             }
                         }
                     }
+                    Section::Shortcuts => {
+                        if cfg.n_shortcuts < MAX_SHORTCUTS {
+                            if let Some(action) = parse_shortcut_action(key) {
+                                if let Some((mods, kt, ch)) = parse_key_combo(val) {
+                                    // Override any existing binding for this action.
+                                    let mut replaced = false;
+                                    for slot in cfg.shortcuts[..cfg.n_shortcuts].iter_mut() {
+                                        if let Some(b) = slot {
+                                            if b.action == action {
+                                                *b = ShortcutBinding { action, modifiers: mods, key_type: kt, character: ch };
+                                                replaced = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if !replaced {
+                                        cfg.shortcuts[cfg.n_shortcuts] = Some(ShortcutBinding {
+                                            action, modifiers: mods, key_type: kt, character: ch,
+                                        });
+                                        cfg.n_shortcuts += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     Section::Unknown => {}
                 }
             }
@@ -172,6 +253,58 @@ impl DisplayConfig {
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
+
+fn parse_shortcut_action(key: &[u8]) -> Option<ShortcutAction> {
+    match key {
+        b"close_window" => Some(ShortcutAction::CloseWindow),
+        b"focus_next"   => Some(ShortcutAction::FocusNext),
+        b"focus_prev"   => Some(ShortcutAction::FocusPrev),
+        b"focus_left"   => Some(ShortcutAction::FocusLeft),
+        b"focus_right"  => Some(ShortcutAction::FocusRight),
+        b"focus_up"     => Some(ShortcutAction::FocusUp),
+        b"focus_down"   => Some(ShortcutAction::FocusDown),
+        _ => None,
+    }
+}
+
+/// Parse a key combo string such as `super+q`, `alt+tab`, `alt+shift+tab`, `super+left`.
+/// Returns `(modifier_bitmask, KeyEventType, character_byte)`.
+fn parse_key_combo(val: &[u8]) -> Option<(u8, KeyEventType, u8)> {
+    let mut mods      = 0u8;
+    let mut key_type  = None::<KeyEventType>;
+    let mut character = 0u8;
+
+    let mut remaining = val;
+    loop {
+        let (token, rest) = match remaining.iter().position(|&b| b == b'+') {
+            Some(pos) => (&remaining[..pos], &remaining[pos + 1..]),
+            None      => (remaining, &[][..]),
+        };
+        let token = trim_bytes(token);
+        match token {
+            b"super" | b"win" => mods |= KEY_MOD_SUPER,
+            b"alt"            => mods |= KEY_MOD_ALT,
+            b"ctrl"           => mods |= kernel_api_types::KEY_MOD_CTRL,
+            b"shift"          => mods |= KEY_MOD_SHIFT,
+            b"tab"            => { key_type = Some(KeyEventType::Tab);        character = 0; }
+            b"enter"          => { key_type = Some(KeyEventType::Enter);      character = 0; }
+            b"escape" | b"esc" => { key_type = Some(KeyEventType::Escape);   character = 0; }
+            b"left"           => { key_type = Some(KeyEventType::ArrowLeft);  character = 0; }
+            b"right"          => { key_type = Some(KeyEventType::ArrowRight); character = 0; }
+            b"up"             => { key_type = Some(KeyEventType::ArrowUp);    character = 0; }
+            b"down"           => { key_type = Some(KeyEventType::ArrowDown);  character = 0; }
+            other if other.len() == 1 => {
+                key_type  = Some(KeyEventType::Char);
+                character = other[0].to_ascii_lowercase();
+            }
+            _ => {}
+        }
+        if rest.is_empty() { break; }
+        remaining = rest;
+    }
+
+    key_type.map(|kt| (mods, kt, character))
+}
 
 fn trim_bytes(s: &[u8]) -> &[u8] {
     let start = match s.iter().position(|b| !b.is_ascii_whitespace()) {

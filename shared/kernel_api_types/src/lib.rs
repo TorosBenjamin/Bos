@@ -83,6 +83,12 @@ pub const SVC_ERR_INVALID_ARGS: u64 = 12;
 pub const MMAP_WRITE: u64 = 1 << 0;
 pub const MMAP_EXEC: u64 = 1 << 1;
 
+/// Modifier key bitmask flags carried in `KeyEvent::modifiers`.
+pub const KEY_MOD_SHIFT: u8 = 1 << 0;
+pub const KEY_MOD_CTRL:  u8 = 1 << 1;
+pub const KEY_MOD_ALT:   u8 = 1 << 2;
+pub const KEY_MOD_SUPER: u8 = 1 << 3;
+
 /// Keyboard event types.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,50 +111,50 @@ pub struct KeyEvent {
     pub event_type: KeyEventType,
     /// The character for `Char` events, or `\0` for non-character events.
     pub character: u8,
+    /// Bitmask of currently held modifier keys (KEY_MOD_* constants).
+    pub modifiers: u8,
 }
 
 impl KeyEvent {
     pub const EMPTY: Self = Self {
         event_type: KeyEventType::Char,
         character: 0,
+        modifiers: 0,
     };
 
     pub const fn char(c: char) -> Self {
-        Self {
-            event_type: KeyEventType::Char,
-            character: c as u8,
-        }
+        Self { event_type: KeyEventType::Char, character: c as u8, modifiers: 0 }
     }
 
     pub const fn enter() -> Self {
-        Self { event_type: KeyEventType::Enter, character: 0 }
+        Self { event_type: KeyEventType::Enter, character: 0, modifiers: 0 }
     }
 
     pub const fn backspace() -> Self {
-        Self { event_type: KeyEventType::Backspace, character: 0 }
+        Self { event_type: KeyEventType::Backspace, character: 0, modifiers: 0 }
     }
 
     pub const fn tab() -> Self {
-        Self { event_type: KeyEventType::Tab, character: 0 }
+        Self { event_type: KeyEventType::Tab, character: 0, modifiers: 0 }
     }
 
     pub const fn escape() -> Self {
-        Self { event_type: KeyEventType::Escape, character: 0 }
+        Self { event_type: KeyEventType::Escape, character: 0, modifiers: 0 }
     }
 
     pub const fn arrow_left() -> Self {
-        Self { event_type: KeyEventType::ArrowLeft, character: 0 }
+        Self { event_type: KeyEventType::ArrowLeft, character: 0, modifiers: 0 }
     }
 
     pub const fn arrow_right() -> Self {
-        Self { event_type: KeyEventType::ArrowRight, character: 0 }
+        Self { event_type: KeyEventType::ArrowRight, character: 0, modifiers: 0 }
     }
 
     pub const fn arrow_up() -> Self {
-        Self { event_type: KeyEventType::ArrowUp, character: 0 }
+        Self { event_type: KeyEventType::ArrowUp, character: 0, modifiers: 0 }
     }
 
     pub const fn arrow_down() -> Self {
-        Self { event_type: KeyEventType::ArrowDown, character: 0 }
+        Self { event_type: KeyEventType::ArrowDown, character: 0, modifiers: 0 }
     }
 }
