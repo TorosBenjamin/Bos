@@ -51,8 +51,10 @@ pub struct Compositor {
     /// Window placement rules from /bos_ds.conf [window_rules]
     window_rules:   [Option<WindowRule>; 16],
     n_window_rules: usize,
-    /// Opacity for inactive (unfocused) windows: 0–255. 255 = no dimming.
+    /// Opacity for inactive (unfocused) tiled windows: 0–255. 255 = no dimming.
     inactive_opacity: u8,
+    /// Opacity for inactive (unfocused) floating windows: 0–255. 255 = no dimming.
+    inactive_opacity_floating: u8,
 }
 
 impl Compositor {
@@ -121,6 +123,7 @@ impl Compositor {
             window_rules,
             n_window_rules,
             inactive_opacity: config.inactive_opacity,
+            inactive_opacity_floating: config.inactive_opacity_floating,
         }
     }
 
@@ -157,29 +160,49 @@ impl Compositor {
         }
     }
 
-    /// Push a Toplevel window above other Toplevels but below all Panels.
+    /// Push a Toplevel window into the correct z-zone:
+    ///   tiled windows  <  floating windows  <  panels  (bottom → top)
+    ///
+    /// A floating window is inserted just below the first panel (top of floating zone).
+    /// A tiled window is inserted just below the first floating window or panel
+    /// (top of tiled zone, still below all floats).
     fn z_push_toplevel(&mut self, id: WindowId) {
-        // Find the index of the first panel in z_order (panels live above toplevels)
-        let panel_start = (0..self.n_windows).find(|&i| {
-            let zid = self.z_order[i];
-            self.windows.iter()
-                .filter_map(|w| w.as_ref())
-                .find(|w| w.id == zid)
-                .map(|w| w.is_panel)
-                .unwrap_or(false)
-        });
+        let is_floating = self.windows.iter()
+            .filter_map(|w| w.as_ref())
+            .find(|w| w.id == id)
+            .map(|w| w.is_floating)
+            .unwrap_or(false);
 
-        match panel_start {
-            Some(pos) => {
-                if self.n_windows < MAX_WINDOWS {
-                    for i in (pos..self.n_windows).rev() {
-                        self.z_order[i + 1] = self.z_order[i];
-                    }
-                    self.z_order[pos] = id;
-                    self.n_windows += 1;
-                }
+        let insert_pos = if is_floating {
+            // Insert below the first panel, above all tiled windows and other floats.
+            (0..self.n_windows)
+                .find(|&i| {
+                    let zid = self.z_order[i];
+                    self.windows.iter().filter_map(|w| w.as_ref())
+                        .find(|w| w.id == zid)
+                        .map(|w| w.is_panel)
+                        .unwrap_or(false)
+                })
+                .unwrap_or(self.n_windows)
+        } else {
+            // Insert below the first floating window or panel, above all other tiled windows.
+            (0..self.n_windows)
+                .find(|&i| {
+                    let zid = self.z_order[i];
+                    self.windows.iter().filter_map(|w| w.as_ref())
+                        .find(|w| w.id == zid)
+                        .map(|w| w.is_floating || w.is_panel)
+                        .unwrap_or(false)
+                })
+                .unwrap_or(self.n_windows)
+        };
+
+        if self.n_windows < MAX_WINDOWS {
+            for i in (insert_pos..self.n_windows).rev() {
+                self.z_order[i + 1] = self.z_order[i];
             }
-            None => self.z_push(id),
+            self.z_order[insert_pos] = id;
+            self.n_windows += 1;
         }
     }
 

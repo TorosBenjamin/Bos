@@ -240,7 +240,7 @@ pub fn test_spawn_rip_matches_elf_entry() -> TestResult {
     };
     let expected_entry = elf.ehdr.e_entry;
 
-    let task = match kernel::user_task_from_elf::create_user_task_from_elf_bytes(bytes, 0) {
+    let task = match kernel::user_task_from_elf::create_user_task_from_elf_bytes(bytes, 0, b"") {
         Ok(t) => t,
         Err(e) => {
             return TestResult::Failed(format!(
@@ -315,7 +315,7 @@ pub fn test_spawn_data_integrity() -> TestResult {
 
     let entry = elf.ehdr.e_entry;
 
-    let task = match kernel::user_task_from_elf::create_user_task_from_elf_bytes(bytes, 0) {
+    let task = match kernel::user_task_from_elf::create_user_task_from_elf_bytes(bytes, 0, b"") {
         Ok(t) => t,
         Err(e) => {
             return TestResult::Failed(format!(
@@ -403,7 +403,7 @@ pub fn test_spawn_bss_zeroed() -> TestResult {
         None => return TestResult::Ok,
     };
 
-    let task = match kernel::user_task_from_elf::create_user_task_from_elf_bytes(bytes, 0) {
+    let task = match kernel::user_task_from_elf::create_user_task_from_elf_bytes(bytes, 0, b"") {
         Ok(t) => t,
         Err(e) => {
             return TestResult::Failed(format!(

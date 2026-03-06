@@ -60,4 +60,10 @@ impl DisplayInfo {
         n |= ((b as u32) & ((1 << self.blue_mask_size) - 1)) << self.blue_mask_shift;
         n
     }
+
+    /// Encode a premultiplied ARGB pixel. `a` is stored in bits 31–24;
+    /// the RGB channels must already be premultiplied by the caller (`r * a / 255`, etc.).
+    pub fn build_pixel_alpha(&self, r: u8, g: u8, b: u8, a: u8) -> u32 {
+        self.build_pixel(r, g, b) | ((a as u32) << 24)
+    }
 }

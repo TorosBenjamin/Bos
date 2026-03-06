@@ -260,8 +260,9 @@ impl Compositor {
         let mut bufs      = [core::ptr::null::<u32>(); MAX_WINDOWS];
         let mut panels    = [false; MAX_WINDOWS];
         let mut colors    = [0u32; MAX_WINDOWS];
-        let mut has_alphas = [false; MAX_WINDOWS];
-        let mut is_focused = [false; MAX_WINDOWS];
+        let mut has_alphas   = [false; MAX_WINDOWS];
+        let mut is_focused   = [false; MAX_WINDOWS];
+        let mut is_floating  = [false; MAX_WINDOWS];
         let mut n = 0usize;
 
         for i in 0..self.n_windows {
@@ -274,17 +275,25 @@ impl Compositor {
                 bufs[n]       = w.buffer as *const u32;
                 panels[n]     = w.is_panel;
                 colors[n]     = if focused == Some(id) { focused_color } else { unfocused_color };
-                has_alphas[n] = w.has_alpha;
-                is_focused[n] = focused == Some(id);
+                has_alphas[n]  = w.has_alpha;
+                is_focused[n]  = focused == Some(id);
+                is_floating[n] = w.is_floating;
                 n += 1;
             }
         }
 
-        let inactive_opacity = self.inactive_opacity;
+        let inactive_opacity          = self.inactive_opacity;
+        let inactive_opacity_floating = self.inactive_opacity_floating;
 
         for i in 0..n {
             let (wx, wy, ww, wh) = (wxs[i], wys[i], wws[i], whs[i]);
-            let dim = if is_focused[i] || panels[i] { 255u8 } else { inactive_opacity };
+            let dim = if is_focused[i] || panels[i] {
+                255u8
+            } else if is_floating[i] {
+                inactive_opacity_floating
+            } else {
+                inactive_opacity
+            };
             if has_alphas[i] {
                 self.blit_to_back_premul_alpha(bufs[i], ww, wx, wy, ww, wh, clip, dim);
             } else if dim < 255 {

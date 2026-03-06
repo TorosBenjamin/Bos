@@ -163,8 +163,8 @@ impl<'a> Ui<'a> {
         let mut inner = self.ctx.inner.borrow_mut();
 
         // Measure approximate button size: each char ≈ 8px wide, 13px tall + padding
-        let btn_w = (s.len() as i32) * 8 + 24;
-        let btn_h = 24i32;
+        let btn_w = (s.len() as i32) * 8 + 16; // 8px padding per side
+        let btn_h = 22i32;
         let bx = inner.margin;
         let by_ = inner.draw_y;
 
@@ -190,8 +190,18 @@ impl<'a> Ui<'a> {
         .into_styled(PrimitiveStyle::with_fill(bg_col))
         .draw(&mut buf);
 
-        // Label centred vertically
-        draw_text(&mut buf, &s, bx + 12, by_ + 5, BTN_FG, &FONT_8X13);
+        // Hover border
+        if hovered {
+            let _ = Rectangle::new(
+                embedded_graphics::geometry::Point::new(bx, by_),
+                embedded_graphics::geometry::Size::new(btn_w as u32, btn_h as u32),
+            )
+            .into_styled(PrimitiveStyle::with_stroke(HEADING, 1))
+            .draw(&mut buf);
+        }
+
+        // Label centred vertically: btn_h=22, font_h=13 → top at (22-13)/2 = 4
+        draw_text(&mut buf, &s, bx + 8, by_ + 4, BTN_FG, &FONT_8X13);
 
         inner.draw_y += btn_h + 8;
         Response { clicked }
@@ -232,7 +242,7 @@ impl<'a> Ui<'a> {
 
         // Draw the actual text
         // Note: In a real implementation, you'd handle wrapping here
-        draw_text(&mut buf, text, bx + padding, by + padding - 4, INPUT_FG, &FONT_8X13);
+        draw_text(&mut buf, text, bx + padding, by + padding, INPUT_FG, &FONT_8X13);
 
         // 4. Update Layout Cursor
         inner.draw_y += box_h + 10;
@@ -256,6 +266,7 @@ impl Response {
 
 fn draw_text(buf: &mut PixelBuf<'_>, text: &str, x: i32, y: i32, color: Rgb888, font: &MonoFont<'_>) {
     let style = MonoTextStyle::new(font, color);
-    let _ = Text::new(text, embedded_graphics::geometry::Point::new(x, y + font.character_size.height as i32), style)
+    // Text::new positions at the baseline; add font.baseline so callers treat y as top-of-cell.
+    let _ = Text::new(text, embedded_graphics::geometry::Point::new(x, y + font.baseline as i32), style)
         .draw(buf);
 }

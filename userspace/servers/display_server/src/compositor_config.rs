@@ -7,6 +7,7 @@
 /// outer_gap = 8
 /// inner_gap = 8
 /// border_size = 2
+/// inactive_opacity = 80   # percent, 0–100; default 100 (fully opaque)
 ///
 /// [colors]
 /// border_focused   = #8aadf4
@@ -39,6 +40,10 @@ pub struct DisplayConfig {
     pub bg_bottom:        (u8, u8, u8),
     pub window_rules:     [Option<WindowRule>; 16],
     pub n_window_rules:   usize,
+    /// Opacity for inactive (unfocused) tiled windows, 0–255 (255 = fully opaque, no dimming).
+    pub inactive_opacity: u8,
+    /// Opacity for inactive (unfocused) floating windows, 0–255.
+    pub inactive_opacity_floating: u8,
 }
 
 impl Default for DisplayConfig {
@@ -54,6 +59,8 @@ impl Default for DisplayConfig {
             bg_bottom:        (0x0a, 0x0a, 0x0f), // #0a0a0f
             window_rules:     [NONE_RULE; 16],
             n_window_rules:   0,
+            inactive_opacity: 204,          // 80%
+            inactive_opacity_floating: 255, // 100% (solid)
         }
     }
 }
@@ -104,6 +111,16 @@ impl DisplayConfig {
                         b"outer_gap"   => { if let Some(v) = parse_u32(val) { cfg.outer_gap   = v; } }
                         b"inner_gap"   => { if let Some(v) = parse_u32(val) { cfg.inner_gap   = v; } }
                         b"border_size" => { if let Some(v) = parse_i32(val) { cfg.border_size = v; } }
+                        b"inactive_opacity" => {
+                            if let Some(v) = parse_u32(val) {
+                                cfg.inactive_opacity = ((v.min(100) * 255) / 100) as u8;
+                            }
+                        }
+                        b"inactive_opacity_floating" => {
+                            if let Some(v) = parse_u32(val) {
+                                cfg.inactive_opacity_floating = ((v.min(100) * 255) / 100) as u8;
+                            }
+                        }
                         _ => {}
                     },
                     Section::Colors => match key {

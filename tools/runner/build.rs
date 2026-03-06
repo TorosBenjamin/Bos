@@ -11,19 +11,18 @@ use std::{env, io};
 /// Format: (cargo dep name, binary name, filename in ISO root)
 /// Cargo sets CARGO_BIN_FILE_{DEP_UPPER}_{bin} for each artifact dependency.
 const ISO_BINARIES: &[(&str, &str, &str)] = &[
-    ("init_task",      "init_task",       "init_task"),
-    ("display_server", "display_server",  "display_server"),
-    ("fs_server",      "fs_server",       "fs_server"),
-    ("hello_egui",     "hello_egui",      "hello_egui"),
-    ("user_land",      "bouncing_cube_1", "bouncing_cube_1"),
-    ("files",          "files",           "files"),
+    ("init_task",      "init_task",      "init_task"),
+    ("display_server", "display_server", "display_server"),
+    ("fs_server",      "fs_server",      "fs_server"),
 ];
 
 /// Binaries written into the FAT32 disk image for fs_server to load at runtime.
 /// Format: (cargo dep name, binary name, 8.3 FAT filename)
 const FAT32_BINARIES: &[(&str, &str, &str)] = &[
-    ("user_land", "bouncing_cube_1", "CUBE1.ELF"),
-    ("user_land", "bouncing_cube_2", "CUBE2.ELF"),
+    ("user_land",  "bouncing_cube_1", "CUBE1.ELF"),
+    ("user_land",  "bouncing_cube_2", "CUBE2.ELF"),
+    ("hello_egui", "hello_egui",      "HELLO.ELF"),
+    ("files",      "files",           "FILES.ELF"),
 ];
 
 /// Kernel test feature flags → test suite name passed on the kernel cmdline.
@@ -173,8 +172,12 @@ fn create_fat32_disk_image(path: &Path, runner_dir: &Path) {
     const DISK_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
 
     let mut disk: Cursor<Vec<u8>> = Cursor::new(vec![0u8; DISK_SIZE as usize]);
-    fatfs::format_volume(&mut disk, fatfs::FormatVolumeOptions::new().volume_label(*b"BOS_APPS   "))
-        .expect("fatfs: format_volume failed");
+    fatfs::format_volume(
+        &mut disk,
+        fatfs::FormatVolumeOptions::new()
+            .volume_label(*b"BOS_APPS   ")
+            .fat_type(fatfs::FatType::Fat32),
+    ).expect("fatfs: format_volume failed");
 
     disk.seek(SeekFrom::Start(0)).unwrap();
     {

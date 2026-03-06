@@ -43,25 +43,22 @@ unsafe extern "sysv64" fn entry_point() -> ! {
         let _ = ulib::sys_spawn(utest_elf, 0);
         ulib::sys_munmap(utest_buf, utest_size);
     } else {
-        // Normal mode: spawn files and hello_egui
-        let files_size = ulib::sys_get_module("files", core::ptr::null_mut(), 0);
-        if files_size > 0 {
-            let files_buf = ulib::sys_mmap(files_size, kernel_api_types::MMAP_WRITE);
-            let _ = ulib::sys_get_module("files", files_buf, files_size);
-            let files_elf =
-                unsafe { core::slice::from_raw_parts(files_buf, files_size as usize) };
-            let _ = ulib::sys_spawn(files_elf, 0);
-            ulib::sys_munmap(files_buf, files_size);
-        }
+        // Normal mode: load apps from FAT32 filesystem
+        let fs_ep = ulib::fs::fs_lookup();
 
-        let hello_egui_size = ulib::sys_get_module("hello_egui", core::ptr::null_mut(), 0);
-        if hello_egui_size > 0 {
-            let hello_egui_buf = ulib::sys_mmap(hello_egui_size, kernel_api_types::MMAP_WRITE);
-            let _ = ulib::sys_get_module("hello_egui", hello_egui_buf, hello_egui_size);
-            let hello_egui_elf =
-                unsafe { core::slice::from_raw_parts(hello_egui_buf, hello_egui_size as usize) };
-            let _ = ulib::sys_spawn(hello_egui_elf, 0);
-            ulib::sys_munmap(hello_egui_buf, hello_egui_size);
+        for (path, name) in [
+            ("HELLO.ELF", b"hello_egui" as &[u8]),
+            ("FILES.ELF", b"files"),
+        ] {
+            if let Some((buf_id, size)) = ulib::fs::fs_map_file(fs_ep, path) {
+                let ptr = ulib::sys_map_shared_buf(buf_id);
+                if !ptr.is_null() {
+                    let elf = unsafe { core::slice::from_raw_parts(ptr as *const u8, size as usize) };
+                    let _ = ulib::sys_spawn_named(elf, 0, name);
+                    ulib::sys_munmap(ptr, size);
+                }
+                ulib::sys_destroy_shared_buf(buf_id);
+            }
         }
     }
 

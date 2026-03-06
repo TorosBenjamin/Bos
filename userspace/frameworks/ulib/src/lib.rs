@@ -139,14 +139,20 @@ pub fn sys_munmap(addr: *mut u8, size: u64) -> u64 {
     args[6]
 }
 
-pub fn sys_spawn(elf_bytes: &[u8], child_arg: u64) -> u64 {
+pub fn sys_spawn_named(elf_bytes: &[u8], child_arg: u64, name: &[u8]) -> u64 {
     let mut args = [0u64; 7];
     args[0] = SysCallNumber::Spawn as u64;
     args[1] = elf_bytes.as_ptr() as u64;
     args[2] = elf_bytes.len() as u64;
     args[3] = child_arg;
+    args[4] = name.as_ptr() as u64;
+    args[5] = name.len() as u64;
     syscall(&mut args);
     args[6]
+}
+
+pub fn sys_spawn(elf_bytes: &[u8], child_arg: u64) -> u64 {
+    sys_spawn_named(elf_bytes, child_arg, b"")
 }
 
 pub fn sys_channel_create(capacity: u64) -> (u64, u64) {

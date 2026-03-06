@@ -44,7 +44,7 @@ fn get_init_task_elf() -> &'static [u8] {
 /// The kernel higher-half is shared with the user page table, so kernel code,
 /// GS.Base, and the stack remain accessible throughout the switch.
 fn with_user_context(f: impl FnOnce() -> TestResult) -> TestResult {
-    let task = match create_user_task_from_elf_bytes(get_init_task_elf(), 0) {
+    let task = match create_user_task_from_elf_bytes(get_init_task_elf(), 0, b"") {
         Ok(t) => Arc::new(t),
         Err(e) => {
             return TestResult::Failed(format!("failed to create user task: {:?}", e));
