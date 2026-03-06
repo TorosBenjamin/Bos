@@ -113,9 +113,14 @@ pub enum WindowEventType {
     MouseButtonRelease = 6,
     /// Cursor moved while over the focused window. `x`/`y` are window-relative.
     MouseMove          = 7,
+    /// DS is tearing down this window. Client must stop accessing the buffer and exit.
+    Close              = 8,
 }
 
 pub const WINDOW_FLAG_FLOATING: u32 = 1;
+/// Set on CreateWindowRequest / CreatePanelRequest to opt into premultiplied-alpha compositing.
+/// When set, the compositor reads bits 31–24 of each pixel as the premultiplied alpha value.
+pub const WINDOW_FLAG_ALPHA: u32 = 2;
 
 /// Create toplevel window request — DS assigns position and size via tiling unless floating.
 /// Wire: [type=0: u8][CreateWindowRequest][reply_ep: u64]
@@ -124,7 +129,7 @@ pub const WINDOW_FLAG_FLOATING: u32 = 1;
 pub struct CreateWindowRequest {
     /// Client's event receive channel send endpoint; DS keeps this open to push events.
     pub event_send_ep: u64,      // 8
-    /// Flags: WINDOW_FLAG_FLOATING = 1
+    /// Flags: WINDOW_FLAG_FLOATING = 1, WINDOW_FLAG_ALPHA = 2
     pub flags:         u32,      // 4
     pub app_id_len:    u8,       // 1
     pub _pad:          [u8; 3],  // 3
@@ -144,7 +149,9 @@ pub struct CreateWindowRequest {
 #[derive(Clone, Copy, Debug)]
 pub struct CreatePanelRequest {
     pub anchor: u8,
-    pub _pad: [u8; 3],
+    /// Flags: WINDOW_FLAG_ALPHA = 2
+    pub flags: u8,
+    pub _pad: [u8; 2],
     pub exclusive_zone: u32,
     pub width: u32,
     pub height: u32,

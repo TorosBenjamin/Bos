@@ -27,6 +27,12 @@ pub struct Window {
     /// Dirty region (screen coordinates) from the latest UpdateWindow, pending compositing.
     /// Stored per-window to avoid merging two distant windows into one huge bounding box.
     pub pending_dirty: Option<DirtyRect>,
+    /// True when the client requested premultiplied-alpha compositing (WINDOW_FLAG_ALPHA).
+    pub has_alpha: bool,
+    /// True once DS has sent the Close event and is waiting for the client to exit.
+    pub closing: bool,
+    /// How many probe cycles have elapsed since closing was initiated.
+    pub close_attempts: u32,
 }
 
 impl Window {
@@ -59,6 +65,9 @@ impl Window {
             exclusive_zone: 0,
             pending_old_buf_id: None,
             pending_dirty: None,
+            has_alpha: false,
+            closing: false,
+            close_attempts: 0,
         })
     }
 

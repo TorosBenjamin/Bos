@@ -1,6 +1,7 @@
 use super::{Compositor, MAX_WINDOWS};
 use crate::cursor::{CURSOR_H, CURSOR_IMAGE, CURSOR_MASK, CURSOR_W};
 use kernel_api_types::window::{DirtyRect, WindowEventType};
+use kernel_api_types::IPC_ERR_PEER_CLOSED;
 
 impl Compositor {
     /// Fill a rectangle in the back buffer, clipped to `clip` (or unconstrained if None).
@@ -89,6 +90,156 @@ impl Compositor {
         }
     }
 
+    /// Blend a single pixel: uniform (non-premultiplied) alpha blend.
+    #[inline(always)]
+    fn blend_pixel(src: u32, dst: u32, alpha: u32, info: &kernel_api_types::graphics::DisplayInfo) -> u32 {
+        let inv = 255 - alpha;
+        let r = ((src >> info.red_mask_shift   & 0xFF) * alpha
+               + (dst >> info.red_mask_shift   & 0xFF) * inv) >> 8;
+        let g = ((src >> info.green_mask_shift & 0xFF) * alpha
+               + (dst >> info.green_mask_shift & 0xFF) * inv) >> 8;
+        let b = ((src >> info.blue_mask_shift  & 0xFF) * alpha
+               + (dst >> info.blue_mask_shift  & 0xFF) * inv) >> 8;
+        info.build_pixel(r as u8, g as u8, b as u8)
+    }
+
+    /// Blit with a uniform opacity (same alpha for every pixel). Used for inactive window dimming.
+    fn blit_to_back_uniform(
+        &mut self,
+        src: *const u32,
+        src_width: u32,
+        dst_x: i32,
+        dst_y: i32,
+        w: u32,
+        h: u32,
+        clip: Option<DirtyRect>,
+        opacity: u8,
+    ) {
+        if opacity == 255 {
+            self.blit_to_back(src, src_width, dst_x, dst_y, w, h, clip);
+            return;
+        }
+        let dst = self.display.back_buffer_ptr();
+        if dst.is_null() {
+            return;
+        }
+        let info = self.display_info;
+        let screen_w = info.width as usize;
+        let screen_h = info.height as usize;
+
+        let mut x0 = dst_x.max(0) as usize;
+        let mut y0 = dst_y.max(0) as usize;
+        let mut x1 = ((dst_x + w as i32).max(0) as usize).min(screen_w);
+        let mut y1 = ((dst_y + h as i32).max(0) as usize).min(screen_h);
+
+        if let Some(c) = clip {
+            x0 = x0.max(c.x as usize);
+            y0 = y0.max(c.y as usize);
+            x1 = x1.min((c.x + c.w) as usize);
+            y1 = y1.min((c.y + c.h) as usize);
+        }
+
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+
+        let alpha = opacity as u32;
+        let src_x_off = (x0 as i32 - dst_x).max(0) as usize;
+        let src_y_off = (y0 as i32 - dst_y).max(0) as usize;
+
+        for row in 0..(y1 - y0) {
+            let src_row_off = (src_y_off + row) * src_width as usize + src_x_off;
+            let dst_row_off = (y0 + row) * screen_w + x0;
+            for col in 0..(x1 - x0) {
+                unsafe {
+                    let src_px = *src.add(src_row_off + col);
+                    let bg_px  = *dst.add(dst_row_off + col);
+                    *dst.add(dst_row_off + col) = Self::blend_pixel(src_px, bg_px, alpha, &info);
+                }
+            }
+        }
+    }
+
+    /// Blit with per-pixel premultiplied alpha (bits 31–24 of each source pixel).
+    /// `dim` applies an additional uniform scale (255 = no extra dimming).
+    fn blit_to_back_premul_alpha(
+        &mut self,
+        src: *const u32,
+        src_width: u32,
+        dst_x: i32,
+        dst_y: i32,
+        w: u32,
+        h: u32,
+        clip: Option<DirtyRect>,
+        dim: u8,
+    ) {
+        let dst = self.display.back_buffer_ptr();
+        if dst.is_null() {
+            return;
+        }
+        let info = self.display_info;
+        let screen_w = info.width as usize;
+        let screen_h = info.height as usize;
+
+        let mut x0 = dst_x.max(0) as usize;
+        let mut y0 = dst_y.max(0) as usize;
+        let mut x1 = ((dst_x + w as i32).max(0) as usize).min(screen_w);
+        let mut y1 = ((dst_y + h as i32).max(0) as usize).min(screen_h);
+
+        if let Some(c) = clip {
+            x0 = x0.max(c.x as usize);
+            y0 = y0.max(c.y as usize);
+            x1 = x1.min((c.x + c.w) as usize);
+            y1 = y1.min((c.y + c.h) as usize);
+        }
+
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+
+        let dim_u32 = dim as u32;
+        let src_x_off = (x0 as i32 - dst_x).max(0) as usize;
+        let src_y_off = (y0 as i32 - dst_y).max(0) as usize;
+
+        for row in 0..(y1 - y0) {
+            let src_row_off = (src_y_off + row) * src_width as usize + src_x_off;
+            let dst_row_off = (y0 + row) * screen_w + x0;
+            for col in 0..(x1 - x0) {
+                unsafe {
+                    let src_px = *src.add(src_row_off + col);
+                    let pixel_alpha = (src_px >> 24) & 0xFF;
+                    if pixel_alpha == 0 {
+                        continue; // fully transparent — skip
+                    }
+                    let effective_alpha = (pixel_alpha * dim_u32) >> 8;
+                    if effective_alpha == 0 {
+                        continue;
+                    }
+                    let dst_off = dst_row_off + col;
+                    if effective_alpha >= 255 {
+                        // Fully opaque: strip the alpha byte and write directly.
+                        *dst.add(dst_off) = src_px & 0x00FF_FFFF;
+                        continue;
+                    }
+                    // src channels are already premultiplied by pixel_alpha; scale by dim.
+                    let r_s = ((src_px >> info.red_mask_shift   & 0xFF) * dim_u32) >> 8;
+                    let g_s = ((src_px >> info.green_mask_shift & 0xFF) * dim_u32) >> 8;
+                    let b_s = ((src_px >> info.blue_mask_shift  & 0xFF) * dim_u32) >> 8;
+                    let bg  = *dst.add(dst_off);
+                    let inv = 255 - effective_alpha;
+                    let r_d = bg >> info.red_mask_shift   & 0xFF;
+                    let g_d = bg >> info.green_mask_shift & 0xFF;
+                    let b_d = bg >> info.blue_mask_shift  & 0xFF;
+                    *dst.add(dst_off) = info.build_pixel(
+                        (r_s + (r_d * inv >> 8)) as u8,
+                        (g_s + (g_d * inv >> 8)) as u8,
+                        (b_s + (b_d * inv >> 8)) as u8,
+                    );
+                }
+            }
+        }
+    }
+
     /// Composite all windows and their borders in z-order (bottom to top).
     ///
     /// Each window is blitted first, then its border is drawn immediately after.
@@ -102,32 +253,45 @@ impl Compositor {
 
         // Collect window data in z-order into local arrays to avoid
         // borrow conflicts when calling fill_back_rect_clipped / blit_to_back.
-        let mut wxs    = [0i32; MAX_WINDOWS];
-        let mut wys    = [0i32; MAX_WINDOWS];
-        let mut wws    = [0u32; MAX_WINDOWS];
-        let mut whs    = [0u32; MAX_WINDOWS];
-        let mut bufs   = [core::ptr::null::<u32>(); MAX_WINDOWS];
-        let mut panels = [false; MAX_WINDOWS];
-        let mut colors = [0u32; MAX_WINDOWS];
+        let mut wxs       = [0i32; MAX_WINDOWS];
+        let mut wys       = [0i32; MAX_WINDOWS];
+        let mut wws       = [0u32; MAX_WINDOWS];
+        let mut whs       = [0u32; MAX_WINDOWS];
+        let mut bufs      = [core::ptr::null::<u32>(); MAX_WINDOWS];
+        let mut panels    = [false; MAX_WINDOWS];
+        let mut colors    = [0u32; MAX_WINDOWS];
+        let mut has_alphas = [false; MAX_WINDOWS];
+        let mut is_focused = [false; MAX_WINDOWS];
         let mut n = 0usize;
 
         for i in 0..self.n_windows {
             let id = self.z_order[i];
             if let Some(w) = self.windows.iter().filter_map(|w| w.as_ref()).find(|w| w.id == id) {
-                wxs[n]    = w.x;
-                wys[n]    = w.y;
-                wws[n]    = w.width;
-                whs[n]    = w.height;
-                bufs[n]   = w.buffer as *const u32;
-                panels[n] = w.is_panel;
-                colors[n] = if focused == Some(id) { focused_color } else { unfocused_color };
+                wxs[n]        = w.x;
+                wys[n]        = w.y;
+                wws[n]        = w.width;
+                whs[n]        = w.height;
+                bufs[n]       = w.buffer as *const u32;
+                panels[n]     = w.is_panel;
+                colors[n]     = if focused == Some(id) { focused_color } else { unfocused_color };
+                has_alphas[n] = w.has_alpha;
+                is_focused[n] = focused == Some(id);
                 n += 1;
             }
         }
 
+        let inactive_opacity = self.inactive_opacity;
+
         for i in 0..n {
             let (wx, wy, ww, wh) = (wxs[i], wys[i], wws[i], whs[i]);
-            self.blit_to_back(bufs[i], ww, wx, wy, ww, wh, clip);
+            let dim = if is_focused[i] || panels[i] { 255u8 } else { inactive_opacity };
+            if has_alphas[i] {
+                self.blit_to_back_premul_alpha(bufs[i], ww, wx, wy, ww, wh, clip, dim);
+            } else if dim < 255 {
+                self.blit_to_back_uniform(bufs[i], ww, wx, wy, ww, wh, clip, dim);
+            } else {
+                self.blit_to_back(bufs[i], ww, wx, wy, ww, wh, clip);
+            }
 
             if !panels[i] {
                 let bw = self.border_width;
@@ -188,13 +352,23 @@ impl Compositor {
             );
             self.display.present();
             // Full redraw: every window's content is now on screen.
+            let mut crashed = [0u64; MAX_WINDOWS];
+            let mut n_crashed = 0usize;
             for slot in &self.windows {
                 if let Some(w) = slot {
-                    ulib::sys_try_channel_send(
+                    if w.closing { continue; }
+                    let result = ulib::sys_try_channel_send(
                         w.event_send_ep,
                         &[WindowEventType::FramePresented as u8],
                     );
+                    if result == IPC_ERR_PEER_CLOSED {
+                        crashed[n_crashed] = w.id;
+                        n_crashed += 1;
+                    }
                 }
+            }
+            for i in 0..n_crashed {
+                self.initiate_close(crashed[i]);
             }
             return;
         }
@@ -242,15 +416,25 @@ impl Compositor {
         self.display.present();
 
         // Notify each window whose pixels were composited this frame.
+        let mut crashed = [0u64; MAX_WINDOWS];
+        let mut n_crashed = 0usize;
         for (i, opt_dr) in dirty_rects.iter().enumerate() {
             if opt_dr.is_some() {
                 if let Some(w) = &self.windows[i] {
-                    ulib::sys_try_channel_send(
+                    if w.closing { continue; }
+                    let result = ulib::sys_try_channel_send(
                         w.event_send_ep,
                         &[WindowEventType::FramePresented as u8],
                     );
+                    if result == IPC_ERR_PEER_CLOSED {
+                        crashed[n_crashed] = w.id;
+                        n_crashed += 1;
+                    }
                 }
             }
+        }
+        for i in 0..n_crashed {
+            self.initiate_close(crashed[i]);
         }
     }
 }

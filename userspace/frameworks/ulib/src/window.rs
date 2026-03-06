@@ -44,6 +44,9 @@ pub enum WindowEvent {
     MouseButtonRelease { button: u8, x: i32, y: i32 },
     /// Cursor moved while this window is focused. `x`/`y` are window-relative.
     MouseMove { x: i32, y: i32 },
+    /// DS is destroying this window. Stop accessing the pixel buffer.
+    /// Call `acknowledge_close()` then exit, or let the process exit naturally.
+    Close,
 }
 
 /// A client window backed by shared physical memory.
@@ -225,21 +228,32 @@ impl Window {
                 core::mem::size_of::<CloseWindowRequest>(),
             );
         }
+        crate::sys_munmap(self.buffer as *mut u8, self.buf_size);
         crate::sys_try_channel_send(self.send_endpoint, &msg);
+        crate::sys_channel_close(self.event_recv_ep);
+    }
+
+    /// Acknowledge a DS-initiated close. Call this when your app wants to keep running
+    /// after receiving `WindowEvent::Close` (e.g. multi-window app closing one window).
+    /// For single-window apps it is sufficient to let the process exit naturally.
+    pub fn acknowledge_close(self) {
         crate::sys_munmap(self.buffer as *mut u8, self.buf_size);
         crate::sys_channel_close(self.event_recv_ep);
+        // Do NOT send CloseWindow — DS already initiated the close.
     }
 
     /// Create a Panel anchored to a screen edge.
     ///
     /// Panels have a fixed position (DS-placed at the specified anchor edge). They reduce
     /// the area available to Toplevels by `exclusive_zone` pixels.
+    /// Pass `flags = WINDOW_FLAG_ALPHA` to opt into premultiplied-alpha compositing.
     pub fn new_panel(
         display_server_send_ep: u64,
         anchor: u8,
         exclusive_zone: u32,
         width: u32,
         height: u32,
+        flags: u32,
     ) -> Option<Self> {
         let (event_send, event_recv) = crate::sys_channel_create(32);
 
@@ -251,7 +265,8 @@ impl Window {
 
         let req = CreatePanelRequest {
             anchor,
-            _pad: [0; 3],
+            flags: flags as u8,
+            _pad: [0; 2],
             exclusive_zone,
             width,
             height,
@@ -393,6 +408,8 @@ impl Window {
                 };
                 return Some(WindowEvent::MouseMove { x: ev.x, y: ev.y });
             }
+        } else if event_type == WindowEventType::Close as u8 {
+            return Some(WindowEvent::Close);
         }
 
         None

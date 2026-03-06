@@ -10,6 +10,8 @@ mod handlers;
 
 pub const MAX_WINDOWS: usize = 32;
 const MAX_MSG_SIZE: usize = 4096;
+pub(super) const CLOSE_MAX_ATTEMPTS: u32 = 20;   // 20 × 100 ms ≈ 2-second timeout
+const CLOSE_POLL_TIMEOUT_MS: u64 = 100;
 
 pub struct Compositor {
     display: ulib::display::Display,
@@ -49,6 +51,8 @@ pub struct Compositor {
     /// Window placement rules from /bos_ds.conf [window_rules]
     window_rules:   [Option<WindowRule>; 16],
     n_window_rules: usize,
+    /// Opacity for inactive (unfocused) windows: 0–255. 255 = no dimming.
+    inactive_opacity: u8,
 }
 
 impl Compositor {
@@ -116,6 +120,7 @@ impl Compositor {
             border_width: config.border_size,
             window_rules,
             n_window_rules,
+            inactive_opacity: config.inactive_opacity,
         }
     }
 
@@ -304,6 +309,9 @@ impl Compositor {
         self.mark_full_redraw();
 
         loop {
+            // Poll any windows that are in the process of graceful close.
+            self.poll_closing_windows();
+
             // Drain all pending IPC messages (non-blocking) before compositing.
             loop {
                 let msg_slice = unsafe { core::slice::from_raw_parts_mut(msg_buf, MAX_MSG_SIZE) };
@@ -427,10 +435,14 @@ impl Compositor {
             // Single composite for everything accumulated this iteration.
             self.flush();
 
+            let has_closing = self.windows.iter()
+                .filter_map(|w| w.as_ref())
+                .any(|w| w.closing);
+            let wait_timeout = if has_closing { CLOSE_POLL_TIMEOUT_MS } else { 0 };
             ulib::sys_wait_for_event(
                 &[self.recv_endpoint],
                 ulib::WAIT_MOUSE | ulib::WAIT_KEYBOARD,
-                0,
+                wait_timeout,
             );
         }
     }
