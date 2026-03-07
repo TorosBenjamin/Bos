@@ -30,17 +30,25 @@ const CMD_CACHE_FLUSH:  u8 = 0xE7;
 pub static DISK_PRESENT:     AtomicBool = AtomicBool::new(false);
 pub static DISK_SECTOR_COUNT: AtomicU64  = AtomicU64::new(0);
 
-/// Spin until BSY clears, then return the status byte.
+/// Maximum iterations to spin waiting for BSY or DRQ.
+/// With the PAUSE hint (~100 cycles on modern x86), at 3 GHz this is ≈ 167 ms —
+/// more than enough for QEMU (responds in µs) and a fair upper bound for real
+/// hardware before declaring the controller unresponsive.
+const POLL_TIMEOUT: usize = 5_000_000;
+
+/// Spin until BSY clears, then return `Some(status)`.
+/// Returns `None` if the drive does not respond within `POLL_TIMEOUT` iterations.
 #[inline(always)]
-unsafe fn wait_not_busy() -> u8 {
+unsafe fn try_wait_not_busy() -> Option<u8> {
     let mut port: PortReadOnly<u8> = PortReadOnly::new(STATUS_CMD);
-    loop {
+    for _ in 0..POLL_TIMEOUT {
         let s = unsafe { port.read() };
         if s & BSY == 0 {
-            return s;
+            return Some(s);
         }
         core::hint::spin_loop();
     }
+    None
 }
 
 /// Read the alternate status 4 times (≈ 400 ns delay).
@@ -77,18 +85,29 @@ pub fn init() {
         }
 
         // Wait for BSY to clear; poll until DRQ or ERR
-        let status = wait_not_busy();
+        let status = match try_wait_not_busy() {
+            Some(s) => s,
+            None => {
+                log::warn!("disk::init: timeout waiting for BSY to clear after IDENTIFY");
+                return;
+            }
+        };
         if status & ERR != 0 {
             log::warn!("disk::init: IDENTIFY returned ERR — not a plain ATA drive");
             return;
         }
 
         // Wait for DRQ
-        loop {
+        let mut drq_ready = false;
+        for _ in 0..POLL_TIMEOUT {
             let s = PortReadOnly::<u8>::new(STATUS_CMD).read();
-            if s & DRQ != 0 { break; }
+            if s & DRQ != 0 { drq_ready = true; break; }
             if s & ERR != 0 { return; }
             core::hint::spin_loop();
+        }
+        if !drq_ready {
+            log::warn!("disk::init: timeout waiting for DRQ after IDENTIFY");
+            return;
         }
 
         // Read 256 u16 IDENTIFY words
@@ -129,7 +148,10 @@ pub fn read_sectors(lba: u64, count: u32, buf: &mut [u8]) -> bool {
         // Select master drive, LBA mode, top 4 bits of LBA28
         Port::<u8>::new(DRIVE_HEAD).write(0xE0 | (((lba >> 24) & 0x0F) as u8));
         io_delay();
-        wait_not_busy();
+        if try_wait_not_busy().is_none() {
+            log::warn!("disk: read_sectors timeout waiting for BSY (lba={lba})");
+            return false;
+        }
 
         Port::<u8>::new(SECTOR_COUNT).write(count as u8);
         Port::<u8>::new(LBA_LO).write( (lba       & 0xFF) as u8);
@@ -141,11 +163,15 @@ pub fn read_sectors(lba: u64, count: u32, buf: &mut [u8]) -> bool {
 
         for sector in 0..(count as usize) {
             // Wait for DRQ
-            loop {
-                let s = wait_not_busy();
-                if s & DRQ != 0 { break; }
-                if s & ERR != 0 { return false; }
-            }
+            let s = match try_wait_not_busy() {
+                Some(s) => s,
+                None => {
+                    log::warn!("disk: read_sectors timeout waiting for DRQ (lba={lba} sector={sector})");
+                    return false;
+                }
+            };
+            if s & DRQ == 0 { return false; }
+            if s & ERR != 0 { return false; }
 
             let offset = sector * 512;
             let chunk = &mut buf[offset..offset + 512];
@@ -173,7 +199,10 @@ pub fn write_sectors(lba: u64, count: u32, buf: &[u8]) -> bool {
     unsafe {
         Port::<u8>::new(DRIVE_HEAD).write(0xE0 | (((lba >> 24) & 0x0F) as u8));
         io_delay();
-        wait_not_busy();
+        if try_wait_not_busy().is_none() {
+            log::warn!("disk: write_sectors timeout waiting for BSY (lba={lba})");
+            return false;
+        }
 
         Port::<u8>::new(SECTOR_COUNT).write(count as u8);
         Port::<u8>::new(LBA_LO).write( (lba       & 0xFF) as u8);
@@ -184,11 +213,15 @@ pub fn write_sectors(lba: u64, count: u32, buf: &[u8]) -> bool {
         let mut data_port: Port<u16> = Port::new(DATA);
 
         for sector in 0..(count as usize) {
-            loop {
-                let s = wait_not_busy();
-                if s & DRQ != 0 { break; }
-                if s & ERR != 0 { return false; }
-            }
+            let s = match try_wait_not_busy() {
+                Some(s) => s,
+                None => {
+                    log::warn!("disk: write_sectors timeout waiting for DRQ (lba={lba} sector={sector})");
+                    return false;
+                }
+            };
+            if s & DRQ == 0 { return false; }
+            if s & ERR != 0 { return false; }
 
             let offset = sector * 512;
             let chunk = &buf[offset..offset + 512];
@@ -201,7 +234,10 @@ pub fn write_sectors(lba: u64, count: u32, buf: &[u8]) -> bool {
 
         // Flush write cache
         Port::<u8>::new(STATUS_CMD).write(CMD_CACHE_FLUSH);
-        wait_not_busy();
+        if try_wait_not_busy().is_none() {
+            log::warn!("disk: write_sectors timeout waiting for cache flush (lba={lba})");
+            return false;
+        }
     }
     true
 }
