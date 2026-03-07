@@ -72,7 +72,7 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
                     frame_presented = true;
                     needs_redraw = true;
                 }
-                WindowEvent::MouseMove { x, y } => {
+                WindowEvent::MouseMove { x, y, .. } => {
                     cursor_x = x as f32;
                     cursor_y = y as f32;
                     needs_redraw = true;
@@ -142,7 +142,7 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
                         cs.frame_presented = true;
                         cs.needs_redraw = true;
                     }
-                    WindowEvent::MouseMove { x, y } => {
+                    WindowEvent::MouseMove { x, y, .. } => {
                         cs.cursor_x = x as f32;
                         cs.cursor_y = y as f32;
                         cs.needs_redraw = true;

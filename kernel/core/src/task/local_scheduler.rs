@@ -141,7 +141,7 @@ pub fn schedule_from_interrupt(cpu: &CpuLocalData) -> *mut CpuContext {
         prev_task.cpu_ticks.fetch_add(1, Ordering::Relaxed);
 
         // Accumulate fine-grained CPU time from the TSC slice.
-        let ticks_per_ms = crate::time::tsc::TSC_HZ.load(Ordering::Relaxed);
+        let ticks_per_ms = crate::time::tsc::TSC_TICKS_PER_MS.load(Ordering::Relaxed);
         if ticks_per_ms > 0 {
             let start = prev_task.slice_start_tsc.load(Ordering::Relaxed);
             if start > 0 {

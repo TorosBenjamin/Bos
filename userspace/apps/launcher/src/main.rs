@@ -649,7 +649,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                         Action::None => {}
                     }
                 }
-                WindowEvent::MouseMove { x, y } => {
+                WindowEvent::MouseMove { x, y, .. } => {
                     state.cursor_x = x as f32;
                     state.cursor_y = y as f32;
                     state.dirty = true;

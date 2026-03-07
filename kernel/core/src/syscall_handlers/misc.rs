@@ -1,5 +1,13 @@
 use crate::limine_requests::MODULE_REQUEST;
 
+/// Syscall: return nanoseconds since the Unix epoch (wall-clock time).
+///
+/// Computed from the TSC, anchored to the RTC value read at boot.
+/// Returns 0 if the clock has not been initialized yet.
+pub fn sys_get_time_ns(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    crate::time::now_ns()
+}
+
 /// Syscall: write to the isa-debug-exit port and halt (exits QEMU).
 ///
 /// Arguments: exit_code — written directly to port 0xf4.

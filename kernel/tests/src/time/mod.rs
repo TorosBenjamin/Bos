@@ -6,7 +6,7 @@ use core::sync::atomic::Ordering;
 // ─── TSC / PIT ────────────────────────────────────────────────────────────────
 
 pub fn tsc_calibration() -> TestResult {
-    let tsc_hz = tsc::TSC_HZ.load(Ordering::SeqCst);
+    let tsc_hz = tsc::TSC_TICKS_PER_MS.load(Ordering::SeqCst);
     if tsc_hz > 0 {
         TestResult::Ok
     } else {

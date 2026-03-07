@@ -2,7 +2,7 @@ use core::sync::atomic::Ordering;
 use x86::msr::{wrmsr, IA32_TSC_DEADLINE, IA32_X2APIC_DIV_CONF, IA32_X2APIC_ESR, IA32_X2APIC_LVT_THERMAL, IA32_X2APIC_LVT_TIMER};
 use crate::consts::{APIC_TIMER_MODE_TSC_DEADLINE};
 use crate::interrupt::InterruptVector;
-use crate::time::tsc::{value, TSC_HZ};
+use crate::time::tsc::{value, TSC_TICKS_PER_MS};
 
 #[derive(Clone, Copy, Debug)]
 #[repr(u32)]
@@ -43,8 +43,8 @@ pub fn enable() {
 }
 
 pub fn set_deadline(nanoseconds: u64) {
-    let tsc_hz = TSC_HZ.load(Ordering::SeqCst);
-    let ticks = (nanoseconds * tsc_hz) / 1_000_000;
+    let ticks_per_ms = TSC_TICKS_PER_MS.load(Ordering::Relaxed);
+    let ticks = (nanoseconds * ticks_per_ms) / 1_000_000;
     unsafe {
         wrmsr(IA32_TSC_DEADLINE, value() + ticks);
     }

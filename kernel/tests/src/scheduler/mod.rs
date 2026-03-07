@@ -22,7 +22,7 @@ fn task_increment() -> ! {
 /// Checker task for `test_kernel_tasks_run`.
 ///
 /// Logs immediately on entry so the serial output shows it started even if
-/// something goes wrong afterward. Waits up to `TSC_HZ * 1000` ticks for
+/// something goes wrong afterward. Waits up to `TSC_TICKS_PER_MS * 1000` ticks for
 /// both increment tasks to have run, then exits QEMU with the result.
 fn kernel_tasks_checker() -> ! {
     let count_at_start = TEST_COUNTER.load(Ordering::SeqCst);
@@ -31,11 +31,11 @@ fn kernel_tasks_checker() -> ! {
         count_at_start
     );
 
-    // TSC_HZ may be miscalibrated (~27 000 ticks/ms on this machine instead of
+    // TSC_TICKS_PER_MS may be miscalibrated (~27 000 ticks/ms on this machine instead of
     // ~3 000 000), so multiply by 1000 to get a timeout that is generous even
     // with a badly calibrated TSC.
     let start_tsc = tsc::value();
-    let timeout = tsc::TSC_HZ.load(Ordering::SeqCst).saturating_mul(1000);
+    let timeout = tsc::TSC_TICKS_PER_MS.load(Ordering::SeqCst).saturating_mul(1000);
 
     while TEST_COUNTER.load(Ordering::SeqCst) < 2 {
         if tsc::value().wrapping_sub(start_tsc) > timeout {

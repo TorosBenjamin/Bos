@@ -154,7 +154,7 @@ pub fn sys_wait_for_event(
     let deadline_tsc: u64 = if timeout_ms == 0 {
         0
     } else {
-        let hz = tsc::TSC_HZ.load(Relaxed);
+        let hz = tsc::TSC_TICKS_PER_MS.load(Relaxed);
         tsc::value().saturating_add(timeout_ms.saturating_mul(hz))
     };
 

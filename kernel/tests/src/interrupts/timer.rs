@@ -19,7 +19,7 @@ pub fn timer_interrupt_fires() -> TestResult {
 
     // 4. Wait for the interrupt to fire (with a timeout)
     let start_tsc = tsc::value();
-    let tsc_hz = tsc::TSC_HZ.load(Ordering::SeqCst);
+    let tsc_hz = tsc::TSC_TICKS_PER_MS.load(Ordering::SeqCst);
     
     // Timeout after ~1000ms (1 second)
     let timeout_ticks = tsc_hz * 1000; 

@@ -277,6 +277,8 @@ pub struct CreateWindowResponse {
 
 /// Mouse move event sent to the focused window whenever the cursor moves.
 /// `x` and `y` are the cursor position relative to the window's top-left corner.
+/// `delta_ns` is the actual duration of the preceding frame in nanoseconds; use it
+/// for velocity or physics calculations that should be frame-rate independent.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct MouseMoveEvent {
@@ -284,6 +286,7 @@ pub struct MouseMoveEvent {
     pub _pad: [u8; 3],
     pub x: i32,
     pub y: i32,
+    pub delta_ns: u64,
 }
 
 /// Mouse button press/release event sent to the focused window.

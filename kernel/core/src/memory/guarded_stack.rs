@@ -123,12 +123,23 @@ impl Drop for GuardedStack {
         // Unmap and free each mapped page (index 0 is the guard page, skip it)
         for i in 1..self.n_virtual_pages {
             let page = self.guard_page + i;
-            if let Ok((frame, _, flush)) =  mapper.unmap(page) {
-                flush.flush();
-                let _ = physical_memory.free_frame(
-                    frame,
-                    MemoryType::UsedByKernel(KernelMemoryUsageType::PageTables),
-                );
+            match mapper.unmap(page) {
+                Ok((frame, _, flush)) => {
+                    flush.flush();
+                    if let Err(e) = physical_memory.free_frame(
+                        frame,
+                        MemoryType::UsedByKernel(KernelMemoryUsageType::PageTables),
+                    ) {
+                        log::error!("GuardedStack::drop: free_frame failed for page {:?}: {:?}", page, e);
+                        #[cfg(debug_assertions)]
+                        panic!("GuardedStack::drop: free_frame failed for page {:?}: {:?}", page, e);
+                    }
+                }
+                Err(e) => {
+                    log::error!("GuardedStack::drop: unmap failed for page {:?}: {:?}", page, e);
+                    #[cfg(debug_assertions)]
+                    panic!("GuardedStack::drop: unmap failed for page {:?}: {:?}", page, e);
+                }
             }
         }
 

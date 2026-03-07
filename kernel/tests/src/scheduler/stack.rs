@@ -146,7 +146,7 @@ pub fn test_timer_stack_alignment() -> TestResult {
 
     // Wait up to 100 ms for the flag to be set by the interrupt handler.
     let start = kernel::time::tsc::value();
-    let tsc_hz = kernel::time::tsc::TSC_HZ.load(Ordering::SeqCst);
+    let tsc_hz = kernel::time::tsc::TSC_TICKS_PER_MS.load(Ordering::SeqCst);
     let timeout = tsc_hz / 10; // 100 ms
     while !TIMER_STACK_ALIGNMENT_OK.load(Ordering::Acquire) {
         if kernel::time::tsc::value() - start > timeout {

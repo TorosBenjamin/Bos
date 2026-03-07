@@ -43,6 +43,7 @@ pub enum SysCallNumber {
     WaitForEvent   = 32,
     SleepMs        = 33,
     SetPriority    = 34,
+    GetTimeNs      = 35,
 }
 
 #[repr(u8)]

@@ -84,6 +84,7 @@ extern "sysv64" fn init_bsp() -> ! {
     kernel::drivers::disk::init();
 
     time::tsc::calibrate();
+    time::init_wall_clock();
     time::lapic_timer::init();
     time::lapic_timer::set_deadline(1_000_000);
 

@@ -385,6 +385,14 @@ pub fn sys_wait_for_event(channels: &[u64], flags: u32, timeout_ms: u64) -> u64 
     args[6]
 }
 
+/// Returns nanoseconds since the Unix epoch (wall-clock time, TSC-based).
+pub fn sys_get_time_ns() -> u64 {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::GetTimeNs as u64;
+    syscall(&mut args);
+    args[6]
+}
+
 /// Terminate the calling task with exit code 1.
 pub fn sys_exit(code: u64) -> ! {
     let mut args = [0u64; 7];

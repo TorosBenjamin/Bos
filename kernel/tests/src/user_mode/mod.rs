@@ -311,7 +311,7 @@ fn checker_task() -> ! {
     );
 
     let start = kernel::time::tsc::value();
-    let timeout = kernel::time::tsc::TSC_HZ.load(Ordering::SeqCst).saturating_mul(1000);
+    let timeout = kernel::time::tsc::TSC_TICKS_PER_MS.load(Ordering::SeqCst).saturating_mul(1000);
 
     // Wait for both kernel tasks to have executed
     while KERNEL_TASK_COUNTER.load(Ordering::SeqCst) < 2 {

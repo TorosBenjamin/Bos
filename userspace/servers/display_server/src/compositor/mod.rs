@@ -799,10 +799,20 @@ impl Compositor {
             loop { ulib::sys_yield(); }
         }
 
+        // 60 fps cap: one frame every 16 666 666 ns.
+        const FRAME_BUDGET_NS: u64 = 1_000_000_000 / 60;
+
+        // Initialise the frame anchor so delta_ns is reasonable on the first frame.
+        let mut last_frame_ns = ulib::sys_get_time_ns();
+
         // Initial full composite
         self.mark_full_redraw();
 
         loop {
+            let frame_start_ns = ulib::sys_get_time_ns();
+            // Actual duration of the previous frame (clamped to at least 1 ns).
+            let delta_ns = frame_start_ns.saturating_sub(last_frame_ns).max(1);
+            last_frame_ns = frame_start_ns;
             // Poll any windows that are in the process of graceful close.
             self.poll_closing_windows();
 
@@ -869,6 +879,7 @@ impl Compositor {
                                 _pad: [0; 3],
                                 x: self.cursor_x - wx,
                                 y: self.cursor_y - wy,
+                                delta_ns,
                             });
                         }
                     }
@@ -970,15 +981,20 @@ impl Compositor {
             // Single composite for everything accumulated this iteration.
             self.flush();
 
-            let has_closing = self.windows.iter()
-                .filter_map(|w| w.as_ref())
-                .any(|w| w.closing);
-            let wait_timeout = if has_closing { CLOSE_POLL_TIMEOUT_MS } else { 0 };
-            ulib::sys_wait_for_event(
-                &[self.recv_endpoint],
-                ulib::WAIT_MOUSE | ulib::WAIT_KEYBOARD,
-                wait_timeout,
-            );
+            // Sleep for whatever budget remains in this 16.67ms frame window.
+            // This caps the compositor at ~60 fps while remaining event-driven:
+            // sys_wait_for_event returns early as soon as mouse/keyboard/IPC arrives.
+            let elapsed_ns = ulib::sys_get_time_ns().saturating_sub(frame_start_ns);
+            let remaining_ns = FRAME_BUDGET_NS.saturating_sub(elapsed_ns);
+            // Convert to ms (ceiling so a sub-ms remainder doesn't collapse to 0 = infinite).
+            let timeout_ms = (remaining_ns / 1_000_000).max(remaining_ns.min(1));
+            if timeout_ms > 0 {
+                ulib::sys_wait_for_event(
+                    &[self.recv_endpoint],
+                    ulib::WAIT_MOUSE | ulib::WAIT_KEYBOARD,
+                    timeout_ms,
+                );
+            }
         }
     }
 }

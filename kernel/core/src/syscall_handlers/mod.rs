@@ -12,7 +12,7 @@ pub(crate) use task::kill_from_exception;
 pub use memory::{sys_mmap, sys_munmap, sys_create_shared_buf, sys_map_shared_buf, sys_destroy_shared_buf};
 pub use ipc::{sys_channel_create, sys_channel_send, sys_channel_recv, sys_channel_close, sys_try_channel_recv, sys_try_channel_send};
 pub use graphics::{sys_get_bounding_box, sys_get_display_info, sys_transfer_display};
-pub use misc::{sys_debug_log, sys_read_key, sys_try_read_key, sys_read_mouse, sys_get_module, sys_shutdown};
+pub use misc::{sys_debug_log, sys_read_key, sys_try_read_key, sys_read_mouse, sys_get_module, sys_shutdown, sys_get_time_ns};
 pub use service::{sys_register_service, sys_lookup_service};
 pub use disk::{sys_block_read_sectors, sys_block_write_sectors};
 pub use event::{sys_wait_for_event, check_timeout_waiters};

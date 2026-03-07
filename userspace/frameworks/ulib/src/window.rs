@@ -44,7 +44,9 @@ pub enum WindowEvent {
     /// Mouse button released. Same coordinate convention as `MouseButtonPress`.
     MouseButtonRelease { button: u8, x: i32, y: i32 },
     /// Cursor moved while this window is focused. `x`/`y` are window-relative.
-    MouseMove { x: i32, y: i32 },
+    /// `delta_ns` is the compositor's last frame duration — use it for frame-rate-independent
+    /// velocity or physics (e.g. `pixels_per_second = dx as f32 / (delta_ns as f32 / 1e9)`).
+    MouseMove { x: i32, y: i32, delta_ns: u64 },
     /// DS is destroying this window. Stop accessing the pixel buffer.
     /// Call `acknowledge_close()` then exit, or let the process exit naturally.
     Close,
@@ -444,7 +446,7 @@ impl Window {
                 let ev: MouseMoveEvent = unsafe {
                     core::ptr::read_unaligned(buf.as_ptr() as *const _)
                 };
-                return Some(WindowEvent::MouseMove { x: ev.x, y: ev.y });
+                return Some(WindowEvent::MouseMove { x: ev.x, y: ev.y, delta_ns: ev.delta_ns });
             }
         } else if event_type == WindowEventType::Close as u8 {
             return Some(WindowEvent::Close);
