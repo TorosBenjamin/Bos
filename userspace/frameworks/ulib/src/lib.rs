@@ -385,8 +385,16 @@ pub fn sys_wait_for_event(channels: &[u64], flags: u32, timeout_ms: u64) -> u64 
     args[6]
 }
 
+/// Terminate the calling task with exit code 1.
+pub fn sys_exit(code: u64) -> ! {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::Exit as u64;
+    args[1] = code;
+    syscall(&mut args);
+    loop { core::hint::spin_loop(); }
+}
+
+/// Default panic handler: exit the task so the rest of the system keeps running.
 pub fn default_panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {
-        core::hint::spin_loop();
-    }
+    sys_exit(1);
 }

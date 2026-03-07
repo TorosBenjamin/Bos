@@ -75,6 +75,62 @@ pub fn sys_exit(exit_code: u64) -> ! {
     }
 }
 
+/// Kill the current user task from a hardware exception handler (page fault, GPF).
+///
+/// Called after the exception handler has already done `swapgs` so `get_local()`
+/// is safe. Performs the same resource cleanup as `sys_exit`, then halts; the
+/// timer will reschedule to the next ready task.
+pub(crate) fn kill_from_exception(exit_code: u64) -> ! {
+    let cpu = get_local();
+
+    let (task_arc, endpoints) = {
+        let rq = cpu.run_queue.get().unwrap().lock();
+        let t = rq.current_task.clone();
+        let eps = t.as_ref()
+            .map(|t| t.inner.lock().owned_endpoints.clone())
+            .unwrap_or_default();
+        (t, eps)
+    };
+
+    for ep in endpoints {
+        let _ = crate::ipc::close_endpoint(ep);
+    }
+
+    if let Some(task) = &task_arc {
+        crate::service_registry::unregister_all_for_task(task.id);
+    }
+
+    if let Some(task) = task_arc {
+        task.exit_code.store(exit_code, Ordering::Release);
+        task.state.store(TaskState::Zombie, Ordering::Relaxed);
+
+        let notif_ep = task.exit_notification_ep.load(Ordering::Relaxed);
+        if notif_ep != 0 {
+            let mut msg = [0u8; 16];
+            msg[0..8].copy_from_slice(&task.id.to_u64().to_le_bytes());
+            msg[8..16].copy_from_slice(&exit_code.to_le_bytes());
+            let _ = crate::ipc::try_send(notif_ep, &msg);
+        }
+
+        task.free_address_space_now();
+
+        if let Some((waiter, w_cpu)) = task.exit_waiter.lock().take() {
+            wake_task(waiter, w_cpu);
+        } else {
+            TASK_TABLE.lock().remove(&task.id);
+        }
+
+        // Switch to kernel CR3 before we return to hlt — the user L4 frame was freed.
+        let mem = MEMORY.get().unwrap();
+        unsafe { Cr3::write(mem.new_kernel_cr3, mem.new_kernel_cr3_flags); }
+    }
+
+    x86_64::instructions::interrupts::enable();
+    loop {
+        x86_64::instructions::hlt();
+    }
+}
+
 /// Syscall: yield the current timeslice.
 ///
 /// Enables interrupts and halts — the timer interrupt will immediately reschedule.

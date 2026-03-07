@@ -20,12 +20,26 @@ pub extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
+    // Read CR2 first — it holds the faulting address and must be captured
+    // before any other exception could overwrite it.
     let accessed_address = Cr2::read_raw();
-    log::error!(
-        "Page fault at {:#x}, error: {error_code:#?}, ip: {:#x}",
-        accessed_address,
-        stack_frame.instruction_pointer.as_u64()
-    );
+
+    // Check whether the fault originated in ring 3 (user space).
+    // CS bits [1:0] are the RPL; 3 = ring 3.
+    if stack_frame.code_segment.0 & 3 == 3 {
+        // The CPU does NOT automatically swap GS on exception entry (unlike SYSCALL).
+        // Do it manually so get_local() works inside kill_from_exception.
+        unsafe { core::arch::asm!("swapgs", options(nostack, nomem)); }
+        log::warn!(
+            "User task page fault: addr={:#x} ip={:#x} err={:?} — killing task",
+            accessed_address,
+            stack_frame.instruction_pointer.as_u64(),
+            error_code,
+        );
+        crate::syscall_handlers::kill_from_exception(1);
+    }
+
+    // Kernel-mode fault — check guard pages then panic.
     let accessed_address = x86_64::VirtAddr::new(accessed_address);
     if let Some(stack) = STACK_GUARD_PAGES
         .lock()
@@ -50,20 +64,25 @@ pub extern "x86-interrupt" fn general_protection_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
-    // If GPF was during iretq, dump what the iretq frame was
-    // The faulting RSP should point to the iretq frame
+    // Ring-3 GPF: unaligned SSE access, bad segment selector, etc. — kill the task.
+    if stack_frame.code_segment.0 & 3 == 3 {
+        unsafe { core::arch::asm!("swapgs", options(nostack, nomem)); }
+        log::warn!(
+            "User task GPF: ip={:#x} err={} — killing task",
+            stack_frame.instruction_pointer.as_u64(),
+            error_code,
+        );
+        crate::syscall_handlers::kill_from_exception(1);
+    }
+
+    // Kernel-mode GPF: if the fault was during iretq, dump the iretq frame.
     let rsp = stack_frame.stack_pointer.as_u64();
-    if rsp > 0xFFFF800000000000 {  // Kernel stack
+    if rsp > 0xFFFF800000000000 {
         unsafe {
             let ptr = rsp as *const u64;
-            let iretq_rip = *ptr;
-            let iretq_cs = *ptr.add(1);
-            let iretq_rflags = *ptr.add(2);
-            let iretq_rsp = *ptr.add(3);
-            let iretq_ss = *ptr.add(4);
             log::error!(
                 "IRETQ frame at RSP {:#x}: rip={:#x} cs={:#x} rflags={:#x} rsp={:#x} ss={:#x}",
-                rsp, iretq_rip, iretq_cs, iretq_rflags, iretq_rsp, iretq_ss
+                rsp, *ptr, *ptr.add(1), *ptr.add(2), *ptr.add(3), *ptr.add(4)
             );
         }
     }
