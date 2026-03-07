@@ -12,23 +12,23 @@ unsafe extern "sysv64" fn entry_point() -> ! {
     let utest_size = ulib::sys_get_module("utest", core::ptr::null_mut(), 0);
     let is_test_mode = utest_size > 0;
 
-    // Load and spawn fs_server (registers "fatfs" service)
+    // Load and spawn fs_server (registers "fatfs" service) with High priority
     let fss_size = ulib::sys_get_module("fs_server", core::ptr::null_mut(), 0);
     if fss_size > 0 {
         let fss_buf = ulib::sys_mmap(fss_size, kernel_api_types::MMAP_WRITE);
         let _ = ulib::sys_get_module("fs_server", fss_buf, fss_size);
         let fss_elf = unsafe { core::slice::from_raw_parts(fss_buf, fss_size as usize) };
-        let _ = ulib::sys_spawn(fss_elf, 0);
+        let _ = ulib::sys_spawn_with_priority(fss_elf, 0, b"fs_server", kernel_api_types::Priority::High as u8);
         ulib::sys_munmap(fss_buf, fss_size);
     }
 
-    // Load and spawn display_server (it will self-register the "display" service)
+    // Load and spawn display_server (it will self-register the "display" service) with High priority
     let ds_size = ulib::sys_get_module("display_server", core::ptr::null_mut(), 0);
     let ds_buf = ulib::sys_mmap(ds_size, kernel_api_types::MMAP_WRITE);
     let _ = ulib::sys_get_module("display_server", ds_buf, ds_size);
 
     let ds_elf_bytes = unsafe { core::slice::from_raw_parts(ds_buf, ds_size as usize) };
-    let ds_id = ulib::sys_spawn(ds_elf_bytes, 0);
+    let ds_id = ulib::sys_spawn_with_priority(ds_elf_bytes, 0, b"display_server", kernel_api_types::Priority::High as u8);
     ulib::sys_munmap(ds_buf, ds_size);
 
     // Transfer display ownership to display_server

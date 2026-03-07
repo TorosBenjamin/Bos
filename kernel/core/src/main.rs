@@ -23,6 +23,7 @@ use kernel::interrupt::nmi_handler_state;
 use kernel::task::global_scheduler::{spawn_task, spawn_local_task};
 use kernel::task::local_scheduler::init_run_queue;
 use kernel::task::task::Task;
+use kernel_api_types::Priority;
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn kernel_main() -> ! {
@@ -89,8 +90,8 @@ extern "sysv64" fn init_bsp() -> ! {
     raw_syscall_handler::init();
     init_run_queue();
 
-    spawn_local_task(Task::new(idle_task));
-    let init_task = create_user_task_from_elf();
+    spawn_local_task(Task::new(idle_task, Priority::Background, None));
+    let init_task = create_user_task_from_elf(Priority::High, None);
     DISPLAY_OWNER.store(init_task.id.to_u64(), core::sync::atomic::Ordering::SeqCst);
     spawn_task(init_task);
 
@@ -147,7 +148,7 @@ extern "sysv64" fn init_ap() -> ! {
     time::lapic_timer::set_deadline(1_000_000);
     mark_current_cpu_ready();
 
-    spawn_local_task(Task::new(idle_task));
+    spawn_local_task(Task::new(idle_task, Priority::Background, None));
 
     x86_64::instructions::interrupts::enable();
 

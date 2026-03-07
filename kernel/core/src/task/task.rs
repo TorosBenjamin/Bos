@@ -4,7 +4,8 @@ use crate::memory::physical_memory::MemoryType;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use atomic_enum::atomic_enum;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use kernel_api_types::Priority;
 use nodit::{Interval, NoditSet};
 use spin::mutex::Mutex;
 use crate::memory::cpu_local_data::get_local;
@@ -219,14 +220,22 @@ pub struct Task {
     pub exit_notification_ep: AtomicU64,
     /// Number of scheduler quanta this task has consumed. One tick ≈ 1 ms.
     pub cpu_ticks: AtomicU64,
+    /// TSC value when this task was last scheduled in. 0 = never run.
+    pub slice_start_tsc: AtomicU64,
+    /// Accumulated CPU time in nanoseconds.
+    pub cpu_ns: AtomicU64,
     /// Human-readable name (up to 32 bytes, not null-terminated).
     pub name: [u8; 32],
     pub name_len: u8,
+    /// Scheduling priority (Priority::from_u8(task.priority.load(Relaxed))).
+    pub priority: AtomicU8,
+    /// Parent task ID; None for kernel tasks and init_task.
+    pub parent_id: Option<TaskId>,
 }
 
 impl Task {
     /// Create a new kernel-mode task.
-    pub fn new(entry: fn() -> !) -> Self {
+    pub fn new(entry: fn() -> !, priority: Priority, parent_id: Option<TaskId>) -> Self {
         let stack = GuardedStack::new_kernel(
             NORMAL_STACK_SIZE,
             StackId {
@@ -278,8 +287,12 @@ impl Task {
             exit_waiter: Mutex::new(None),
             exit_notification_ep: AtomicU64::new(0),
             cpu_ticks: AtomicU64::new(0),
+            slice_start_tsc: AtomicU64::new(0),
+            cpu_ns: AtomicU64::new(0),
             name,
             name_len: 6,
+            priority: AtomicU8::new(priority as u8),
+            parent_id,
         }
     }
 
@@ -301,6 +314,8 @@ impl Task {
         user_vaddr_set: NoditSet<u64, Interval<u64>>,
         arg: u64,
         task_name: &[u8],
+        priority: Priority,
+        parent_id: Option<TaskId>,
     ) -> Self {
         // Allocate a kernel stack for this user task (used for interrupts/syscalls)
         let kernel_stack = GuardedStack::new_kernel(
@@ -347,8 +362,12 @@ impl Task {
             exit_waiter: Mutex::new(None),
             exit_notification_ep: AtomicU64::new(0),
             cpu_ticks: AtomicU64::new(0),
+            slice_start_tsc: AtomicU64::new(0),
+            cpu_ns: AtomicU64::new(0),
             name,
             name_len,
+            priority: AtomicU8::new(priority as u8),
+            parent_id,
         }
     }
 
@@ -365,6 +384,8 @@ impl Task {
         user_vaddr_set: NoditSet<u64, Interval<u64>>,
         arg: u64,
         task_name: &[u8],
+        priority: Priority,
+        parent_id: Option<TaskId>,
     ) -> Self {
         let kernel_stack = GuardedStack::new_kernel(
             NORMAL_STACK_SIZE,
@@ -407,8 +428,26 @@ impl Task {
             exit_waiter: Mutex::new(None),
             exit_notification_ep: AtomicU64::new(0),
             cpu_ticks: AtomicU64::new(0),
+            slice_start_tsc: AtomicU64::new(0),
+            cpu_ns: AtomicU64::new(0),
             name,
             name_len,
+            priority: AtomicU8::new(priority as u8),
+            parent_id,
+        }
+    }
+
+    /// Immediately frees the user-space page tables for this task.
+    ///
+    /// Safe to call from syscall context (not holding any spinlocks). Idempotent:
+    /// `user_page_table.take()` returns `None` on a second call, so `TaskInner::drop`
+    /// will skip the free even if it runs later via the Arc drop chain.
+    pub fn free_address_space_now(&self) {
+        let l4_frame = self.inner.lock().user_page_table.take();
+        if let Some(frame) = l4_frame {
+            let memory = crate::memory::MEMORY.get().unwrap();
+            let mut phys_mem = memory.physical_memory.lock();
+            unsafe { free_user_address_space(frame.start_address(), &mut phys_mem); }
         }
     }
 

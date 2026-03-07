@@ -3,13 +3,11 @@ use crate::memory::cpu_local_data::{cpus_count, get_local, local_apic_id_of, try
 use crate::task::task::{Task, TaskId, TaskState};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::Ordering;
 use spin::Mutex;
 use x86_64::instructions::interrupts;
 
 pub static TASK_TABLE: Mutex<BTreeMap<TaskId, Arc<Task>>> = Mutex::new(BTreeMap::new());
-
-static NEXT_SPAWN_CPU: AtomicUsize = AtomicUsize::new(0);
 
 pub fn spawn_task(task: Task) {
     let task_id = task.id;
@@ -24,15 +22,13 @@ pub fn spawn_task(task: Task) {
         }
         drop(tasks);
 
-        // Round-robin dispatch: pick a CPU that is fully initialized (has a run queue).
-        // During early boot, only the BSP is ready; APs join as they initialize.
+        // Least-loaded dispatch: pick the ready CPU with the fewest queued tasks.
+        // This avoids sending IPIs to idle CPUs that have no work — a round-robin
+        // counter would wake every CPU in turn even when only one has tasks.
         let total = cpus_count();
-        let start = NEXT_SPAWN_CPU.fetch_add(1, Ordering::Relaxed);
         let (target_id, target_cpu) = (0..total)
-            .find_map(|i| {
-                let id = (start + i) % total;
-                try_get_ready_cpu(id as u32).map(|cpu| (id, cpu))
-            })
+            .filter_map(|id| try_get_ready_cpu(id as u32).map(|cpu| (id, cpu)))
+            .min_by_key(|(_, cpu)| cpu.ready_count.load(Ordering::Relaxed))
             .unwrap_or_else(|| {
                 let local = get_local();
                 (local.kernel_id as usize, local)

@@ -24,14 +24,17 @@ static TIMEOUT_WAITER_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 fn add_timeout_waiter(deadline: u64, task: Arc<Task>, cpu_id: u32) {
     let mut v = TIMEOUT_WAITERS.lock();
-    v.push((deadline, task, cpu_id));
+    // Keep the vec sorted ascending by deadline so check_timeout_waiters can
+    // stop at the first entry whose deadline has not yet arrived.
+    let idx = v.partition_point(|(d, _, _)| *d <= deadline);
+    v.insert(idx, (deadline, task, cpu_id));
     TIMEOUT_WAITER_COUNT.store(v.len(), Relaxed);
 }
 
 fn remove_timeout_waiter(task: &Arc<Task>) {
     let mut v = TIMEOUT_WAITERS.lock();
     if let Some(pos) = v.iter().position(|(_, t, _)| Arc::ptr_eq(t, task)) {
-        v.swap_remove(pos);
+        v.remove(pos); // preserve sort order (swap_remove would break it)
         TIMEOUT_WAITER_COUNT.store(v.len(), Relaxed);
     }
 }
@@ -51,16 +54,16 @@ pub fn check_timeout_waiters() {
     loop {
         let entry = {
             let mut v = TIMEOUT_WAITERS.lock();
-            match v.iter().position(|(d, _, _)| now >= *d) {
-                Some(i) => {
-                    let e = v.swap_remove(i);
-                    TIMEOUT_WAITER_COUNT.store(v.len(), Relaxed);
-                    Some(e)
-                }
-                None => None,
+            // Vec is sorted ascending by deadline; the front entry is the earliest.
+            // If it hasn't expired yet, nothing else has either — stop immediately.
+            if v.first().map(|(d, _, _)| now < *d).unwrap_or(true) {
+                break;
             }
+            let e = v.remove(0);
+            TIMEOUT_WAITER_COUNT.store(v.len(), Relaxed);
+            e
         };
-        let (_, task, cpu_id) = match entry { Some(e) => e, None => break };
+        let (_, task, cpu_id) = entry;
 
         if task.state.compare_exchange(TaskState::Sleeping, TaskState::Ready, AcqRel, Relaxed).is_ok() {
             let local_id = get_local().kernel_id;

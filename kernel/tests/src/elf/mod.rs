@@ -3,6 +3,7 @@ use alloc::format;
 use alloc::vec::Vec;
 use elf::ElfBytes;
 use elf::endian::AnyEndian;
+use kernel_api_types::Priority;
 use elf::abi::PT_LOAD;
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -240,7 +241,7 @@ pub fn test_spawn_rip_matches_elf_entry() -> TestResult {
     };
     let expected_entry = elf.ehdr.e_entry;
 
-    let task = match kernel::user_task_from_elf::create_user_task_from_elf_bytes(bytes, 0, b"") {
+    let task = match kernel::user_task_from_elf::create_user_task_from_elf_bytes(bytes, 0, b"", Priority::Normal, None) {
         Ok(t) => t,
         Err(e) => {
             return TestResult::Failed(format!(
@@ -276,7 +277,7 @@ pub fn test_direct_elf_entry_matches() -> TestResult {
     };
     let expected_entry = elf.ehdr.e_entry;
 
-    let task = kernel::user_task_from_elf::create_user_task_from_elf();
+    let task = kernel::user_task_from_elf::create_user_task_from_elf(Priority::Normal, None);
     let rip = task.inner.lock().context.rip;
 
     if rip != expected_entry {
@@ -315,7 +316,7 @@ pub fn test_spawn_data_integrity() -> TestResult {
 
     let entry = elf.ehdr.e_entry;
 
-    let task = match kernel::user_task_from_elf::create_user_task_from_elf_bytes(bytes, 0, b"") {
+    let task = match kernel::user_task_from_elf::create_user_task_from_elf_bytes(bytes, 0, b"", Priority::Normal, None) {
         Ok(t) => t,
         Err(e) => {
             return TestResult::Failed(format!(
@@ -403,7 +404,7 @@ pub fn test_spawn_bss_zeroed() -> TestResult {
         None => return TestResult::Ok,
     };
 
-    let task = match kernel::user_task_from_elf::create_user_task_from_elf_bytes(bytes, 0, b"") {
+    let task = match kernel::user_task_from_elf::create_user_task_from_elf_bytes(bytes, 0, b"", Priority::Normal, None) {
         Ok(t) => t,
         Err(e) => {
             return TestResult::Failed(format!(

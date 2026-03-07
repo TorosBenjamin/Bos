@@ -1,6 +1,8 @@
 use crate::memory::cpu_local_data::{CpuLocalData, get_local, get_cpu, local_apic_id_of};
+use crate::time::tsc;
 use crate::memory::MEMORY;
 use crate::task::task::{CpuContext, Task, TaskState};
+use kernel_api_types::Priority;
 
 /// A waiter slot used by `sys_wait_for_event` to register a sleeping task
 /// against a single event source. Woken via `try_wake_slot` which uses a CAS
@@ -16,7 +18,41 @@ use x86_64::PhysAddr;
 
 pub struct RunQueue {
     pub current_task: Option<Arc<Task>>,
-    pub ready: VecDeque<Arc<Task>>,
+    /// Index 0 = Background, 1 = Normal, 2 = High
+    pub ready: [VecDeque<Arc<Task>>; 3],
+    /// How many ticks each band has been skipped without running.
+    pub skip_counts: [u32; 3],
+}
+
+/// Starvation threshold per band: ticks skipped before a forced boost.
+/// Background=50ms, Normal=200ms, High=never.
+const STARVATION: [u32; 3] = [50, 200, u32::MAX];
+
+/// Pick the next task to run using priority with starvation protection.
+fn pick_next(rq: &mut RunQueue) -> Option<Arc<Task>> {
+    // Starvation boost: lowest-priority bands first
+    for i in [0usize, 1] {
+        if rq.skip_counts[i] >= STARVATION[i] && !rq.ready[i].is_empty() {
+            rq.skip_counts[i] = 0;
+            return rq.ready[i].pop_front();
+        }
+    }
+
+    // Normal path: High → Normal → Background
+    for winner in [2usize, 1, 0] {
+        if !rq.ready[winner].is_empty() {
+            // Increment skip counts for all lower non-empty bands
+            for lower in 0..winner {
+                if !rq.ready[lower].is_empty() {
+                    rq.skip_counts[lower] = rq.skip_counts[lower].saturating_add(1);
+                }
+            }
+            rq.skip_counts[winner] = 0;
+            return rq.ready[winner].pop_front();
+        }
+    }
+
+    None
 }
 
 /// Safety: cpu_init must be called before
@@ -26,7 +62,8 @@ pub fn init_run_queue() {
     cpu.run_queue.call_once(|| {
         spin::Mutex::new(RunQueue {
             current_task: None,
-            ready: VecDeque::new(),
+            ready: [VecDeque::new(), VecDeque::new(), VecDeque::new()],
+            skip_counts: [0u32; 3],
         })
     });
 }
@@ -35,7 +72,8 @@ pub fn init_run_queue() {
 pub fn add(cpu: &CpuLocalData, task: Arc<Task>) {
     interrupts::without_interrupts(|| {
         let mut rq = cpu.run_queue.get().unwrap().lock();
-        rq.ready.push_back(task);
+        let prio = Priority::from_u8(task.priority.load(Ordering::Relaxed)) as usize;
+        rq.ready[prio].push_back(task);
         cpu.ready_count.fetch_add(1, Ordering::Relaxed);
     });
 }
@@ -82,30 +120,46 @@ pub fn schedule_from_interrupt(cpu: &CpuLocalData) -> *mut CpuContext {
     // Get pointer to current context (saved by timer handler)
     let current_ctx_ptr = cpu.current_context_ptr.load(Ordering::Relaxed);
 
-    let next_task = match rq.ready.pop_front() {
+    let next_task = match pick_next(&mut rq) {
         Some(task) => {
             cpu.ready_count.fetch_sub(1, Ordering::Relaxed);
             task
         }
         None => {
-            // ready_count was non-zero but the queue is empty — a concurrent steal
+            // ready_count was non-zero but all queues are empty — a concurrent steal
             // or pop raced with us. Nothing to switch to.
             return current_ctx_ptr;
         }
     };
+
+    // Read TSC once: used to charge the outgoing task and stamp the incoming one.
+    let now_tsc = tsc::value();
 
     // Re-queue the current task if it's still runnable
     if let Some(prev_task) = rq.current_task.take() {
         // Charge one quantum to the outgoing task
         prev_task.cpu_ticks.fetch_add(1, Ordering::Relaxed);
 
+        // Accumulate fine-grained CPU time from the TSC slice.
+        let ticks_per_ms = crate::time::tsc::TSC_HZ.load(Ordering::Relaxed);
+        if ticks_per_ms > 0 {
+            let start = prev_task.slice_start_tsc.load(Ordering::Relaxed);
+            if start > 0 {
+                let elapsed_tsc = now_tsc.saturating_sub(start);
+                // elapsed_tsc * 1_000_000 ns/ms / ticks_per_ms
+                let elapsed_ns = elapsed_tsc.saturating_mul(1_000_000) / ticks_per_ms;
+                prev_task.cpu_ns.fetch_add(elapsed_ns, Ordering::Relaxed);
+            }
+        }
+
         match prev_task.state.load(Ordering::Relaxed) {
             // Zombie: being cleaned up by scheduler drop
             // Sleeping: waiter slot holds the only remaining Arc; just drop this one
             TaskState::Zombie | TaskState::Sleeping => {}
             _ => {
+                let prev_prio = Priority::from_u8(prev_task.priority.load(Ordering::Relaxed)) as usize;
                 prev_task.state.store(TaskState::Ready, Ordering::Relaxed);
-                rq.ready.push_back(prev_task);
+                rq.ready[prev_prio].push_back(prev_task);
                 cpu.ready_count.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -146,6 +200,9 @@ pub fn schedule_from_interrupt(cpu: &CpuLocalData) -> *mut CpuContext {
             );
         }
     }
+
+    // Stamp the incoming task's slice start so the next switch can charge it.
+    next_task.slice_start_tsc.store(now_tsc, Ordering::Relaxed);
 
     rq.current_task = Some(next_task);
 

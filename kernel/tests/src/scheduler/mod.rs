@@ -4,6 +4,7 @@ pub mod stack;
 
 use crate::{TestResult, exit_qemu, QemuExitCode};
 use kernel::task::task::{Task, TaskState};
+use kernel_api_types::Priority;
 use kernel::task::global_scheduler::spawn_task;
 use kernel::time::tsc;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -69,9 +70,9 @@ fn kernel_tasks_checker() -> ! {
 pub fn test_kernel_tasks_run() -> TestResult {
     TEST_COUNTER.store(0, Ordering::SeqCst);
 
-    spawn_task(Task::new(task_increment));
-    spawn_task(Task::new(task_increment));
-    spawn_task(Task::new(kernel_tasks_checker));
+    spawn_task(Task::new(task_increment, Priority::Normal, None));
+    spawn_task(Task::new(task_increment, Priority::Normal, None));
+    spawn_task(Task::new(kernel_tasks_checker, Priority::Normal, None));
 
     // Explicitly arm the LAPIC timer so the scheduler fires even if the
     // timer was not re-armed by a previous test (e.g. test_timer_stack_alignment
@@ -86,7 +87,7 @@ pub fn test_kernel_tasks_run() -> TestResult {
 }
 
 pub fn simple_task_creation() -> TestResult {
-    let task = Task::new(|| loop {});
+    let task = Task::new(|| loop {}, Priority::Normal, None);
     if task.run_state() == TaskState::Initializing {
         TestResult::Ok
     } else {

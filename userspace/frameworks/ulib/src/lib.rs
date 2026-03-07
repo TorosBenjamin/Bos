@@ -148,6 +148,11 @@ pub fn sys_munmap(addr: *mut u8, size: u64) -> u64 {
 }
 
 pub fn sys_spawn_named(elf_bytes: &[u8], child_arg: u64, name: &[u8]) -> u64 {
+    sys_spawn_with_priority(elf_bytes, child_arg, name, kernel_api_types::Priority::Normal as u8)
+}
+
+/// Spawn a new task with an explicit priority request (clamped to parent priority by kernel).
+pub fn sys_spawn_with_priority(elf_bytes: &[u8], child_arg: u64, name: &[u8], priority: u8) -> u64 {
     let mut args = [0u64; 7];
     args[0] = SysCallNumber::Spawn as u64;
     args[1] = elf_bytes.as_ptr() as u64;
@@ -155,6 +160,17 @@ pub fn sys_spawn_named(elf_bytes: &[u8], child_arg: u64, name: &[u8]) -> u64 {
     args[3] = child_arg;
     args[4] = name.as_ptr() as u64;
     args[5] = name.len() as u64;
+    args[6] = priority as u64;
+    syscall(&mut args);
+    args[6]
+}
+
+/// Lower the calling task's priority (kernel ignores if requested >= current).
+/// Returns 0 if lowered, 1 if already at or below requested level.
+pub fn sys_set_priority(priority: u8) -> u64 {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::SetPriority as u64;
+    args[1] = priority as u64;
     syscall(&mut args);
     args[6]
 }

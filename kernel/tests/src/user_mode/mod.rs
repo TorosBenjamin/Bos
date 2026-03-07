@@ -2,6 +2,7 @@ use crate::{TestResult, exit_qemu, QemuExitCode};
 use kernel::consts::LOWER_HALF_END;
 use kernel::memory::cpu_local_data::get_local;
 use kernel::task::task::TaskKind;
+use kernel_api_types::Priority;
 use alloc::format;
 
 /// Verify user segment selectors from the GDT have RPL=3.
@@ -69,7 +70,7 @@ pub fn test_lower_half_end_canonical() -> TestResult {
 /// Inspect the CpuContext of a freshly created user task.
 /// Verifies the iretq frame values (CS, SS, RSP, RIP) are correct.
 pub fn test_user_task_iretq_frame() -> TestResult {
-    let task = kernel::user_task_from_elf::create_user_task_from_elf();
+    let task = kernel::user_task_from_elf::create_user_task_from_elf(Priority::Normal, None);
     let inner = task.inner.lock();
 
     // CpuContext now holds all the registers and iretq frame values
@@ -134,7 +135,7 @@ pub fn test_user_task_iretq_frame() -> TestResult {
 
 /// Verify the user task is created with the correct kind.
 pub fn test_user_task_creation() -> TestResult {
-    let task = kernel::user_task_from_elf::create_user_task_from_elf();
+    let task = kernel::user_task_from_elf::create_user_task_from_elf(Priority::Normal, None);
 
     if task.kind != TaskKind::User {
         return TestResult::Failed(format!(
@@ -160,7 +161,7 @@ pub fn test_user_task_creation() -> TestResult {
 /// Actually switches CR3 to the user page table and reads back values
 /// from the kernel stack and GDT to verify they are accessible.
 pub fn test_user_page_table_kernel_mapped() -> TestResult {
-    let task = kernel::user_task_from_elf::create_user_task_from_elf();
+    let task = kernel::user_task_from_elf::create_user_task_from_elf(Priority::Normal, None);
     let inner = task.inner.lock();
     let kernel_stack_top = inner.kernel_stack_top;
 
@@ -238,17 +239,17 @@ pub fn test_user_task_runs_no_elf() -> TestResult {
     KERNEL_TASK_COUNTER.store(0, Ordering::SeqCst);
 
     kernel::task::global_scheduler::spawn_task(
-        kernel::task::task::Task::new(kernel_increment_task),
+        kernel::task::task::Task::new(kernel_increment_task, Priority::Normal, None),
     );
     kernel::task::global_scheduler::spawn_task(
-        kernel::task::task::Task::new(kernel_increment_task),
+        kernel::task::task::Task::new(kernel_increment_task, Priority::Normal, None),
     );
     // Third kernel task — replaces the user ELF task for isolation
     kernel::task::global_scheduler::spawn_task(
-        kernel::task::task::Task::new(kernel_increment_task),
+        kernel::task::task::Task::new(kernel_increment_task, Priority::Normal, None),
     );
     kernel::task::global_scheduler::spawn_task(
-        kernel::task::task::Task::new(checker_task),
+        kernel::task::task::Task::new(checker_task, Priority::Normal, None),
     );
 
     kernel::time::lapic_timer::set_deadline(1_000_000);
@@ -275,19 +276,19 @@ pub fn test_user_task_runs() -> TestResult {
 
     // Spawn two kernel tasks
     kernel::task::global_scheduler::spawn_task(
-        kernel::task::task::Task::new(kernel_increment_task),
+        kernel::task::task::Task::new(kernel_increment_task, Priority::Normal, None),
     );
     kernel::task::global_scheduler::spawn_task(
-        kernel::task::task::Task::new(kernel_increment_task),
+        kernel::task::task::Task::new(kernel_increment_task, Priority::Normal, None),
     );
 
     // Create and spawn the user task
-    let user_task = kernel::user_task_from_elf::create_user_task_from_elf();
+    let user_task = kernel::user_task_from_elf::create_user_task_from_elf(Priority::Normal, None);
     kernel::task::global_scheduler::spawn_task(user_task);
 
     // Spawn a checker task that verifies everything ran.
     kernel::task::global_scheduler::spawn_task(
-        kernel::task::task::Task::new(checker_task),
+        kernel::task::task::Task::new(checker_task, Priority::Normal, None),
     );
 
     // Explicitly arm the LAPIC timer so the scheduler fires even if no previous

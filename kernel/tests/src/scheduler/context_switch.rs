@@ -1,5 +1,6 @@
 use crate::TestResult;
 use kernel::task::task::Task;
+use kernel_api_types::Priority;
 use kernel::task::global_scheduler::spawn_task;
 use core::arch::asm;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -18,7 +19,7 @@ pub fn test_context_switch_tasks() -> TestResult {
     TASK_SWITCH_SUCCESS.store(0, Ordering::SeqCst);
 
     // Spawn a task and let the timer-driven scheduler pick it up
-    spawn_task(Task::new(test_task_entry));
+    spawn_task(Task::new(test_task_entry, Priority::Normal, None));
 
     x86_64::instructions::interrupts::enable();
 

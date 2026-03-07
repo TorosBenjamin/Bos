@@ -42,6 +42,25 @@ pub enum SysCallNumber {
     TryChannelSend = 31,
     WaitForEvent   = 32,
     SleepMs        = 33,
+    SetPriority    = 34,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Priority {
+    Background = 0,
+    Normal = 1,
+    High = 2,
+}
+
+impl Priority {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Background,
+            2 => Self::High,
+            _ => Self::Normal,
+        }
+    }
 }
 
 pub const WAIT_KEYBOARD: u32 = 1;

@@ -7,7 +7,7 @@ use nodit::NoditSet;
 use nodit::interval::iu;
 use x86_64::{PhysAddr, VirtAddr};
 use x86_64::registers::control::{Cr3, Cr3Flags};
-use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, Translate};
+use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size2MiB, Size4KiB, Translate};
 
 /// Creates new page tables
 pub fn create_page_tables(
@@ -32,30 +32,50 @@ pub fn create_page_tables(
     };
 
     // Map the physical memory regions (HHDM mapping)
+    // Uses 2 MiB huge pages for aligned middle regions, 4 KiB for head/tail.
+    const SIZE_2MIB: u64 = 2 * 1024 * 1024;
+    const MASK_2MIB: u64 = SIZE_2MIB - 1;
+
+    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+
     for entry in memory_map.entries() {
-        if matches!(entry.entry_type,
+        if !matches!(entry.entry_type,
             EntryType::USABLE |
             EntryType::BOOTLOADER_RECLAIMABLE |
             EntryType::EXECUTABLE_AND_MODULES |
             EntryType::FRAMEBUFFER
-        ) {
-            let start = entry.base;
-            let end = entry.base + entry.length;
+        ) { continue; }
 
-            // Map in 4KiB chunks (you can optimize to 2MiB later)
-            for phys_addr in (start..end).step_by(4096) {
-                let phys = PhysAddr::new(phys_addr);
-                let virt = VirtAddr::new(hhdm_offset.as_u64() + phys_addr);
-                let frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(phys);
-                let page: Page<Size4KiB> = Page::containing_address(virt);
+        let start = entry.base;
+        let end   = entry.base + entry.length;
+        let aligned_start = (start + MASK_2MIB) & !MASK_2MIB;
+        let aligned_end   = end & !MASK_2MIB;
 
-                let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+        // Head: 4 KiB pages before first 2 MiB boundary
+        for phys_addr in (start..aligned_start.min(end)).step_by(4096) {
+            let frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(PhysAddr::new(phys_addr));
+            let page:  Page<Size4KiB>      = Page::containing_address(VirtAddr::new(hhdm_offset.as_u64() + phys_addr));
+            unsafe { mapper.map_to(page, frame, flags, &mut frame_allocator).expect("HHDM 4K").flush(); }
+        }
 
-                unsafe {
-                    mapper.map_to(page, frame, flags, &mut frame_allocator)
-                        .expect("Failed to map HHDM")
-                        .flush();
-                }
+        // Middle: 2 MiB huge pages
+        if aligned_start < aligned_end {
+            for phys_addr in (aligned_start..aligned_end).step_by(SIZE_2MIB as usize) {
+                let frame: PhysFrame<Size2MiB> = PhysFrame::containing_address(PhysAddr::new(phys_addr));
+                let page:  Page<Size2MiB>      = Page::containing_address(VirtAddr::new(hhdm_offset.as_u64() + phys_addr));
+                unsafe { mapper.map_to(page, frame, flags, &mut frame_allocator).expect("HHDM 2M").flush(); }
+            }
+        }
+
+        // Tail: 4 KiB pages after last 2 MiB boundary
+        // Condition: boundary is within the region AND there is content past it.
+        // (aligned_end >= start guards against double-mapping when the head already
+        //  covers the whole region because aligned_start > end.)
+        if aligned_end >= start && aligned_end < end {
+            for phys_addr in (aligned_end..end).step_by(4096) {
+                let frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(PhysAddr::new(phys_addr));
+                let page:  Page<Size4KiB>      = Page::containing_address(VirtAddr::new(hhdm_offset.as_u64() + phys_addr));
+                unsafe { mapper.map_to(page, frame, flags, &mut frame_allocator).expect("HHDM 4K").flush(); }
             }
         }
     }

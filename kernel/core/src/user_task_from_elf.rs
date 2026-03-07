@@ -4,7 +4,8 @@ use crate::memory::cpu_local_data::get_local;
 use crate::memory::hhdm_offset::hhdm_offset;
 use crate::memory::physical_memory::{MemoryType, OffsetMappedPhysAddr};
 use crate::memory::vaddr_allocator::OffsetMappedVirtAddr;
-use crate::task::task::Task;
+use crate::task::task::{Task, TaskId};
+use kernel_api_types::Priority;
 use bitflags::bitflags;
 use core::num::NonZero;
 use core::ops::Range;
@@ -73,7 +74,7 @@ unsafe fn create_user_page_table(
 ///
 /// This parses the ELF, creates a new address space, maps ELF segments and a
 /// user stack, then returns a `Task` ready to be scheduled.
-pub fn create_user_task_from_elf() -> Task {
+pub fn create_user_task_from_elf(priority: Priority, parent_id: Option<TaskId>) -> Task {
     let module = MODULE_REQUEST
         .get_response()
         .unwrap()
@@ -285,7 +286,7 @@ pub fn create_user_task_from_elf() -> Task {
     let user_cs = gdt.user_code_selector().0;
     let user_ss = gdt.user_data_selector().0;
 
-    Task::new_user(entry_point.get(), rsp, l4_frame, cr3, user_cs, user_ss, user_vaddr_set, 0, b"init_task")
+    Task::new_user(entry_point.get(), rsp, l4_frame, cr3, user_cs, user_ss, user_vaddr_set, 0, b"init_task", priority, parent_id)
 }
 
 #[derive(Debug)]
@@ -298,7 +299,7 @@ pub enum SpawnError {
 ///
 /// Unlike `create_user_task_from_elf`, this allocates fresh physical frames and copies
 /// ELF segment data into them, giving the child fully independent memory.
-pub fn create_user_task_from_elf_bytes(elf_bytes: &[u8], child_arg: u64, name: &[u8]) -> Result<Task, SpawnError> {
+pub fn create_user_task_from_elf_bytes(elf_bytes: &[u8], child_arg: u64, name: &[u8], priority: Priority, parent_id: Option<TaskId>) -> Result<Task, SpawnError> {
     let elf = ElfBytes::<AnyEndian>::minimal_parse(elf_bytes)
         .map_err(|_| {
             let magic = if elf_bytes.len() >= 4 { &elf_bytes[..4] } else { elf_bytes };
@@ -452,7 +453,7 @@ pub fn create_user_task_from_elf_bytes(elf_bytes: &[u8], child_arg: u64, name: &
     let user_cs = gdt.user_code_selector().0;
     let user_ss = gdt.user_data_selector().0;
 
-    Ok(Task::new_user(entry_point.get(), rsp, l4_frame, cr3, user_cs, user_ss, user_vaddr_set, child_arg, name))
+    Ok(Task::new_user(entry_point.get(), rsp, l4_frame, cr3, user_cs, user_ss, user_vaddr_set, child_arg, name, priority, parent_id))
 }
 
 bitflags! {

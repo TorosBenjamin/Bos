@@ -7,7 +7,7 @@ mod service;
 mod disk;
 mod event;
 
-pub use task::{sys_exit, sys_yield, sys_spawn, sys_waitpid, sys_thread_create, sys_set_exit_channel, sys_sleep_ms};
+pub use task::{sys_exit, sys_yield, sys_spawn, sys_waitpid, sys_thread_create, sys_set_exit_channel, sys_sleep_ms, sys_set_priority};
 pub use memory::{sys_mmap, sys_munmap, sys_create_shared_buf, sys_map_shared_buf, sys_destroy_shared_buf};
 pub use ipc::{sys_channel_create, sys_channel_send, sys_channel_recv, sys_channel_close, sys_try_channel_recv, sys_try_channel_send};
 pub use graphics::{sys_get_bounding_box, sys_get_display_info, sys_transfer_display};

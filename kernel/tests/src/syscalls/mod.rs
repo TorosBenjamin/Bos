@@ -13,7 +13,7 @@ use kernel::memory::cpu_local_data::get_local;
 use kernel::user_task_from_elf::create_user_task_from_elf_bytes;
 use kernel_api_types::{
     graphics::GraphicsResult, IPC_ERR_INVALID_ARGS, IPC_ERR_INVALID_ENDPOINT,
-    IPC_ERR_MSG_TOO_LARGE, IPC_ERR_WRONG_DIRECTION, IPC_OK, MMAP_WRITE,
+    IPC_ERR_MSG_TOO_LARGE, IPC_ERR_WRONG_DIRECTION, IPC_OK, MMAP_WRITE, Priority,
 };
 use x86_64::instructions::interrupts;
 use x86_64::registers::control::Cr3;
@@ -44,7 +44,7 @@ fn get_init_task_elf() -> &'static [u8] {
 /// The kernel higher-half is shared with the user page table, so kernel code,
 /// GS.Base, and the stack remain accessible throughout the switch.
 fn with_user_context(f: impl FnOnce() -> TestResult) -> TestResult {
-    let task = match create_user_task_from_elf_bytes(get_init_task_elf(), 0, b"") {
+    let task = match create_user_task_from_elf_bytes(get_init_task_elf(), 0, b"", Priority::Normal, None) {
         Ok(t) => Arc::new(t),
         Err(e) => {
             return TestResult::Failed(format!("failed to create user task: {:?}", e));
@@ -427,8 +427,9 @@ pub fn test_sys_set_exit_channel_recv_endpoint_rejected() -> TestResult {
 pub fn test_sys_set_exit_channel_valid() -> TestResult {
     use kernel::task::task::Task;
     use kernel::task::global_scheduler::spawn_task;
+    use kernel_api_types::Priority;
 
-    let task = Task::new(|| loop {});
+    let task = Task::new(|| loop {}, Priority::Normal, None);
     let task_id = task.id.to_u64();
     spawn_task(task);
 

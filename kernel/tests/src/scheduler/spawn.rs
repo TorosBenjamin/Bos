@@ -1,11 +1,12 @@
 use crate::TestResult;
 use alloc::format;
 use kernel::task::task::{TaskKind, TaskState};
+use kernel_api_types::Priority;
 
 /// Calling create_user_task_from_elf_bytes with garbage bytes should return InvalidElf.
 pub fn test_spawn_error_invalid_elf() -> TestResult {
     let garbage = [0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03];
-    match kernel::user_task_from_elf::create_user_task_from_elf_bytes(&garbage, 0, b"") {
+    match kernel::user_task_from_elf::create_user_task_from_elf_bytes(&garbage, 0, b"", Priority::Normal, None) {
         Err(_) => TestResult::Ok,
         Ok(_) => TestResult::Failed("Expected InvalidElf error for garbage bytes".into()),
     }
@@ -17,7 +18,7 @@ pub fn test_spawn_creates_task() -> TestResult {
     // Get the ELF bytes from the Limine module
     let elf_bytes = get_user_elf_bytes();
 
-    match kernel::user_task_from_elf::create_user_task_from_elf_bytes(elf_bytes, 0, b"") {
+    match kernel::user_task_from_elf::create_user_task_from_elf_bytes(elf_bytes, 0, b"", Priority::Normal, None) {
         Err(e) => TestResult::Failed(format!("Failed to create task: {:?}", e)),
         Ok(task) => {
             if task.kind != TaskKind::User {
@@ -52,7 +53,7 @@ pub fn test_spawn_child_arg() -> TestResult {
     let elf_bytes = get_user_elf_bytes();
     let arg_value: u64 = 0xDEAD_BEEF_CAFE_BABE;
 
-    match kernel::user_task_from_elf::create_user_task_from_elf_bytes(elf_bytes, arg_value, b"") {
+    match kernel::user_task_from_elf::create_user_task_from_elf_bytes(elf_bytes, arg_value, b"", Priority::Normal, None) {
         Err(e) => TestResult::Failed(format!("Failed to create task: {:?}", e)),
         Ok(task) => {
             let inner = task.inner.lock();

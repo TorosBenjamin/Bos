@@ -1,6 +1,7 @@
 use kernel::interrupt::handlers::TIMER_STACK_ALIGNMENT_OK;
 use kernel::task::context::context_switch_regular;
 use kernel::task::task::Task;
+use kernel_api_types::Priority;
 use crate::TestResult;
 use core::sync::atomic::Ordering;
 use alloc::format;
@@ -13,7 +14,7 @@ use alloc::format;
 /// This replaces the previous spawn-and-wait approach, which abandoned the test
 /// harness once the timer bootstrapped into the spawned task.
 pub fn test_stack_alignment() -> TestResult {
-    let task = Task::new(|| loop {});
+    let task = Task::new(|| loop {}, Priority::Normal, None);
     let stack_top = task.inner.lock().kernel_stack_top;
     if stack_top % 16 == 0 {
         TestResult::Ok
