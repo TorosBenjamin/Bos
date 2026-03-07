@@ -466,6 +466,21 @@ impl Window {
         let new_buf_size = (width as u64) * (height as u64) * 4;
         let new_buf = crate::sys_map_shared_buf(shared_buf_id) as *mut u32;
 
+        if new_buf.is_null() {
+            // Log the failure: tag 0xBAD_BUF0 = shared_buf_id that failed,
+            //                  tag 0xBAD_BUF1 = (width << 32 | height).
+            crate::sys_debug_log(shared_buf_id, 0xBADB_0001);
+            crate::sys_debug_log((width as u64) << 32 | height as u64, 0xBADB_0002);
+            // Leave the window in a zero-size inert state so pixels_mut() returns
+            // an empty slice rather than crashing by writing through null.
+            self.buffer = core::ptr::null_mut();
+            self.buf_size = 0;
+            self.width = 0;
+            self.height = 0;
+            self.dirty = None;
+            return;
+        }
+
         self.buffer = new_buf;
         self.shared_buf_id = shared_buf_id;
         self.buf_size = new_buf_size;
@@ -521,6 +536,9 @@ impl Window {
     pub fn height(&self) -> u32 { self.height }
 
     pub fn pixels_mut(&mut self) -> &mut [u32] {
+        if self.buffer.is_null() {
+            return unsafe { core::slice::from_raw_parts_mut(core::ptr::NonNull::dangling().as_ptr(), 0) };
+        }
         unsafe { core::slice::from_raw_parts_mut(self.buffer, (self.width * self.height) as usize) }
     }
 

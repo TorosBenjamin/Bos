@@ -491,3 +491,268 @@ mod compositor_tests {
         assert_eq!(ids.last(), Some(&3), "Panel must stay on top: {:?}", ids);
     }
 }
+
+// -----------------------------------------------------------------------
+// Dwindle layout tests (pure-Rust mirror of layout.rs dwindle_recurse)
+// Used to pinpoint the page-fault crash when a 4th tiled window is opened.
+// -----------------------------------------------------------------------
+#[cfg(test)]
+mod dwindle_layout_tests {
+    const SCREEN_W: u32 = 1280;
+    const SCREEN_H: u32 = 720;
+    const OUTER_GAP: u32 = 8;
+    const INNER_GAP: u32 = 8;
+    const MIN_RATIO: f32 = 0.1;
+
+    /// Mirror of the 4-state `LayoutDir` in layout.rs.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum LayoutDir { Horizontal, Vertical, HorizontalReversed, VerticalReversed }
+
+    impl LayoutDir {
+        fn next_spiral(self) -> Self {
+            match self {
+                Self::Horizontal         => Self::Vertical,
+                Self::Vertical           => Self::HorizontalReversed,
+                Self::HorizontalReversed => Self::VerticalReversed,
+                Self::VerticalReversed   => Self::Horizontal,
+            }
+        }
+    }
+
+    /// Exact mirror of `dwindle_recurse` in layout.rs (golden-spiral, 4-state).
+    fn dwindle_recurse(
+        n: usize, ratios: &[f32],
+        x: i32, y: i32, w: u32, h: u32,
+        dir: LayoutDir, inner_gap: u32,
+        out: &mut Vec<(i32, i32, u32, u32)>,
+    ) {
+        if n == 0 { return; }
+        if n == 1 { out.push((x, y, w, h)); return; }
+        let ratio = ratios[0].clamp(MIN_RATIO, 1.0 - MIN_RATIO);
+        let next  = dir.next_spiral();
+        match dir {
+            LayoutDir::Horizontal => {
+                let lw = ((w as f32 * ratio) as u32).min(w.saturating_sub(inner_gap + 1));
+                let rw = w.saturating_sub(lw + inner_gap);
+                out.push((x, y, lw, h));
+                dwindle_recurse(n - 1, &ratios[1..], x + lw as i32 + inner_gap as i32, y, rw, h, next, inner_gap, out);
+            }
+            LayoutDir::Vertical => {
+                let th = ((h as f32 * ratio) as u32).min(h.saturating_sub(inner_gap + 1));
+                let bh = h.saturating_sub(th + inner_gap);
+                out.push((x, y, w, th));
+                dwindle_recurse(n - 1, &ratios[1..], x, y + th as i32 + inner_gap as i32, w, bh, next, inner_gap, out);
+            }
+            LayoutDir::HorizontalReversed => {
+                let rw = ((w as f32 * ratio) as u32).min(w.saturating_sub(inner_gap + 1));
+                let lw = w.saturating_sub(rw + inner_gap);
+                out.push((x + lw as i32 + inner_gap as i32, y, rw, h));
+                dwindle_recurse(n - 1, &ratios[1..], x, y, lw, h, next, inner_gap, out);
+            }
+            LayoutDir::VerticalReversed => {
+                let bh = ((h as f32 * ratio) as u32).min(h.saturating_sub(inner_gap + 1));
+                let th = h.saturating_sub(bh + inner_gap);
+                out.push((x, y + th as i32 + inner_gap as i32, w, bh));
+                dwindle_recurse(n - 1, &ratios[1..], x, y, w, th, next, inner_gap, out);
+            }
+        }
+    }
+
+    /// Build n golden-ratio spiral windows for the standard screen (starting dir = Horizontal).
+    fn compute_dwindle(n: usize) -> Vec<(i32, i32, u32, u32)> {
+        if n == 0 { return vec![]; }
+        let gx = OUTER_GAP as i32;
+        let gy = OUTER_GAP as i32;
+        let gw = SCREEN_W.saturating_sub(2 * OUTER_GAP);
+        let gh = SCREEN_H.saturating_sub(2 * OUTER_GAP);
+        let ratios = vec![0.618f32; n];
+        let mut out = Vec::new();
+        dwindle_recurse(n, &ratios, gx, gy, gw, gh, LayoutDir::Horizontal, INNER_GAP, &mut out);
+        out
+    }
+
+    /// Exact mirror of `dir_at_level` in layout.rs (initial dir = Horizontal).
+    fn dir_at_level(index: usize) -> LayoutDir {
+        let mut dir = LayoutDir::Horizontal;
+        for _ in 0..index { dir = dir.next_spiral(); }
+        dir
+    }
+
+    /// Exact mirror of `level_span_at` in layout.rs.
+    fn level_span_at(index: usize) -> u32 {
+        let ig = INNER_GAP;
+        let mut w = SCREEN_W.saturating_sub(2 * OUTER_GAP);
+        let mut h = SCREEN_H.saturating_sub(2 * OUTER_GAP);
+        let ratios = [0.618f32; 16];
+        let mut dir = LayoutDir::Horizontal;
+        for i in 0..index {
+            let ratio = ratios[i].clamp(MIN_RATIO, 1.0 - MIN_RATIO);
+            match dir {
+                LayoutDir::Horizontal | LayoutDir::HorizontalReversed => {
+                    let used = (w as f32 * ratio) as u32;
+                    w = w.saturating_sub(used + ig);
+                }
+                LayoutDir::Vertical | LayoutDir::VerticalReversed => {
+                    let used = (h as f32 * ratio) as u32;
+                    h = h.saturating_sub(used + ig);
+                }
+            }
+            dir = dir.next_spiral();
+        }
+        match dir {
+            LayoutDir::Horizontal | LayoutDir::HorizontalReversed => w,
+            LayoutDir::Vertical   | LayoutDir::VerticalReversed   => h,
+        }
+    }
+
+    // --- correctness: single window ---
+
+    #[test]
+    fn dwindle_single_fills_area() {
+        let tiles = compute_dwindle(1);
+        assert_eq!(tiles.len(), 1);
+        let (x, y, w, h) = tiles[0];
+        assert_eq!(x, OUTER_GAP as i32);
+        assert_eq!(y, OUTER_GAP as i32);
+        assert_eq!(w, SCREEN_W - 2 * OUTER_GAP);
+        assert_eq!(h, SCREEN_H - 2 * OUTER_GAP);
+    }
+
+    // --- no zero-dimension windows ---
+
+    #[test]
+    fn dwindle_four_windows_no_zero_dims() {
+        let tiles = compute_dwindle(4);
+        assert_eq!(tiles.len(), 4);
+        eprintln!("\n=== 4-window dwindle (crash case) ===");
+        for (i, &(x, y, w, h)) in tiles.iter().enumerate() {
+            eprintln!("  Window {i}: ({x},{y}) {w}×{h}  buf={}", w as u64 * h as u64 * 4);
+            assert!(w > 0, "window {i} has zero width");
+            assert!(h > 0, "window {i} has zero height");
+        }
+    }
+
+    #[test]
+    fn dwindle_no_zero_dims_n1_to_n8() {
+        for n in 1..=8 {
+            let tiles = compute_dwindle(n);
+            assert_eq!(tiles.len(), n, "n={n}: wrong tile count");
+            for (i, &(x, y, w, h)) in tiles.iter().enumerate() {
+                assert!(w > 0, "n={n} window {i}: zero width (x={x},y={y},w={w},h={h})");
+                assert!(h > 0, "n={n} window {i}: zero height (x={x},y={y},w={w},h={h})");
+            }
+        }
+    }
+
+    // --- all windows fit within the screen ---
+
+    #[test]
+    fn dwindle_all_in_screen_bounds() {
+        for n in 1..=8 {
+            let tiles = compute_dwindle(n);
+            for (i, &(x, y, w, h)) in tiles.iter().enumerate() {
+                assert!(x >= 0, "n={n} window {i}: x={x} < 0");
+                assert!(y >= 0, "n={n} window {i}: y={y} < 0");
+                let r = x + w as i32;
+                let b = y + h as i32;
+                assert!(r <= SCREEN_W as i32, "n={n} window {i}: right={r} > {SCREEN_W}");
+                assert!(b <= SCREEN_H as i32, "n={n} window {i}: bottom={b} > {SCREEN_H}");
+            }
+        }
+    }
+
+    // --- no overlapping windows ---
+
+    #[test]
+    fn dwindle_no_overlap() {
+        for n in 2..=6 {
+            let tiles = compute_dwindle(n);
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let (ax, ay, aw, ah) = tiles[i];
+                    let (bx, by, bw, bh) = tiles[j];
+                    let ox = ax.max(bx) < (ax + aw as i32).min(bx + bw as i32);
+                    let oy = ay.max(by) < (ay + ah as i32).min(by + bh as i32);
+                    assert!(
+                        !(ox && oy),
+                        "n={n}: windows {i}+{j} overlap — ({ax},{ay},{aw},{ah}) vs ({bx},{by},{bw},{bh})"
+                    );
+                }
+            }
+        }
+    }
+
+    // --- direction alternation ---
+
+    #[test]
+    fn dir_at_level_alternates() {
+        // Golden spiral: H → V → HR → VR → H (4-state cycle)
+        assert_eq!(dir_at_level(0), LayoutDir::Horizontal,         "level 0: H  (new window RIGHT)");
+        assert_eq!(dir_at_level(1), LayoutDir::Vertical,           "level 1: V  (new window BOTTOM)");
+        assert_eq!(dir_at_level(2), LayoutDir::HorizontalReversed, "level 2: HR (new window LEFT)");
+        assert_eq!(dir_at_level(3), LayoutDir::VerticalReversed,   "level 3: VR (new window TOP)");
+        assert_eq!(dir_at_level(4), LayoutDir::Horizontal,         "level 4: H  (cycle repeats)");
+    }
+
+    // --- level_span_at returns positive spans ---
+
+    #[test]
+    fn level_span_positive_for_first_eight_levels() {
+        eprintln!("\n=== level_span_at (drag-resize spans) ===");
+        for i in 0..8 {
+            let span = level_span_at(i);
+            let dir  = dir_at_level(i);
+            eprintln!("  level {i} ({dir:?}): span={span}px");
+            assert!(span > 0, "level {i}: span=0 — drag resize would divide by zero");
+        }
+    }
+
+    // --- the Configure geometry actually sent to clients ---
+
+    #[test]
+    fn configure_dims_for_four_windows_are_reasonable() {
+        let tiles = compute_dwindle(4);
+        eprintln!("\n=== Configure events sent when 4th tiled window opens ===");
+        for (i, &(x, y, w, h)) in tiles.iter().enumerate() {
+            let buf_bytes = w as u64 * h as u64 * 4;
+            eprintln!("  Configure #{i}: width={w} height={h} buf_bytes={buf_bytes}  pos=({x},{y})");
+            // Every client must be able to allocate a non-empty buffer.
+            assert!(w >= 1 && h >= 1, "window {i}: degenerate {w}×{h}");
+            // Sanity: buffer must not exceed available memory budget (256 MB).
+            assert!(buf_bytes < 256 * 1024 * 1024,
+                "window {i}: buf={buf_bytes} bytes suspiciously large");
+        }
+    }
+
+    // --- total area accounting ---
+
+    #[test]
+    fn dwindle_area_sum_close_to_available() {
+        for n in 1..=6 {
+            let tiles = compute_dwindle(n);
+            let tile_area: u64 = tiles.iter().map(|&(_, _, w, h)| w as u64 * h as u64).sum();
+            let avail = (SCREEN_W - 2 * OUTER_GAP) as u64 * (SCREEN_H - 2 * OUTER_GAP) as u64;
+            // With gaps the tiles never cover the full area, but they must cover at least 50%.
+            assert!(tile_area * 2 >= avail,
+                "n={n}: tiles cover only {tile_area}px of {avail}px available — suspiciously small");
+            eprintln!("n={n}: tile_area={tile_area}/{avail} = {:.1}%", tile_area as f64 / avail as f64 * 100.0);
+        }
+    }
+
+    // --- incremental add (simulates what the compositor does each time a window opens) ---
+
+    #[test]
+    fn incremental_window_add_all_valid() {
+        eprintln!("\n=== Incremental add simulation (like real compositor) ===");
+        for n in 1..=5 {
+            let tiles = compute_dwindle(n);
+            eprintln!("  n={n}:");
+            for (i, &(x, y, w, h)) in tiles.iter().enumerate() {
+                eprintln!("    Window {i}: ({x},{y}) {w}×{h}");
+                assert!(w > 0 && h > 0, "n={n} window {i}: zero dimension {w}×{h}");
+                assert!(x + w as i32 <= SCREEN_W as i32 && y + h as i32 <= SCREEN_H as i32,
+                    "n={n} window {i}: out of bounds");
+            }
+        }
+    }
+}

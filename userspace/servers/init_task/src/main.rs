@@ -46,10 +46,16 @@ unsafe extern "sysv64" fn entry_point() -> ! {
         // Normal mode: load apps from FAT32 filesystem
         let fs_ep = ulib::fs::fs_lookup();
 
+        // Normal mode: spawn launcher first (hidden, toggled by Super+Space), then regular apps.
         for (path, name) in [
             ("LAUNCH.ELF", b"launcher" as &[u8]),
-            ("HELLO.ELF", b"hello_egui"),
-            ("FILES.ELF", b"files"),
+            ("HELLO.ELF",  b"hello_egui"),
+            ("HELLO.ELF",  b"hello_egui"),
+            ("HELLO.ELF",  b"hello_egui"),
+            ("HELLO.ELF",  b"hello_egui"),
+            ("HELLO.ELF",  b"hello_egui"),
+            ("HELLO.ELF",  b"hello_egui"),
+            ("HELLO.ELF",  b"hello_egui"),
         ] {
             if let Some((buf_id, size)) = ulib::fs::fs_map_file(fs_ep, path) {
                 let ptr = ulib::sys_map_shared_buf(buf_id);

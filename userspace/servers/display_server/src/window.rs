@@ -22,8 +22,10 @@ pub struct Window {
     pub anchor: u8,
     /// Pixels to subtract from available area for Toplevels (panels only).
     pub exclusive_zone: u32,
-    /// Old shared_buf_id awaiting sys_destroy_shared_buf after the client acknowledges Configure.
-    pub pending_old_buf_id: Option<u64>,
+    /// Old shared_buf_ids awaiting sys_destroy_shared_buf after the client acknowledges Configure.
+    /// Multiple entries accumulate when reconfigures happen faster than the client processes them.
+    pub pending_old_buf_ids: [u64; 32],
+    pub n_pending_old: usize,
     /// Dirty region (screen coordinates) from the latest UpdateWindow, pending compositing.
     /// Stored per-window to avoid merging two distant windows into one huge bounding box.
     pub pending_dirty: Option<DirtyRect>,
@@ -69,7 +71,8 @@ impl Window {
             is_floating: false,
             anchor: 0,
             exclusive_zone: 0,
-            pending_old_buf_id: None,
+            pending_old_buf_ids: [0u64; 32],
+            n_pending_old: 0,
             pending_dirty: None,
             has_alpha: false,
             closing: false,
@@ -104,14 +107,18 @@ impl Window {
         // Unmap old buffer from DS address space (physical pages kept alive by shared_buf object)
         ulib::sys_munmap(self.buffer as *mut u8, self.buf_size);
 
-        // If a previous reconfigure went unacknowledged, destroy its buffer now so it
-        // isn't leaked (the client will never send UpdateWindow for the skipped size).
-        if let Some(stale_id) = self.pending_old_buf_id.take() {
-            ulib::sys_destroy_shared_buf(stale_id);
+        // Queue old shared_buf_id for deferred destruction. The client may still have it mapped
+        // (and be actively writing to it). Only destroy all pending bufs once the client sends
+        // UpdateWindow, which guarantees it has processed all Configure events and unmapped them.
+        if self.n_pending_old < 32 {
+            self.pending_old_buf_ids[self.n_pending_old] = self.shared_buf_id;
+            self.n_pending_old += 1;
+        } else {
+            // List is full (32 unacknowledged reconfigures); destroy oldest to prevent leak.
+            ulib::sys_destroy_shared_buf(self.pending_old_buf_ids[0]);
+            self.pending_old_buf_ids.copy_within(1..32, 0);
+            self.pending_old_buf_ids[31] = self.shared_buf_id;
         }
-
-        // Store old shared_buf_id so we can destroy it after the client acknowledges
-        self.pending_old_buf_id = Some(self.shared_buf_id);
 
         self.width = new_w;
         self.height = new_h;

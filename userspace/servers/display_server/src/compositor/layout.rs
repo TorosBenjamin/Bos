@@ -1,10 +1,90 @@
-use super::{Compositor, MAX_WINDOWS};
+use super::{Compositor, MAX_WINDOWS, MIN_RATIO};
 use kernel_api_types::window::{ConfigureEvent, WindowEventType, WindowId};
 
+/// Four-state direction for the golden-ratio spiral layout.
+///
+/// The sequence H → V → HR → VR → H cycles the split orientation and which
+/// side the *existing* (older) windows occupy. The newest window always appears
+/// on the opposite side, producing the classic golden-spiral order:
+///   1st window: full screen
+///   2nd window: RIGHT  (Horizontal split, older → left)
+///   3rd window: BOTTOM (Vertical split, older → top)
+///   4th window: LEFT   (HorizontalReversed, older → right)
+///   5th window: TOP    (VerticalReversed, older → bottom)
 #[derive(Clone, Copy, PartialEq)]
 pub enum LayoutDir {
+    /// Split line vertical; window[0] occupies the LEFT portion.
     Horizontal,
+    /// Split line horizontal; window[0] occupies the TOP portion.
     Vertical,
+    /// Split line vertical; window[0] occupies the RIGHT portion (new window → left).
+    HorizontalReversed,
+    /// Split line horizontal; window[0] occupies the BOTTOM portion (new window → top).
+    VerticalReversed,
+}
+
+impl LayoutDir {
+    /// Advance to the next direction in the golden-spiral cycle.
+    pub fn next_spiral(self) -> Self {
+        match self {
+            Self::Horizontal         => Self::Vertical,
+            Self::Vertical           => Self::HorizontalReversed,
+            Self::HorizontalReversed => Self::VerticalReversed,
+            Self::VerticalReversed   => Self::Horizontal,
+        }
+    }
+
+
+}
+
+/// Recursively compute golden-spiral (4-state-split) positions.
+/// `windows[0]` takes `ratios[0]` fraction of the rect, on the side determined
+/// by `dir`. The rest recurse with `dir.next_spiral()`.
+fn dwindle_recurse(
+    windows:   &[WindowId],
+    ratios:    &[f32],
+    x: i32, y: i32, w: u32, h: u32,
+    dir:       LayoutDir,
+    inner_gap: u32,
+    positions: &mut [(i32, i32, u32, u32)],
+) {
+    if windows.is_empty() { return; }
+    if windows.len() == 1 {
+        positions[0] = (x, y, w, h);
+        return;
+    }
+    let ratio = ratios[0].clamp(MIN_RATIO, 1.0 - MIN_RATIO);
+    let next  = dir.next_spiral();
+    match dir {
+        LayoutDir::Horizontal => {
+            // window[0] LEFT, rest RIGHT
+            let lw = ((w as f32 * ratio) as u32).min(w.saturating_sub(inner_gap + 1));
+            let rw = w.saturating_sub(lw + inner_gap);
+            positions[0] = (x, y, lw, h);
+            dwindle_recurse(&windows[1..], &ratios[1..], x + lw as i32 + inner_gap as i32, y, rw, h, next, inner_gap, &mut positions[1..]);
+        }
+        LayoutDir::Vertical => {
+            // window[0] TOP, rest BOTTOM
+            let th = ((h as f32 * ratio) as u32).min(h.saturating_sub(inner_gap + 1));
+            let bh = h.saturating_sub(th + inner_gap);
+            positions[0] = (x, y, w, th);
+            dwindle_recurse(&windows[1..], &ratios[1..], x, y + th as i32 + inner_gap as i32, w, bh, next, inner_gap, &mut positions[1..]);
+        }
+        LayoutDir::HorizontalReversed => {
+            // window[0] RIGHT, rest LEFT
+            let rw = ((w as f32 * ratio) as u32).min(w.saturating_sub(inner_gap + 1));
+            let lw = w.saturating_sub(rw + inner_gap);
+            positions[0] = (x + lw as i32 + inner_gap as i32, y, rw, h);
+            dwindle_recurse(&windows[1..], &ratios[1..], x, y, lw, h, next, inner_gap, &mut positions[1..]);
+        }
+        LayoutDir::VerticalReversed => {
+            // window[0] BOTTOM, rest TOP
+            let bh = ((h as f32 * ratio) as u32).min(h.saturating_sub(inner_gap + 1));
+            let th = h.saturating_sub(bh + inner_gap);
+            positions[0] = (x, y + th as i32 + inner_gap as i32, w, bh);
+            dwindle_recurse(&windows[1..], &ratios[1..], x, y, w, th, next, inner_gap, &mut positions[1..]);
+        }
+    }
 }
 
 impl Compositor {
@@ -31,9 +111,10 @@ impl Compositor {
             self.n_tiled_ratios = 0;
             return;
         }
-        let ratio = 1.0f32 / n as f32;
+        // Golden-ratio default: each window takes ~61.8 % of its level's available area.
+        const GOLDEN: f32 = 0.618; // ≈ 1/φ
         for i in 0..n {
-            self.tiled_ratios[i] = ratio;
+            self.tiled_ratios[i] = GOLDEN;
         }
         self.n_tiled_ratios = n;
     }
@@ -82,7 +163,46 @@ impl Compositor {
         (ax, ay, aw, ah)
     }
 
-    /// Redistribute tile space among all Toplevels using per-window ratios and layout direction.
+    /// Returns the split direction at tiling level `index` (0 = first split).
+    pub(super) fn dir_at_level(&self, index: usize) -> LayoutDir {
+        let mut dir = self.layout_dir;
+        for _ in 0..index { dir = dir.next_spiral(); }
+        dir
+    }
+
+    /// Returns the usable span (pixels) available at split level `index`.
+    /// Used by drag-resize to map cursor delta → ratio delta correctly.
+    pub(super) fn level_span_at(&self, index: usize) -> u32 {
+        let (_, _, aw, ah) = self.available_area();
+        let og = self.outer_gap;
+        let ig = self.inner_gap;
+        let mut w = aw.saturating_sub(2 * og);
+        let mut h = ah.saturating_sub(2 * og);
+        let mut dir = self.layout_dir;
+
+        for i in 0..index {
+            let ratio = self.tiled_ratios[i].clamp(MIN_RATIO, 1.0 - MIN_RATIO);
+            // H and HR both consume (w * ratio) from the width; V and VR from height.
+            match dir {
+                LayoutDir::Horizontal | LayoutDir::HorizontalReversed => {
+                    let used = (w as f32 * ratio) as u32;
+                    w = w.saturating_sub(used + ig);
+                }
+                LayoutDir::Vertical | LayoutDir::VerticalReversed => {
+                    let used = (h as f32 * ratio) as u32;
+                    h = h.saturating_sub(used + ig);
+                }
+            }
+            dir = dir.next_spiral();
+        }
+
+        match dir {
+            LayoutDir::Horizontal | LayoutDir::HorizontalReversed => w,
+            LayoutDir::Vertical   | LayoutDir::VerticalReversed   => h,
+        }
+    }
+
+    /// Redistribute tile space among all Toplevels using the dwindle (alternating-split) algorithm.
     /// Sends Configure events to any window whose buffer dimensions change.
     pub(super) fn recalculate_toplevel_layout(&mut self) {
         let (tiled, n) = self.tiled_ids();
@@ -90,58 +210,28 @@ impl Compositor {
             return;
         }
 
-        // Sync ratios if window count changed
         if self.n_tiled_ratios != n {
             self.reset_tiled_ratios(n);
         }
 
         let (ax, ay, aw, ah) = self.available_area();
-        let total_gaps = 2 * self.outer_gap + (n as u32 - 1) * self.inner_gap;
+        let og = self.outer_gap;
+        let ig = self.inner_gap;
 
-        let layout_dir = self.layout_dir;
-        let outer_gap = self.outer_gap;
-        let inner_gap = self.inner_gap;
+        let gx = ax + og as i32;
+        let gy = ay + og as i32;
+        let gw = aw.saturating_sub(2 * og);
+        let gh = ah.saturating_sub(2 * og);
 
-        let (usable_w, usable_h) = match layout_dir {
-            LayoutDir::Horizontal => (
-                aw.saturating_sub(total_gaps),
-                ah.saturating_sub(2 * outer_gap),
-            ),
-            LayoutDir::Vertical => (
-                aw.saturating_sub(2 * outer_gap),
-                ah.saturating_sub(total_gaps),
-            ),
-        };
-
-        // Pre-compute positions for all tiled windows
         let mut positions = [(0i32, 0i32, 0u32, 0u32); MAX_WINDOWS];
-        let mut accum = 0i32;
-        for i in 0..n {
-            let ratio = self.tiled_ratios[i];
-            let (x, y, w, h) = match layout_dir {
-                LayoutDir::Horizontal => {
-                    let tw = if i == n - 1 {
-                        usable_w.saturating_sub(accum as u32)
-                    } else {
-                        (ratio * usable_w as f32) as u32
-                    };
-                    let pos = (ax + outer_gap as i32 + accum, ay + outer_gap as i32, tw, usable_h);
-                    accum += tw as i32 + inner_gap as i32;
-                    pos
-                }
-                LayoutDir::Vertical => {
-                    let th = if i == n - 1 {
-                        usable_h.saturating_sub(accum as u32)
-                    } else {
-                        (ratio * usable_h as f32) as u32
-                    };
-                    let pos = (ax + outer_gap as i32, ay + outer_gap as i32 + accum, usable_w, th);
-                    accum += th as i32 + inner_gap as i32;
-                    pos
-                }
-            };
-            positions[i] = (x, y, w, h);
-        }
+        dwindle_recurse(
+            &tiled[..n],
+            &self.tiled_ratios[..n],
+            gx, gy, gw, gh,
+            self.layout_dir,
+            ig,
+            &mut positions[..n],
+        );
 
         // Apply reconfigure and collect pending configure events
         let mut pending: [(u64, ConfigureEvent); MAX_WINDOWS] = [(0, ConfigureEvent {

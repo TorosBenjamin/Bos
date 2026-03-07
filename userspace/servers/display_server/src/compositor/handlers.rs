@@ -186,10 +186,11 @@ impl Compositor {
                 return;
             }
 
-            // Clean up old buffer if client has acknowledged a Configure event
-            if let Some(old_id) = window.pending_old_buf_id.take() {
-                ulib::sys_destroy_shared_buf(old_id);
+            // Client has acknowledged all pending Configure events — destroy all queued old bufs.
+            for i in 0..window.n_pending_old {
+                ulib::sys_destroy_shared_buf(window.pending_old_buf_ids[i]);
             }
+            window.n_pending_old = 0;
 
             // Translate the client's window-local dirty rect to screen coordinates.
             (
@@ -220,10 +221,10 @@ impl Compositor {
     /// is not in the z-order (z_remove is idempotent).
     pub(super) fn complete_cleanup(&mut self, id: WindowId) {
         let slot = self.windows.iter_mut().find(|s| s.as_ref().map(|w| w.id) == Some(id));
-        let (buf, buf_size, shared_buf_id, event_ep, pending_old) = match slot {
+        let (buf, buf_size, shared_buf_id, event_ep, pending_ids, n_pending) = match slot {
             Some(s @ &mut Some(_)) => {
                 let w = s.as_mut().unwrap();
-                let t = (w.buffer as *mut u8, w.buf_size, w.shared_buf_id, w.event_send_ep, w.pending_old_buf_id.take());
+                let t = (w.buffer as *mut u8, w.buf_size, w.shared_buf_id, w.event_send_ep, w.pending_old_buf_ids, w.n_pending_old);
                 *s = None;
                 t
             }
@@ -231,8 +232,8 @@ impl Compositor {
         };
 
         ulib::sys_munmap(buf, buf_size);
-        if let Some(old_id) = pending_old {
-            ulib::sys_destroy_shared_buf(old_id);
+        for i in 0..n_pending {
+            ulib::sys_destroy_shared_buf(pending_ids[i]);
         }
         ulib::sys_destroy_shared_buf(shared_buf_id);
         if event_ep != 0 {

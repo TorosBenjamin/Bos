@@ -18,7 +18,7 @@ pub(super) const CLOSE_MAX_ATTEMPTS: u32 = 20;   // 20 × 100 ms ≈ 2-second ti
 const CLOSE_POLL_TIMEOUT_MS: u64 = 100;
 
 const MIN_SIZE: u32 = 100;
-const MIN_RATIO: f32 = 0.1;
+pub(super) const MIN_RATIO: f32 = 0.1;
 
 #[derive(Clone, Copy)]
 enum DragKind {
@@ -680,7 +680,17 @@ impl Compositor {
                 }
             }
             DragKind::MoveTiled => {
-                // Nothing during drag; snap layout applied on button release.
+                // Live swap: the dragged window follows the cursor by swapping
+                // z-order positions with whichever tiled window is under it.
+                // After the swap, the dragged window occupies the cursor's tile,
+                // so hit_test_tiled returns the dragged window itself until the
+                // cursor moves into a different tile — preventing repeated swaps.
+                if let Some(target_id) = self.hit_test_tiled(self.cursor_x, self.cursor_y) {
+                    if target_id != drag.window_id {
+                        self.swap_tiled_windows(drag.window_id, target_id);
+                        self.recalculate_toplevel_layout();
+                    }
+                }
             }
             DragKind::ResizeFloating { start_x, start_y, start_w, start_h, resize_left, resize_top } => {
                 let dx = self.cursor_x - drag.start_cx;
@@ -725,27 +735,24 @@ impl Compositor {
             DragKind::ResizeTiled { tiled_index, start_ratios, n_tiled } => {
                 if n_tiled < 2 { return; }
 
-                let (ax_unused, ay_unused, aw, ah) = self.available_area();
-                let _ = (ax_unused, ay_unused);
-                let total_gaps = 2 * self.outer_gap + (n_tiled as u32 - 1) * self.inner_gap;
-                let usable_span = match self.layout_dir {
-                    LayoutDir::Horizontal => aw.saturating_sub(total_gaps) as f32,
-                    LayoutDir::Vertical   => ah.saturating_sub(total_gaps) as f32,
-                };
+                // In dwindle, each tiled_ratios[i] is the fraction of its own level's
+                // area taken by window i. Resize only adjusts that one ratio.
+                let dir  = self.dir_at_level(tiled_index);
+                let span = self.level_span_at(tiled_index) as f32;
 
-                let delta = match self.layout_dir {
+                let delta = match dir {
+                    // For normal splits, dragging toward the larger side grows window[0].
                     LayoutDir::Horizontal => self.cursor_x - drag.start_cx,
                     LayoutDir::Vertical   => self.cursor_y - drag.start_cy,
+                    // For reversed splits, window[0] is on the opposite side, so negate.
+                    LayoutDir::HorizontalReversed => drag.start_cx - self.cursor_x,
+                    LayoutDir::VerticalReversed   => drag.start_cy - self.cursor_y,
                 };
-                let ratio_delta = if usable_span > 0.0 { delta as f32 / usable_span } else { 0.0 };
+                let ratio_delta = if span > 0.0 { delta as f32 / span } else { 0.0 };
+                let new_ratio = (start_ratios[tiled_index] + ratio_delta)
+                    .clamp(MIN_RATIO, 1.0 - MIN_RATIO);
 
-                let adj = if tiled_index + 1 < n_tiled { tiled_index + 1 } else { tiled_index - 1 };
-                let sum = start_ratios[tiled_index] + start_ratios[adj];
-                let new_main = (start_ratios[tiled_index] + ratio_delta).clamp(MIN_RATIO, sum - MIN_RATIO);
-                let new_adj  = sum - new_main;
-
-                self.tiled_ratios[tiled_index] = new_main;
-                self.tiled_ratios[adj] = new_adj;
+                self.tiled_ratios[tiled_index] = new_ratio;
                 self.recalculate_toplevel_layout();
             }
         }
