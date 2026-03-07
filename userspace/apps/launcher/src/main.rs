@@ -184,6 +184,9 @@ impl Launcher {
     }
 
     fn handle_key(&mut self, k: kernel_api_types::KeyEvent) -> Action {
+        if !k.pressed {
+            return Action::None;
+        }
         use kernel_api_types::KeyEventType;
         match k.event_type {
             KeyEventType::Escape => return Action::Hide,

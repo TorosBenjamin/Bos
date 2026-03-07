@@ -304,6 +304,24 @@ fn parse_key_combo(val: &[u8]) -> Option<(u8, KeyEventType, u8)> {
             b"right"          => { key_type = Some(KeyEventType::ArrowRight); character = 0; }
             b"up"             => { key_type = Some(KeyEventType::ArrowUp);    character = 0; }
             b"down"           => { key_type = Some(KeyEventType::ArrowDown);  character = 0; }
+            b"f1"             => { key_type = Some(KeyEventType::F1);         character = 0; }
+            b"f2"             => { key_type = Some(KeyEventType::F2);         character = 0; }
+            b"f3"             => { key_type = Some(KeyEventType::F3);         character = 0; }
+            b"f4"             => { key_type = Some(KeyEventType::F4);         character = 0; }
+            b"f5"             => { key_type = Some(KeyEventType::F5);         character = 0; }
+            b"f6"             => { key_type = Some(KeyEventType::F6);         character = 0; }
+            b"f7"             => { key_type = Some(KeyEventType::F7);         character = 0; }
+            b"f8"             => { key_type = Some(KeyEventType::F8);         character = 0; }
+            b"f9"             => { key_type = Some(KeyEventType::F9);         character = 0; }
+            b"f10"            => { key_type = Some(KeyEventType::F10);        character = 0; }
+            b"f11"            => { key_type = Some(KeyEventType::F11);        character = 0; }
+            b"f12"            => { key_type = Some(KeyEventType::F12);        character = 0; }
+            b"insert"         => { key_type = Some(KeyEventType::Insert);     character = 0; }
+            b"delete" | b"del" => { key_type = Some(KeyEventType::Delete);   character = 0; }
+            b"home"           => { key_type = Some(KeyEventType::Home);       character = 0; }
+            b"end"            => { key_type = Some(KeyEventType::End);        character = 0; }
+            b"pageup" | b"pgup"   => { key_type = Some(KeyEventType::PageUp);   character = 0; }
+            b"pagedown" | b"pgdn" => { key_type = Some(KeyEventType::PageDown); character = 0; }
             other if other.len() == 1 => {
                 key_type  = Some(KeyEventType::Char);
                 character = other[0].to_ascii_lowercase();

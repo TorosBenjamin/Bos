@@ -129,19 +129,24 @@ pub fn handle_scancode(scancode: u8) {
         // Left Super (0x5B) / Right Super (0x5C)
         if code == 0x5B || code == 0x5C { *SUPER_PRESSED.lock() = pressed; return; }
 
-        if pressed {
-            let mods = current_modifiers();
-            let event = match code {
-                0x48 => Some(KeyEvent::arrow_up()),
-                0x50 => Some(KeyEvent::arrow_down()),
-                0x4B => Some(KeyEvent::arrow_left()),
-                0x4D => Some(KeyEvent::arrow_right()),
-                _ => None,
-            };
-            if let Some(mut ev) = event {
-                ev.modifiers = mods;
-                push_event(ev);
-            }
+        let mods = current_modifiers();
+        let event = match code {
+            0x48 => Some(KeyEvent::arrow_up()),
+            0x50 => Some(KeyEvent::arrow_down()),
+            0x4B => Some(KeyEvent::arrow_left()),
+            0x4D => Some(KeyEvent::arrow_right()),
+            0x47 => Some(KeyEvent::home()),
+            0x4F => Some(KeyEvent::end()),
+            0x49 => Some(KeyEvent::page_up()),
+            0x51 => Some(KeyEvent::page_down()),
+            0x52 => Some(KeyEvent::insert()),
+            0x53 => Some(KeyEvent::delete()),
+            _ => None,
+        };
+        if let Some(mut ev) = event {
+            ev.modifiers = mods;
+            ev.pressed = pressed;
+            push_event(ev);
         }
         return;
     }
@@ -171,10 +176,6 @@ pub fn handle_scancode(scancode: u8) {
         return;
     }
 
-    if !pressed {
-        return;
-    }
-
     let mods = current_modifiers();
 
     // Special keys
@@ -183,6 +184,18 @@ pub fn handle_scancode(scancode: u8) {
         0x0E => Some(KeyEvent::backspace()),
         0x0F => Some(KeyEvent::tab()),
         0x1C => Some(KeyEvent::enter()),
+        0x3B => Some(KeyEvent::f_key(1)),
+        0x3C => Some(KeyEvent::f_key(2)),
+        0x3D => Some(KeyEvent::f_key(3)),
+        0x3E => Some(KeyEvent::f_key(4)),
+        0x3F => Some(KeyEvent::f_key(5)),
+        0x40 => Some(KeyEvent::f_key(6)),
+        0x41 => Some(KeyEvent::f_key(7)),
+        0x42 => Some(KeyEvent::f_key(8)),
+        0x43 => Some(KeyEvent::f_key(9)),
+        0x44 => Some(KeyEvent::f_key(10)),
+        0x57 => Some(KeyEvent::f_key(11)),
+        0x58 => Some(KeyEvent::f_key(12)),
         _ => {
             let shift = *SHIFT_PRESSED.lock();
             let caps = *CAPSLOCK_ON.lock();
@@ -193,6 +206,7 @@ pub fn handle_scancode(scancode: u8) {
 
     if let Some(mut ev) = event {
         ev.modifiers = mods;
+        ev.pressed = pressed;
         push_event(ev);
     }
 }

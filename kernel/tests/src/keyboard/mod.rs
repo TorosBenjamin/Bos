@@ -16,7 +16,7 @@ fn feed_and_collect(scancodes: &[u8]) -> alloc::vec::Vec<KeyEvent> {
     events
 }
 
-/// Pressing 'a' (scancode 0x1E) should produce a Char('a') event.
+/// Pressing 'a' (scancode 0x1E) should produce a Char('a') press event.
 pub fn test_key_a_press() -> TestResult {
     let events = feed_and_collect(&[0x1E]);
     if events.len() != 1 {
@@ -25,18 +25,33 @@ pub fn test_key_a_press() -> TestResult {
     if events[0].event_type != KeyEventType::Char || events[0].character != b'a' {
         return TestResult::Failed(format!("Expected Char('a'), got {:?}", events[0]));
     }
+    if !events[0].pressed {
+        return TestResult::Failed("Expected pressed=true".into());
+    }
     TestResult::Ok
 }
 
-/// Key release scancodes (bit 7 set) should NOT produce events.
-pub fn test_key_release_ignored() -> TestResult {
+/// Key release scancodes (bit 7 set) should emit a release event with pressed=false.
+pub fn test_key_release_emits_event() -> TestResult {
     // 0x1E = 'a' press, 0x9E = 'a' release
     let events = feed_and_collect(&[0x1E, 0x9E]);
-    if events.len() != 1 {
+    if events.len() != 2 {
         return TestResult::Failed(format!(
-            "Expected 1 event (press only), got {}",
+            "Expected 2 events (press + release), got {}",
             events.len()
         ));
+    }
+    if !events[0].pressed {
+        return TestResult::Failed("events[0]: expected pressed=true".into());
+    }
+    if events[1].pressed {
+        return TestResult::Failed("events[1]: expected pressed=false".into());
+    }
+    if events[0].event_type != KeyEventType::Char || events[0].character != b'a' {
+        return TestResult::Failed(format!("events[0]: expected Char('a'), got {:?}", events[0]));
+    }
+    if events[1].event_type != KeyEventType::Char || events[1].character != b'a' {
+        return TestResult::Failed(format!("events[1]: expected Char('a'), got {:?}", events[1]));
     }
     TestResult::Ok
 }
@@ -44,17 +59,17 @@ pub fn test_key_release_ignored() -> TestResult {
 /// Shift + 'a' should produce Char('A').
 pub fn test_shift_produces_uppercase() -> TestResult {
     // 0x2A = left shift press, 0x1E = 'a' press, 0xAA = left shift release
+    // With release events enabled: press 'a' (1 press event) + release 'a' (1 release event) = 2 events
     let events = feed_and_collect(&[0x2A, 0x1E, 0xAA]);
-    if events.len() != 1 {
-        return TestResult::Failed(format!("Expected 1 event, got {}", events.len()));
-    }
-    if events[0].event_type != KeyEventType::Char || events[0].character != b'A' {
-        return TestResult::Failed(format!("Expected Char('A'), got {:?}", events[0]));
+    // Find the press event with 'A'
+    let press_ev = events.iter().find(|e| e.pressed && e.character == b'A');
+    if press_ev.is_none() {
+        return TestResult::Failed(format!("Expected Char('A') press event, got {:?}", events));
     }
     TestResult::Ok
 }
 
-/// Enter key (scancode 0x1C) should produce an Enter event.
+/// Enter key (scancode 0x1C) should produce an Enter press event.
 pub fn test_enter_key() -> TestResult {
     let events = feed_and_collect(&[0x1C]);
     if events.len() != 1 {
@@ -63,10 +78,13 @@ pub fn test_enter_key() -> TestResult {
     if events[0].event_type != KeyEventType::Enter {
         return TestResult::Failed(format!("Expected Enter, got {:?}", events[0]));
     }
+    if !events[0].pressed {
+        return TestResult::Failed("Expected pressed=true".into());
+    }
     TestResult::Ok
 }
 
-/// Arrow up (extended: 0xE0, 0x48) should produce ArrowUp event.
+/// Arrow up (extended: 0xE0, 0x48) should produce ArrowUp press event.
 pub fn test_arrow_keys() -> TestResult {
     let events = feed_and_collect(&[0xE0, 0x48]);
     if events.len() != 1 {
@@ -74,6 +92,39 @@ pub fn test_arrow_keys() -> TestResult {
     }
     if events[0].event_type != KeyEventType::ArrowUp {
         return TestResult::Failed(format!("Expected ArrowUp, got {:?}", events[0]));
+    }
+    if !events[0].pressed {
+        return TestResult::Failed("Expected pressed=true".into());
+    }
+    TestResult::Ok
+}
+
+/// F1 key (scancode 0x3B) should produce an F1 press event.
+pub fn test_f1_key() -> TestResult {
+    let events = feed_and_collect(&[0x3B]);
+    if events.len() != 1 {
+        return TestResult::Failed(format!("Expected 1 event, got {}", events.len()));
+    }
+    if events[0].event_type != KeyEventType::F1 {
+        return TestResult::Failed(format!("Expected F1, got {:?}", events[0]));
+    }
+    if !events[0].pressed {
+        return TestResult::Failed("Expected pressed=true".into());
+    }
+    TestResult::Ok
+}
+
+/// Home key (extended: 0xE0, 0x47) should produce a Home press event.
+pub fn test_home_key() -> TestResult {
+    let events = feed_and_collect(&[0xE0, 0x47]);
+    if events.len() != 1 {
+        return TestResult::Failed(format!("Expected 1 event, got {}", events.len()));
+    }
+    if events[0].event_type != KeyEventType::Home {
+        return TestResult::Failed(format!("Expected Home, got {:?}", events[0]));
+    }
+    if !events[0].pressed {
+        return TestResult::Failed("Expected pressed=true".into());
     }
     TestResult::Ok
 }

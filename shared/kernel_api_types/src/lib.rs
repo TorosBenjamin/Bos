@@ -44,6 +44,8 @@ pub enum SysCallNumber {
     SleepMs        = 33,
     SetPriority    = 34,
     GetTimeNs      = 35,
+    Mprotect       = 36,
+    Mremap         = 37,
 }
 
 #[repr(u8)]
@@ -106,6 +108,8 @@ pub const SVC_ERR_INVALID_ARGS: u64 = 12;
 pub const MMAP_WRITE: u64 = 1 << 0;
 pub const MMAP_EXEC: u64 = 1 << 1;
 
+pub const MREMAP_MAYMOVE: u64 = 1 << 0;
+
 /// Modifier key bitmask flags carried in `KeyEvent::modifiers`.
 pub const KEY_MOD_SHIFT: u8 = 1 << 0;
 pub const KEY_MOD_CTRL:  u8 = 1 << 1;
@@ -125,6 +129,24 @@ pub enum KeyEventType {
     ArrowRight = 6,
     ArrowUp = 7,
     ArrowDown = 8,
+    F1 = 9,
+    F2 = 10,
+    F3 = 11,
+    F4 = 12,
+    F5 = 13,
+    F6 = 14,
+    F7 = 15,
+    F8 = 16,
+    F9 = 17,
+    F10 = 18,
+    F11 = 19,
+    F12 = 20,
+    Insert = 21,
+    Delete = 22,
+    Home = 23,
+    End = 24,
+    PageUp = 25,
+    PageDown = 26,
 }
 
 /// A keyboard event passed between kernel and userland.
@@ -136,6 +158,8 @@ pub struct KeyEvent {
     pub character: u8,
     /// Bitmask of currently held modifier keys (KEY_MOD_* constants).
     pub modifiers: u8,
+    /// `true` for key-press, `false` for key-release.
+    pub pressed: bool,
 }
 
 impl KeyEvent {
@@ -143,41 +167,84 @@ impl KeyEvent {
         event_type: KeyEventType::Char,
         character: 0,
         modifiers: 0,
+        pressed: true,
     };
 
     pub const fn char(c: char) -> Self {
-        Self { event_type: KeyEventType::Char, character: c as u8, modifiers: 0 }
+        Self { event_type: KeyEventType::Char, character: c as u8, modifiers: 0, pressed: true }
     }
 
     pub const fn enter() -> Self {
-        Self { event_type: KeyEventType::Enter, character: 0, modifiers: 0 }
+        Self { event_type: KeyEventType::Enter, character: 0, modifiers: 0, pressed: true }
     }
 
     pub const fn backspace() -> Self {
-        Self { event_type: KeyEventType::Backspace, character: 0, modifiers: 0 }
+        Self { event_type: KeyEventType::Backspace, character: 0, modifiers: 0, pressed: true }
     }
 
     pub const fn tab() -> Self {
-        Self { event_type: KeyEventType::Tab, character: 0, modifiers: 0 }
+        Self { event_type: KeyEventType::Tab, character: 0, modifiers: 0, pressed: true }
     }
 
     pub const fn escape() -> Self {
-        Self { event_type: KeyEventType::Escape, character: 0, modifiers: 0 }
+        Self { event_type: KeyEventType::Escape, character: 0, modifiers: 0, pressed: true }
     }
 
     pub const fn arrow_left() -> Self {
-        Self { event_type: KeyEventType::ArrowLeft, character: 0, modifiers: 0 }
+        Self { event_type: KeyEventType::ArrowLeft, character: 0, modifiers: 0, pressed: true }
     }
 
     pub const fn arrow_right() -> Self {
-        Self { event_type: KeyEventType::ArrowRight, character: 0, modifiers: 0 }
+        Self { event_type: KeyEventType::ArrowRight, character: 0, modifiers: 0, pressed: true }
     }
 
     pub const fn arrow_up() -> Self {
-        Self { event_type: KeyEventType::ArrowUp, character: 0, modifiers: 0 }
+        Self { event_type: KeyEventType::ArrowUp, character: 0, modifiers: 0, pressed: true }
     }
 
     pub const fn arrow_down() -> Self {
-        Self { event_type: KeyEventType::ArrowDown, character: 0, modifiers: 0 }
+        Self { event_type: KeyEventType::ArrowDown, character: 0, modifiers: 0, pressed: true }
+    }
+
+    pub const fn f_key(n: u8) -> Self {
+        let event_type = match n {
+            1  => KeyEventType::F1,
+            2  => KeyEventType::F2,
+            3  => KeyEventType::F3,
+            4  => KeyEventType::F4,
+            5  => KeyEventType::F5,
+            6  => KeyEventType::F6,
+            7  => KeyEventType::F7,
+            8  => KeyEventType::F8,
+            9  => KeyEventType::F9,
+            10 => KeyEventType::F10,
+            11 => KeyEventType::F11,
+            _  => KeyEventType::F12,
+        };
+        Self { event_type, character: 0, modifiers: 0, pressed: true }
+    }
+
+    pub const fn insert() -> Self {
+        Self { event_type: KeyEventType::Insert, character: 0, modifiers: 0, pressed: true }
+    }
+
+    pub const fn delete() -> Self {
+        Self { event_type: KeyEventType::Delete, character: 0, modifiers: 0, pressed: true }
+    }
+
+    pub const fn home() -> Self {
+        Self { event_type: KeyEventType::Home, character: 0, modifiers: 0, pressed: true }
+    }
+
+    pub const fn end() -> Self {
+        Self { event_type: KeyEventType::End, character: 0, modifiers: 0, pressed: true }
+    }
+
+    pub const fn page_up() -> Self {
+        Self { event_type: KeyEventType::PageUp, character: 0, modifiers: 0, pressed: true }
+    }
+
+    pub const fn page_down() -> Self {
+        Self { event_type: KeyEventType::PageDown, character: 0, modifiers: 0, pressed: true }
     }
 }

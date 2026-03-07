@@ -143,13 +143,15 @@ pub fn tests() -> &'static [TestEntry] {
 
         // Keyboard
         TestEntry { group: TestGroup::Keyboard, test: &keyboard::test_key_a_press },
-        TestEntry { group: TestGroup::Keyboard, test: &keyboard::test_key_release_ignored },
+        TestEntry { group: TestGroup::Keyboard, test: &keyboard::test_key_release_emits_event },
         TestEntry { group: TestGroup::Keyboard, test: &keyboard::test_shift_produces_uppercase },
         TestEntry { group: TestGroup::Keyboard, test: &keyboard::test_enter_key },
         TestEntry { group: TestGroup::Keyboard, test: &keyboard::test_arrow_keys },
         TestEntry { group: TestGroup::Keyboard, test: &keyboard::test_buffer_empty_after_drain },
         TestEntry { group: TestGroup::Keyboard, test: &keyboard::test_multiple_keys_order },
         TestEntry { group: TestGroup::Keyboard, test: &keyboard::test_capslock_toggle },
+        TestEntry { group: TestGroup::Keyboard, test: &keyboard::test_f1_key },
+        TestEntry { group: TestGroup::Keyboard, test: &keyboard::test_home_key },
 
         // IPC
         TestEntry { group: TestGroup::Ipc, test: &ipc::test_channel_create },

@@ -454,6 +454,9 @@ impl Compositor {
 
     /// Check `key` against configured shortcuts. Returns `true` if the event was consumed.
     fn handle_shortcut(&mut self, key: &kernel_api_types::KeyEvent) -> bool {
+        if !key.pressed {
+            return false;
+        }
         use kernel_api_types::KeyEventType;
         for i in 0..self.n_shortcuts {
             if let Some(b) = self.shortcuts[i] {
