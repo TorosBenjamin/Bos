@@ -75,12 +75,17 @@ pub fn sys_exit(exit_code: u64) -> ! {
     }
 }
 
-/// Kill the current user task from a hardware exception handler (page fault, GPF).
+/// Kill the current user task from a hardware exception handler (page fault, GPF, #DE).
 ///
 /// Called after the exception handler has already done `swapgs` so `get_local()`
-/// is safe. Performs the same resource cleanup as `sys_exit`, then halts; the
-/// timer will reschedule to the next ready task.
-pub(crate) fn kill_from_exception(exit_code: u64) -> ! {
+/// is safe. Performs the same resource cleanup as `sys_exit`, sends a `FaultEvent`
+/// to the task's `fault_ep` (if registered), then halts; the timer will reschedule
+/// to the next ready task.
+///
+/// `fault_type` — one of the `FAULT_*` constants from `kernel_api_types`.
+/// `faulting_addr` — the faulting virtual address (CR2 for page faults; 0 otherwise).
+/// `ip` — instruction pointer at the time of the fault.
+pub(crate) fn kill_from_exception(fault_type: u64, faulting_addr: u64, ip: u64) -> ! {
     let cpu = get_local();
 
     let (task_arc, endpoints) = {
@@ -101,14 +106,34 @@ pub(crate) fn kill_from_exception(exit_code: u64) -> ! {
     }
 
     if let Some(task) = task_arc {
-        task.exit_code.store(exit_code, Ordering::Release);
+        task.exit_code.store(fault_type, Ordering::Release);
+
+        // Notify fault_ep (if set) before marking Zombie so the receiver can
+        // still inspect the task if needed.
+        let fault_ep = task.fault_ep.load(Ordering::Relaxed);
+        if fault_ep != 0 {
+            let event = kernel_api_types::FaultEvent {
+                task_id: task.id.to_u64(),
+                fault_type,
+                faulting_addr,
+                instruction_pointer: ip,
+            };
+            let bytes: &[u8] = unsafe {
+                core::slice::from_raw_parts(
+                    &event as *const kernel_api_types::FaultEvent as *const u8,
+                    core::mem::size_of::<kernel_api_types::FaultEvent>(),
+                )
+            };
+            let _ = crate::ipc::try_send(fault_ep, bytes);
+        }
+
         task.state.store(TaskState::Zombie, Ordering::Relaxed);
 
         let notif_ep = task.exit_notification_ep.load(Ordering::Relaxed);
         if notif_ep != 0 {
             let mut msg = [0u8; 16];
             msg[0..8].copy_from_slice(&task.id.to_u64().to_le_bytes());
-            msg[8..16].copy_from_slice(&exit_code.to_le_bytes());
+            msg[8..16].copy_from_slice(&fault_type.to_le_bytes());
             let _ = crate::ipc::try_send(notif_ep, &msg);
         }
 
@@ -129,6 +154,29 @@ pub(crate) fn kill_from_exception(exit_code: u64) -> ! {
     loop {
         x86_64::instructions::hlt();
     }
+}
+
+/// Syscall: register a send endpoint to receive a `FaultEvent` when `task_id` faults.
+///
+/// Arguments: task_id, send_ep_id
+/// Returns: 0 on success, 1 on error (task not found or invalid endpoint).
+pub fn sys_set_fault_ep(task_id: u64, send_ep_id: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    use crate::ipc::{ENDPOINT_REGISTRY, EndpointRole};
+
+    {
+        let registry = ENDPOINT_REGISTRY.lock();
+        match registry.get(&send_ep_id) {
+            Some(ep) if ep.role == EndpointRole::Send => {}
+            _ => return 1,
+        }
+    }
+
+    let target = match TASK_TABLE.lock().get(&TaskId::from_u64(task_id)).cloned() {
+        Some(t) => t,
+        None => return 1,
+    };
+    target.fault_ep.store(send_ep_id, Ordering::Relaxed);
+    0
 }
 
 /// Syscall: yield the current timeslice.
@@ -223,7 +271,7 @@ pub fn sys_sleep_ms(ms: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
 pub fn sys_thread_create(entry: u64, stack_top: u64, arg: u64, name_ptr: u64, name_len: u64, _: u64) -> u64 {
     let cpu = get_local();
 
-    let (parent_cr3, vaddr_set, parent_prio, parent_id) = {
+    let (parent_cr3, user_vmas, parent_prio, parent_id) = {
         let rq = cpu.run_queue.get().unwrap().lock();
         let task = match &rq.current_task {
             Some(t) if t.kind == TaskKind::User => t.clone(),
@@ -232,7 +280,7 @@ pub fn sys_thread_create(entry: u64, stack_top: u64, arg: u64, name_ptr: u64, na
         let inner = task.inner.lock();
         let prio = Priority::from_u8(task.priority.load(Ordering::Relaxed));
         let id = task.id;
-        (task.cr3, inner.user_vaddr_set.clone(), prio, id)
+        (task.cr3, inner.user_vmas.clone(), prio, id)
     };
 
     let mut name_buf = [0u8; 32];
@@ -252,7 +300,7 @@ pub fn sys_thread_create(entry: u64, stack_top: u64, arg: u64, name_ptr: u64, na
     let user_cs = gdt.user_code_selector().0;
     let user_ss = gdt.user_data_selector().0;
 
-    let task = Task::new_thread(entry, stack_top, parent_cr3, user_cs, user_ss, vaddr_set, arg, name, parent_prio, Some(parent_id));
+    let task = Task::new_thread(entry, stack_top, parent_cr3, user_cs, user_ss, user_vmas, arg, name, parent_prio, Some(parent_id));
     let id = task.id.to_u64();
     crate::task::global_scheduler::spawn_task(task);
     id

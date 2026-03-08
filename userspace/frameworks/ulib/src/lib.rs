@@ -147,6 +147,31 @@ pub fn sys_munmap(addr: *mut u8, size: u64) -> u64 {
     args[6]
 }
 
+/// Change protection flags on [addr, addr+size). Flags: MMAP_WRITE, MMAP_EXEC.
+/// Returns 0 on success, !0 on error.
+pub fn sys_mprotect(addr: *mut u8, size: u64, flags: u64) -> u64 {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::Mprotect as u64;
+    args[1] = addr as u64;
+    args[2] = size;
+    args[3] = flags;
+    syscall(&mut args);
+    args[6]
+}
+
+/// Resize an mmap allocation. flags: MREMAP_MAYMOVE.
+/// Returns new address on success (may equal addr), null on error.
+pub fn sys_mremap(addr: *mut u8, old_size: u64, new_size: u64, flags: u64) -> *mut u8 {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::Mremap as u64;
+    args[1] = addr as u64;
+    args[2] = old_size;
+    args[3] = new_size;
+    args[4] = flags;
+    syscall(&mut args);
+    args[6] as *mut u8
+}
+
 pub fn sys_spawn_named(elf_bytes: &[u8], child_arg: u64, name: &[u8]) -> u64 {
     sys_spawn_with_priority(elf_bytes, child_arg, name, kernel_api_types::Priority::Normal as u8)
 }
@@ -340,6 +365,18 @@ pub fn sys_thread_create(entry: u64, stack_top: u64, arg: u64) -> u64 {
     args[1] = entry;
     args[2] = stack_top;
     args[3] = arg;
+    syscall(&mut args);
+    args[6]
+}
+
+/// Register `send_ep` to receive a [`kernel_api_types::FaultEvent`] when `task_id`
+/// is killed by a hardware fault (page fault, GPF, divide-by-zero).
+/// Returns 0 on success, 1 on error (task not found or invalid endpoint).
+pub fn sys_set_fault_ep(task_id: u64, send_ep: u64) -> u64 {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::SetFaultEp as u64;
+    args[1] = task_id;
+    args[2] = send_ep;
     syscall(&mut args);
     args[6]
 }

@@ -46,6 +46,32 @@ pub enum SysCallNumber {
     GetTimeNs      = 35,
     Mprotect       = 36,
     Mremap         = 37,
+    SetFaultEp     = 38,
+}
+
+/// High bit set in exit_code means the task was killed by a hardware fault.
+/// Low bits carry the x86 exception vector number.
+pub const FAULT_DIVIDE_BY_ZERO: u64 = 0x8000_0000_0000_0000; // #DE vector 0
+pub const FAULT_GPF:            u64 = 0x8000_0000_0000_000D; // #GP vector 13
+pub const FAULT_PAGE_FAULT:     u64 = 0x8000_0000_0000_000E; // #PF vector 14
+
+/// Returns `true` if an exit code encodes a hardware fault (not a clean `sys_exit`).
+pub const fn exit_code_is_fault(code: u64) -> bool {
+    code & (1 << 63) != 0
+}
+
+/// Fault notification sent to `fault_ep` before a task is killed by a hardware exception.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct FaultEvent {
+    /// ID of the task that faulted.
+    pub task_id: u64,
+    /// One of the `FAULT_*` constants above.
+    pub fault_type: u64,
+    /// Faulting virtual address (valid for page faults; 0 for other fault types).
+    pub faulting_addr: u64,
+    /// Instruction pointer at the time of the fault.
+    pub instruction_pointer: u64,
 }
 
 #[repr(u8)]
