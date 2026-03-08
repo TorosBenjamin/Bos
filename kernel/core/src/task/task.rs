@@ -6,12 +6,30 @@ use alloc::vec::Vec;
 use atomic_enum::atomic_enum;
 use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use kernel_api_types::Priority;
-use nodit::{Interval, NoditSet};
+use nodit::{Interval, NoditMap};
 use spin::mutex::Mutex;
 use crate::memory::cpu_local_data::get_local;
 use x86_64::instructions::segmentation::{CS, SS, Segment};
 use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame};
+
+/// Whether a VMA's backing frames are pre-installed or filled on demand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VmaBacking {
+    /// Frames were installed at region creation (ELF segments, shared bufs).
+    /// A not-present fault inside this region is always a bug — kill the task.
+    EagerlyMapped,
+    /// Zero-fill on first access (anonymous mmap, user stack).
+    Anonymous,
+}
+
+/// Metadata stored per virtual-memory region in the VMA map.
+#[derive(Clone, Copy, Debug)]
+pub struct VmaEntry {
+    /// PTE flags used when installing a frame (PRESENT | USER_ACCESSIBLE | ...).
+    pub flags: PageTableFlags,
+    pub backing: VmaBacking,
+}
 use x86_64::{PhysAddr, VirtAddr};
 
 /// CPU context saved/restored on task switches.
@@ -121,9 +139,9 @@ pub struct TaskInner {
     pub kernel_stack_top: u64,
     /// Owns the user-mode page table (keeps it alive). None for kernel tasks.
     pub user_page_table: Option<PhysFrame>,
-    /// Tracks user-space virtual address allocations (ELF segments, stack, mmap).
+    /// Per-region metadata for user-space virtual address allocations.
     /// Empty for kernel tasks.
-    pub user_vaddr_set: NoditSet<u64, Interval<u64>>,
+    pub user_vmas: NoditMap<u64, Interval<u64>, VmaEntry>,
     /// IPC endpoint IDs owned by this task; closed on exit.
     pub owned_endpoints: Vec<u64>,
     /// Service names registered by this task; removed from the registry on exit.
@@ -218,6 +236,8 @@ pub struct Task {
     pub exit_waiter: Mutex<Option<(Arc<Task>, u32)>>,
     /// Send endpoint ID to notify on exit. 0 = unset.
     pub exit_notification_ep: AtomicU64,
+    /// Send endpoint ID to notify on hardware fault (page fault, GPF, #DE). 0 = unset.
+    pub fault_ep: AtomicU64,
     /// Number of scheduler quanta this task has consumed. One tick ≈ 1 ms.
     pub cpu_ticks: AtomicU64,
     /// TSC value when this task was last scheduled in. 0 = never run.
@@ -275,7 +295,7 @@ impl Task {
                 kernel_stack: stack,
                 kernel_stack_top: stack_top,
                 user_page_table: None,
-                user_vaddr_set: NoditSet::default(),
+                user_vmas: NoditMap::new(),
                 owned_endpoints: Vec::new(),
                 registered_services: Vec::new(),
             }),
@@ -286,6 +306,7 @@ impl Task {
             exit_code: AtomicU64::new(0),
             exit_waiter: Mutex::new(None),
             exit_notification_ep: AtomicU64::new(0),
+            fault_ep: AtomicU64::new(0),
             cpu_ticks: AtomicU64::new(0),
             slice_start_tsc: AtomicU64::new(0),
             cpu_ns: AtomicU64::new(0),
@@ -311,7 +332,7 @@ impl Task {
         cr3: u64,
         user_cs: u16,
         user_ss: u16,
-        user_vaddr_set: NoditSet<u64, Interval<u64>>,
+        user_vmas: NoditMap<u64, Interval<u64>, VmaEntry>,
         arg: u64,
         task_name: &[u8],
         priority: Priority,
@@ -350,7 +371,7 @@ impl Task {
                 kernel_stack,
                 kernel_stack_top,
                 user_page_table: Some(page_table),
-                user_vaddr_set,
+                user_vmas,
                 owned_endpoints: Vec::new(),
                 registered_services: Vec::new(),
             }),
@@ -361,6 +382,7 @@ impl Task {
             exit_code: AtomicU64::new(0),
             exit_waiter: Mutex::new(None),
             exit_notification_ep: AtomicU64::new(0),
+            fault_ep: AtomicU64::new(0),
             cpu_ticks: AtomicU64::new(0),
             slice_start_tsc: AtomicU64::new(0),
             cpu_ns: AtomicU64::new(0),
@@ -381,7 +403,7 @@ impl Task {
         cr3: u64,
         user_cs: u16,
         user_ss: u16,
-        user_vaddr_set: NoditSet<u64, Interval<u64>>,
+        user_vmas: NoditMap<u64, Interval<u64>, VmaEntry>,
         arg: u64,
         task_name: &[u8],
         priority: Priority,
@@ -416,7 +438,7 @@ impl Task {
                 kernel_stack,
                 kernel_stack_top,
                 user_page_table: None, // thread does NOT own/free the page table
-                user_vaddr_set,
+                user_vmas,
                 owned_endpoints: Vec::new(),
                 registered_services: Vec::new(),
             }),
@@ -427,6 +449,7 @@ impl Task {
             exit_code: AtomicU64::new(0),
             exit_waiter: Mutex::new(None),
             exit_notification_ep: AtomicU64::new(0),
+            fault_ep: AtomicU64::new(0),
             cpu_ticks: AtomicU64::new(0),
             slice_start_tsc: AtomicU64::new(0),
             cpu_ns: AtomicU64::new(0),

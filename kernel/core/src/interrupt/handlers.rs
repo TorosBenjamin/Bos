@@ -28,15 +28,29 @@ pub extern "x86-interrupt" fn page_fault_handler(
     // CS bits [1:0] are the RPL; 3 = ring 3.
     if stack_frame.code_segment.0 & 3 == 3 {
         // The CPU does NOT automatically swap GS on exception entry (unlike SYSCALL).
-        // Do it manually so get_local() works inside kill_from_exception.
+        // Do it manually so get_local() and demand-fill work correctly.
         unsafe { core::arch::asm!("swapgs", options(nostack, nomem)); }
+
+        // Not-present fault (PROTECTION_VIOLATION bit clear) → try demand-fill.
+        if !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
+            if crate::memory::demand::try_demand_fill(accessed_address) {
+                // Success: swap GS back and iretq will retry the faulting instruction.
+                unsafe { core::arch::asm!("swapgs", options(nostack, nomem)); }
+                return;
+            }
+        }
+
         log::warn!(
             "User task page fault: addr={:#x} ip={:#x} err={:?} — killing task",
             accessed_address,
             stack_frame.instruction_pointer.as_u64(),
             error_code,
         );
-        crate::syscall_handlers::kill_from_exception(1);
+        crate::syscall_handlers::kill_from_exception(
+            kernel_api_types::FAULT_PAGE_FAULT,
+            accessed_address,
+            stack_frame.instruction_pointer.as_u64(),
+        );
     }
 
     // Kernel-mode fault — check guard pages then panic.
@@ -72,7 +86,11 @@ pub extern "x86-interrupt" fn general_protection_fault_handler(
             stack_frame.instruction_pointer.as_u64(),
             error_code,
         );
-        crate::syscall_handlers::kill_from_exception(1);
+        crate::syscall_handlers::kill_from_exception(
+            kernel_api_types::FAULT_GPF,
+            0,
+            stack_frame.instruction_pointer.as_u64(),
+        );
     }
 
     // Kernel-mode GPF: if the fault was during iretq, dump the iretq frame.
@@ -94,6 +112,23 @@ pub extern "x86-interrupt" fn double_fault_handler(
     error_code: u64,
 ) -> ! {
     panic!("Double Fault! Stack frame: {stack_frame:#?}. Error code: {error_code}.")
+}
+
+pub extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame) {
+    // Ring-3 divide by zero: kill the task.
+    if stack_frame.code_segment.0 & 3 == 3 {
+        unsafe { core::arch::asm!("swapgs", options(nostack, nomem)); }
+        log::warn!(
+            "User task divide by zero: ip={:#x} — killing task",
+            stack_frame.instruction_pointer.as_u64(),
+        );
+        crate::syscall_handlers::kill_from_exception(
+            kernel_api_types::FAULT_DIVIDE_BY_ZERO,
+            0,
+            stack_frame.instruction_pointer.as_u64(),
+        );
+    }
+    panic!("Kernel divide by zero! Stack frame: {stack_frame:#?}");
 }
 
 pub extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {

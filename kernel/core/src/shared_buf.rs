@@ -12,7 +12,7 @@ use crate::memory::MEMORY;
 use crate::memory::hhdm_offset::hhdm_offset;
 use crate::memory::physical_memory::{MemoryType, OffsetMappedPhysAddr};
 use crate::memory::user_vaddr;
-use crate::task::task::Task;
+use crate::task::task::{Task, VmaBacking, VmaEntry};
 
 pub type SharedBufId = u64;
 
@@ -31,12 +31,12 @@ static SHARED_BUF_REGISTRY: Mutex<BTreeMap<SharedBufId, SharedBuf>> =
 pub fn create_shared_buf(task: &Task, n_pages: u64) -> Option<(SharedBufId, u64)> {
     let mut inner = task.inner.lock();
 
-    let start_vaddr = user_vaddr::allocate_user_pages(&mut inner.user_vaddr_set, n_pages)?;
-
     let page_flags = PageTableFlags::PRESENT
         | PageTableFlags::WRITABLE
         | PageTableFlags::USER_ACCESSIBLE
         | PageTableFlags::NO_EXECUTE;
+    let vma_entry = VmaEntry { flags: page_flags, backing: VmaBacking::EagerlyMapped };
+    let start_vaddr = user_vaddr::allocate_user_vma(&mut inner.user_vmas, n_pages, vma_entry)?;
 
     let hhdm = hhdm_offset();
     let user_l4_frame =
@@ -60,8 +60,8 @@ pub fn create_shared_buf(task: &Task, n_pages: u64) -> Option<(SharedBufId, u64)
             Some(f) => f,
             None => {
                 rollback(&mut mapper, &mut phys_mem, start_vaddr, i, true);
-                user_vaddr::free_user_pages(
-                    &mut inner.user_vaddr_set,
+                let _ = user_vaddr::free_user_vma(
+                    &mut inner.user_vmas,
                     start_vaddr,
                     n_pages * Size4KiB::SIZE,
                 );
@@ -85,8 +85,8 @@ pub fn create_shared_buf(task: &Task, n_pages: u64) -> Option<(SharedBufId, u64)
         if result.is_err() {
             let _ = phys_mem.free_frame(frame, MemoryType::SharedBuffer);
             rollback(&mut mapper, &mut phys_mem, start_vaddr, i, true);
-            user_vaddr::free_user_pages(
-                &mut inner.user_vaddr_set,
+            let _ = user_vaddr::free_user_vma(
+                &mut inner.user_vmas,
                 start_vaddr,
                 n_pages * Size4KiB::SIZE,
             );
@@ -116,13 +116,12 @@ pub fn map_shared_buf(id: SharedBufId, task: &Task) -> Option<u64> {
 
     let mut inner = task.inner.lock();
 
-    let start_vaddr =
-        user_vaddr::allocate_user_pages(&mut inner.user_vaddr_set, n_pages)?;
-
     let page_flags = PageTableFlags::PRESENT
         | PageTableFlags::WRITABLE
         | PageTableFlags::USER_ACCESSIBLE
         | PageTableFlags::NO_EXECUTE;
+    let vma_entry = VmaEntry { flags: page_flags, backing: VmaBacking::EagerlyMapped };
+    let start_vaddr = user_vaddr::allocate_user_vma(&mut inner.user_vmas, n_pages, vma_entry)?;
 
     let hhdm = hhdm_offset();
     let user_l4_frame =
@@ -147,8 +146,8 @@ pub fn map_shared_buf(id: SharedBufId, task: &Task) -> Option<u64> {
         if result.is_err() {
             // Rollback page table entries only — do NOT free the shared frames.
             rollback(&mut mapper, &mut phys_mem, start_vaddr, i as u64, false);
-            user_vaddr::free_user_pages(
-                &mut inner.user_vaddr_set,
+            let _ = user_vaddr::free_user_vma(
+                &mut inner.user_vmas,
                 start_vaddr,
                 n_pages * Size4KiB::SIZE,
             );

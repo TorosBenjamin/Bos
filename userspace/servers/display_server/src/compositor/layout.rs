@@ -111,10 +111,8 @@ impl Compositor {
             self.n_tiled_ratios = 0;
             return;
         }
-        // Golden-ratio default: each window takes ~61.8 % of its level's available area.
-        const GOLDEN: f32 = 0.618; // ≈ 1/φ
         for i in 0..n {
-            self.tiled_ratios[i] = GOLDEN;
+            self.tiled_ratios[i] = 0.5;
         }
         self.n_tiled_ratios = n;
     }

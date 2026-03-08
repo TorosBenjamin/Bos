@@ -1,19 +1,22 @@
 use crate::consts::{USER_MAX, USER_MIN};
+use crate::task::task::VmaEntry;
 use nodit::interval::ii;
-use nodit::{InclusiveInterval, Interval, NoditSet};
+use nodit::{InclusiveInterval, Interval, NoditMap};
+use x86_64::VirtAddr;
 
 const PAGE_SIZE: u64 = 4096;
 
-/// Find a gap in the user vaddr set large enough for `n_pages` contiguous 4 KiB pages,
-/// insert the range, and return the start virtual address.
-pub fn allocate_user_pages(
-    set: &mut NoditSet<u64, Interval<u64>>,
+/// Find a free gap large enough for `n_pages` contiguous 4 KiB pages,
+/// insert the VMA entry, and return the start virtual address.
+pub fn allocate_user_vma(
+    vmas: &mut NoditMap<u64, Interval<u64>, VmaEntry>,
     n_pages: u64,
+    entry: VmaEntry,
 ) -> Option<u64> {
     let total_bytes = n_pages * PAGE_SIZE;
     let range = ii(USER_MIN, USER_MAX);
 
-    let interval = set
+    let interval = vmas
         .gaps_trimmed(&range)
         .find_map(|gap| {
             let aligned_start = gap.start().next_multiple_of(PAGE_SIZE);
@@ -22,39 +25,59 @@ pub fn allocate_user_pages(
             gap.contains_interval(&interval).then_some(interval)
         })?;
 
-    set.insert_merge_touching(interval).expect("no overlap");
-
+    let _ = vmas.insert_overwrite(interval, entry);
     Some(*interval.start())
 }
 
-/// Verify that the range `[addr, addr+size)` is fully contained within the user vaddr set,
-/// and remove it. Returns `true` on success.
-pub fn free_user_pages(
-    set: &mut NoditSet<u64, Interval<u64>>,
+/// Verify that `[addr, addr+size)` is fully covered by the VMA map (no gaps),
+/// then remove it. Returns `false` if any part is uncovered.
+pub fn free_user_vma(
+    vmas: &mut NoditMap<u64, Interval<u64>, VmaEntry>,
     addr: u64,
     size: u64,
 ) -> bool {
-    let end = addr + size - 1;
-    let interval = ii(addr, end);
-
-    // Check that the range is fully covered by existing allocations
-    let covered = set
-        .iter()
-        .any(|existing| existing.contains_interval(&interval));
-
-    if !covered {
+    if size == 0 {
+        return true;
+    }
+    let interval = ii(addr, addr + size - 1);
+    // Reject if there are any gaps in the requested range.
+    if vmas.gaps_trimmed(&interval).next().is_some() {
         return false;
     }
-
-    let _ = set.cut(&interval);
+    let _ = vmas.cut(&interval).count(); // consume the iterator to drop removed entries
     true
 }
 
-pub fn is_user_vaddr_valid_range(
-    set: &NoditSet<u64, Interval<u64>>,
-    start: x86_64::VirtAddr,
-    end: x86_64::VirtAddr,
+/// Returns `true` if `[addr, addr+size)` has no overlap with any existing VMA.
+pub fn is_range_free(
+    vmas: &NoditMap<u64, Interval<u64>, VmaEntry>,
+    addr: u64,
+    size: u64,
 ) -> bool {
+    if size == 0 {
+        return true;
+    }
+    let interval = ii(addr, addr + size - 1);
+    vmas.overlapping(&interval).next().is_none()
+}
+
+/// Returns `true` if `[start, end)` is fully contained within a single VMA entry.
+pub fn is_user_vaddr_valid_range(
+    vmas: &NoditMap<u64, Interval<u64>, VmaEntry>,
+    start: VirtAddr,
+    end: VirtAddr,
+) -> bool {
+    if start >= end {
+        return false;
+    }
     let interval = ii(start.as_u64(), end.as_u64() - 1);
-    set.iter().any(|existing| existing.contains_interval(&interval))
+    vmas.iter().any(|(existing, _)| existing.contains_interval(&interval))
+}
+
+/// Return the `VmaEntry` for the page containing `addr`, or `None` if unmapped.
+pub fn lookup_vma(
+    vmas: &NoditMap<u64, Interval<u64>, VmaEntry>,
+    addr: u64,
+) -> Option<VmaEntry> {
+    vmas.get_at_point(&addr).copied()
 }

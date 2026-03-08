@@ -32,8 +32,8 @@ pub fn test_spawn_creates_task() -> TestResult {
             }
 
             let inner = task.inner.lock();
-            if inner.user_vaddr_set.is_empty() {
-                return TestResult::Failed("user_vaddr_set is empty".into());
+            if inner.user_vmas.iter().count() == 0 {
+                return TestResult::Failed("user_vmas is empty".into());
             }
 
             if task.run_state() != TaskState::Initializing {

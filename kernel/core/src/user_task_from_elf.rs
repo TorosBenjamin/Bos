@@ -14,7 +14,8 @@ use elf::ElfBytes;
 use elf::endian::AnyEndian;
 use elf::segment::ProgramHeader;
 use nodit::interval::ie;
-use nodit::{Interval, NoditSet};
+use nodit::{Interval, NoditMap};
+use crate::task::task::{VmaBacking, VmaEntry};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use x86_64::{PhysAddr, VirtAddr};
 use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageSize, PageTable, PageTableFlags, PhysFrame, Size4KiB};
@@ -95,7 +96,7 @@ pub fn create_user_task_from_elf(priority: Priority, parent_id: Option<TaskId>) 
     let elf = ElfBytes::<AnyEndian>::minimal_parse(elf_bytes).expect("Failed to parse ELF");
 
     // Track user-space virtual address allocations
-    let mut user_vaddr_set: NoditSet<u64, Interval<u64>> = NoditSet::default();
+    let mut user_vmas: NoditMap<u64, Interval<u64>, VmaEntry> = NoditMap::new();
 
     // Create new address space for user mode
     let memory = MEMORY.get().unwrap();
@@ -205,8 +206,11 @@ pub fn create_user_task_from_elf(priority: Priority, parent_id: Option<TaskId>) 
         if total_pages > 0 {
             let seg_start = start_page.start_address().as_u64();
             let seg_end = seg_start + total_pages * page_size;
-            user_vaddr_set
-                .insert_merge_touching(ie(seg_start, seg_end))
+            user_vmas
+                .insert_strict(
+                    ie(seg_start, seg_end),
+                    VmaEntry { flags, backing: VmaBacking::EagerlyMapped },
+                )
                 .expect("ELF segment vaddr overlap");
         }
     }
@@ -248,7 +252,7 @@ pub fn create_user_task_from_elf(priority: Priority, parent_id: Option<TaskId>) 
         unsafe { ptr.write_bytes(0, count) };
     }
 
-    // Allocate a user stack at the top of the canonical lower half.
+    // Register a lazy (demand-filled) user stack at the top of the canonical lower half.
     // LOWER_HALF_END is 0x7FFFFFFFFFFF (inclusive). Align down to page boundary
     // for the stack top, then subtract one page so RSP starts within mapped pages.
     let rsp = (LOWER_HALF_END + 1) - 0x1000;
@@ -256,24 +260,14 @@ pub fn create_user_task_from_elf(priority: Priority, parent_id: Option<TaskId>) 
         let stack_size: u64 = 64 * 0x400;
         let pages_len = stack_size.div_ceil(page_size);
         let stack_start_vaddr = rsp - pages_len * page_size;
-        let start_page: Page<Size4KiB> = Page::containing_address(
-            VirtAddr::new(stack_start_vaddr),
-        );
         let stack_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE
             | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
-        for i in 0..pages_len {
-            let page = start_page + i;
-            let frame = physical_memory
-                .allocate_frame_with_type(MemoryType::UsedByUserMode)
-                .unwrap();
-            let mut frame_allocator = physical_memory.get_user_mode_frame_allocator();
-            unsafe { mapper.map_to(page, frame, stack_flags, &mut frame_allocator) }
-                .unwrap()
-                .ignore();
-        }
-        // Track the stack virtual address range
-        user_vaddr_set
-            .insert_merge_touching(ie(stack_start_vaddr, stack_start_vaddr + pages_len * page_size))
+        // No frame allocation — pages are zero-filled on first access.
+        user_vmas
+            .insert_strict(
+                ie(stack_start_vaddr, stack_start_vaddr + pages_len * page_size),
+                VmaEntry { flags: stack_flags, backing: VmaBacking::Anonymous },
+            )
             .expect("user stack vaddr overlap");
     };
 
@@ -286,7 +280,7 @@ pub fn create_user_task_from_elf(priority: Priority, parent_id: Option<TaskId>) 
     let user_cs = gdt.user_code_selector().0;
     let user_ss = gdt.user_data_selector().0;
 
-    Task::new_user(entry_point.get(), rsp, l4_frame, cr3, user_cs, user_ss, user_vaddr_set, 0, b"init_task", priority, parent_id)
+    Task::new_user(entry_point.get(), rsp, l4_frame, cr3, user_cs, user_ss, user_vmas, 0, b"init_task", priority, parent_id)
 }
 
 #[derive(Debug)]
@@ -307,7 +301,7 @@ pub fn create_user_task_from_elf_bytes(elf_bytes: &[u8], child_arg: u64, name: &
             SpawnError::InvalidElf
         })?;
 
-    let mut user_vaddr_set: NoditSet<u64, Interval<u64>> = NoditSet::default();
+    let mut user_vmas: NoditMap<u64, Interval<u64>, VmaEntry> = NoditMap::new();
 
     let memory = MEMORY.get().unwrap();
     let mut physical_memory = memory.physical_memory.lock();
@@ -411,8 +405,11 @@ pub fn create_user_task_from_elf_bytes(elf_bytes: &[u8], child_arg: u64, name: &
         if total_pages > 0 {
             let seg_start = start_page.start_address().as_u64();
             let seg_end = seg_start + total_pages * page_size;
-            user_vaddr_set
-                .insert_merge_touching(ie(seg_start, seg_end))
+            user_vmas
+                .insert_strict(
+                    ie(seg_start, seg_end),
+                    VmaEntry { flags, backing: VmaBacking::EagerlyMapped },
+                )
                 .expect("ELF segment vaddr overlap");
         }
     }
@@ -420,29 +417,20 @@ pub fn create_user_task_from_elf_bytes(elf_bytes: &[u8], child_arg: u64, name: &
     // Parse entry point
     let entry_point = NonZero::new(elf.ehdr.e_entry).ok_or(SpawnError::InvalidElf)?;
 
-    // Allocate a user stack at the top of the canonical lower half
+    // Register a lazy (demand-filled) user stack at the top of the canonical lower half
     let rsp = (LOWER_HALF_END + 1) - 0x1000;
     {
         let stack_size: u64 = 64 * 0x400;
         let pages_len = stack_size.div_ceil(page_size);
         let stack_start_vaddr = rsp - pages_len * page_size;
-        let start_page: Page<Size4KiB> = Page::containing_address(
-            VirtAddr::new(stack_start_vaddr),
-        );
         let stack_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE
             | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
-        for i in 0..pages_len {
-            let page = start_page + i;
-            let frame = physical_memory
-                .allocate_frame_with_type(MemoryType::UsedByUserMode)
-                .ok_or(SpawnError::OutOfMemory)?;
-            let mut frame_allocator = physical_memory.get_user_mode_frame_allocator();
-            unsafe { mapper.map_to(page, frame, stack_flags, &mut frame_allocator) }
-                .map_err(|_| SpawnError::OutOfMemory)?
-                .ignore();
-        }
-        user_vaddr_set
-            .insert_merge_touching(ie(stack_start_vaddr, stack_start_vaddr + pages_len * page_size))
+        // No frame allocation — pages are zero-filled on first access.
+        user_vmas
+            .insert_strict(
+                ie(stack_start_vaddr, stack_start_vaddr + pages_len * page_size),
+                VmaEntry { flags: stack_flags, backing: VmaBacking::Anonymous },
+            )
             .expect("user stack vaddr overlap");
     }
 
@@ -453,7 +441,7 @@ pub fn create_user_task_from_elf_bytes(elf_bytes: &[u8], child_arg: u64, name: &
     let user_cs = gdt.user_code_selector().0;
     let user_ss = gdt.user_data_selector().0;
 
-    Ok(Task::new_user(entry_point.get(), rsp, l4_frame, cr3, user_cs, user_ss, user_vaddr_set, child_arg, name, priority, parent_id))
+    Ok(Task::new_user(entry_point.get(), rsp, l4_frame, cr3, user_cs, user_ss, user_vmas, child_arg, name, priority, parent_id))
 }
 
 bitflags! {

@@ -289,7 +289,17 @@ pub fn test_sys_mmap_write_and_read() -> TestResult {
             return TestResult::Failed("sys_mmap returned 0".into());
         }
 
-        // User CR3 is active, so the user virtual address is directly accessible.
+        // With demand-paging the page is not yet present; prefault it so kernel
+        // code (ring 0) can write to it directly without triggering a page fault.
+        let task = {
+            let cpu = get_local();
+            let rq = cpu.run_queue.get().unwrap().lock();
+            rq.current_task.clone().unwrap()
+        };
+        if !kernel::memory::demand::prefault_user_range(&task, addr, addr + 4096) {
+            return TestResult::Failed("prefault_user_range failed".into());
+        }
+
         const PATTERN: u64 = 0xDEAD_BEEF_CAFE_BABE;
         unsafe { core::ptr::write(addr as *mut u64, PATTERN) };
         let readback = unsafe { core::ptr::read(addr as *const u64) };

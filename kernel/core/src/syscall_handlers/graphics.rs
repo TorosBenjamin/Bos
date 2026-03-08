@@ -2,10 +2,9 @@ use crate::graphics::display::{DISPLAY, DISPLAY_OWNER};
 use crate::memory::MEMORY;
 use crate::memory::hhdm_offset::hhdm_offset;
 use crate::task::global_scheduler::TASK_TABLE;
-use crate::task::task::TaskId;
+use crate::task::task::{TaskId, VmaBacking, VmaEntry};
 use core::sync::atomic::Ordering;
 use kernel_api_types::graphics::{DisplayInfo, GraphicsResult, Rect, FRAMEBUFFER_USER_VADDR};
-use nodit::interval::ii;
 use x86_64::structures::paging::{
     Mapper, OffsetPageTable, Page, PageSize, PageTable, PageTableFlags, PhysFrame, Size4KiB,
 };
@@ -69,11 +68,18 @@ pub fn sys_transfer_display(new_owner_id: u64, _: u64, _: u64, _: u64, _: u64, _
 
     let mut task_inner = target_task.inner.lock();
 
-    // Mark virtual address range as used in the task's vaddr set
+    // Register the framebuffer VMA as eagerly mapped (frames installed below).
     let page_count = fb_size.div_ceil(Size4KiB::SIZE);
     let virt_start = user_fb_virt.as_u64();
-    let virt_end = virt_start + (page_count * Size4KiB::SIZE) - 1;
-    let _ = task_inner.user_vaddr_set.insert_merge_touching(ii(virt_start, virt_end));
+    let virt_end = virt_start + page_count * Size4KiB::SIZE;
+    let fb_flags = PageTableFlags::PRESENT
+        | PageTableFlags::WRITABLE
+        | PageTableFlags::USER_ACCESSIBLE
+        | PageTableFlags::WRITE_THROUGH;
+    let _ = task_inner.user_vmas.insert_overwrite(
+        nodit::interval::ie(virt_start, virt_end),
+        VmaEntry { flags: fb_flags, backing: VmaBacking::EagerlyMapped },
+    );
 
     let hhdm = hhdm_offset();
     let user_l4_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(target_task.cr3));

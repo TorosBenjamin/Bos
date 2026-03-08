@@ -7,6 +7,7 @@ use x86_64::registers::control::{Cr3, Cr3Flags};
 use x86_64::structures::paging::{PhysFrame, Size4KiB};
 
 pub mod cpu_local_data;
+pub mod demand;
 pub mod global_allocator;
 pub mod guarded_stack;
 pub mod hhdm_offset;

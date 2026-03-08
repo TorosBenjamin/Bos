@@ -7,9 +7,9 @@ mod service;
 mod disk;
 mod event;
 
-pub use task::{sys_exit, sys_yield, sys_spawn, sys_waitpid, sys_thread_create, sys_set_exit_channel, sys_sleep_ms, sys_set_priority};
+pub use task::{sys_exit, sys_yield, sys_spawn, sys_waitpid, sys_thread_create, sys_set_exit_channel, sys_sleep_ms, sys_set_priority, sys_set_fault_ep};
 pub(crate) use task::kill_from_exception;
-pub use memory::{sys_mmap, sys_munmap, sys_create_shared_buf, sys_map_shared_buf, sys_destroy_shared_buf};
+pub use memory::{sys_mmap, sys_munmap, sys_mprotect, sys_mremap, sys_create_shared_buf, sys_map_shared_buf, sys_destroy_shared_buf};
 pub use ipc::{sys_channel_create, sys_channel_send, sys_channel_recv, sys_channel_close, sys_try_channel_recv, sys_try_channel_send};
 pub use graphics::{sys_get_bounding_box, sys_get_display_info, sys_transfer_display};
 pub use misc::{sys_debug_log, sys_read_key, sys_try_read_key, sys_read_mouse, sys_get_module, sys_shutdown, sys_get_time_ns};
@@ -43,12 +43,18 @@ fn validate_user_ptr(ptr: u64, size: u64) -> bool {
         _ => return false,
     };
     drop(rq);
-    let inner = task.inner.lock();
-    crate::memory::user_vaddr::is_user_vaddr_valid_range(
-        &inner.user_vaddr_set,
-        x86_64::VirtAddr::new(ptr),
-        x86_64::VirtAddr::new(end),
-    )
+    {
+        let inner = task.inner.lock();
+        if !crate::memory::user_vaddr::is_user_vaddr_valid_range(
+            &inner.user_vmas,
+            x86_64::VirtAddr::new(ptr),
+            x86_64::VirtAddr::new(end),
+        ) {
+            return false;
+        }
+    }
+    // Ensure all lazy pages in the range are present before the kernel reads/writes them.
+    crate::memory::demand::prefault_user_range(&task, ptr, end)
 }
 
 /// Returns the current task Arc and the local CPU's kernel_id, if a task is running.

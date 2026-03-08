@@ -1,12 +1,21 @@
 use alloc::format;
-use kernel::memory::user_vaddr::{allocate_user_pages, free_user_pages};
+use kernel::memory::user_vaddr::{allocate_user_vma, free_user_vma};
 use kernel::consts::{USER_MAX, USER_MIN};
-use nodit::{Interval, NoditSet};
+use kernel::task::task::{VmaBacking, VmaEntry};
+use kernel::reexports::x86_64::structures::paging::PageTableFlags;
+use nodit::{Interval, NoditMap};
 use crate::TestResult;
 
+fn test_vma_entry() -> VmaEntry {
+    VmaEntry {
+        flags: PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE,
+        backing: VmaBacking::Anonymous,
+    }
+}
+
 pub fn test_user_vaddr_allocate() -> TestResult {
-    let mut set: NoditSet<u64, Interval<u64>> = NoditSet::default();
-    let addr = allocate_user_pages(&mut set, 1);
+    let mut map: NoditMap<u64, Interval<u64>, VmaEntry> = NoditMap::new();
+    let addr = allocate_user_vma(&mut map, 1, test_vma_entry());
     match addr {
         Some(a) if a >= USER_MIN && a + 4096 - 1 <= USER_MAX && a % 4096 == 0 => TestResult::Ok,
         Some(a) => TestResult::Failed(format!("address {:#x} out of user range or misaligned", a)),
@@ -15,22 +24,22 @@ pub fn test_user_vaddr_allocate() -> TestResult {
 }
 
 pub fn test_user_vaddr_free() -> TestResult {
-    let mut set: NoditSet<u64, Interval<u64>> = NoditSet::default();
-    let addr = allocate_user_pages(&mut set, 1).unwrap();
-    if !free_user_pages(&mut set, addr, 4096) {
-        return TestResult::Failed(format!("free_user_pages returned false"));
+    let mut map: NoditMap<u64, Interval<u64>, VmaEntry> = NoditMap::new();
+    let addr = allocate_user_vma(&mut map, 1, test_vma_entry()).unwrap();
+    if !free_user_vma(&mut map, addr, 4096) {
+        return TestResult::Failed(format!("free_user_vma returned false"));
     }
-    // After freeing, the set should be empty — allocating again should return the same or similar address
-    if set.iter().count() != 0 {
-        return TestResult::Failed(format!("set not empty after free"));
+    // After freeing, the map should be empty
+    if map.iter().count() != 0 {
+        return TestResult::Failed(format!("map not empty after free"));
     }
     TestResult::Ok
 }
 
 pub fn test_user_vaddr_no_overlap() -> TestResult {
-    let mut set: NoditSet<u64, Interval<u64>> = NoditSet::default();
-    let addr1 = allocate_user_pages(&mut set, 1).unwrap();
-    let addr2 = allocate_user_pages(&mut set, 1).unwrap();
+    let mut map: NoditMap<u64, Interval<u64>, VmaEntry> = NoditMap::new();
+    let addr1 = allocate_user_vma(&mut map, 1, test_vma_entry()).unwrap();
+    let addr2 = allocate_user_vma(&mut map, 1, test_vma_entry()).unwrap();
     if addr1 == addr2 {
         return TestResult::Failed(format!("two allocations returned same address {:#x}", addr1));
     }
