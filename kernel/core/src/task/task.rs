@@ -93,13 +93,20 @@ impl Default for CpuContext {
     }
 }
 
+static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(0);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskId(u64);
 
 impl TaskId {
     fn new() -> Self {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-        TaskId(NEXT_ID.fetch_add(1, Ordering::Relaxed))
+        TaskId(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Pre-allocate a task ID without creating a Task struct.
+    /// Used by sys_spawn to register a Loading stub before the loader task runs.
+    pub fn alloc() -> Self {
+        TaskId(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed))
     }
 
     pub fn to_usize(self) -> usize {
@@ -118,6 +125,7 @@ impl TaskId {
 #[atomic_enum]
 #[derive(PartialEq)]
 pub enum TaskState {
+    Loading,       // stub in TASK_TABLE; ELF load in progress by a kernel loader task
     Initializing,
     Running,
     Ready,
@@ -135,7 +143,7 @@ pub enum TaskKind {
 /// Parts of the task that can be modified after creation
 pub struct TaskInner {
     pub context: CpuContext,
-    pub kernel_stack: GuardedStack,
+    pub kernel_stack: Option<GuardedStack>,
     pub kernel_stack_top: u64,
     /// Owns the user-mode page table (keeps it alive). None for kernel tasks.
     pub user_page_table: Option<PhysFrame>,
@@ -218,7 +226,7 @@ impl Drop for TaskInner {
             let mut phys_mem = memory.physical_memory.lock();
             unsafe { free_user_address_space(l4_frame.start_address(), &mut phys_mem); }
         }
-        // kernel_stack's GuardedStack::drop runs automatically
+        // kernel_stack's GuardedStack::drop runs automatically when the Option drops
     }
 }
 
@@ -229,11 +237,14 @@ pub struct Task {
     pub kind: TaskKind,
     /// Physical address of the L4 page table for this task.
     /// For kernel tasks, this is the kernel CR3.
-    pub cr3: u64,
+    /// For Loading stubs, this is 0 until the loader sets it via store(Release).
+    pub cr3: AtomicU64,
     /// Exit code set by sys_exit.
     pub exit_code: AtomicU64,
     /// Task waiting for this task to exit (set by sys_waitpid).
     pub exit_waiter: Mutex<Option<(Arc<Task>, u32)>>,
+    /// Task waiting for this task to leave Loading state (set by sys_wait_task_ready).
+    pub ready_waiter: Mutex<Option<(Arc<Task>, u32)>>,
     /// Send endpoint ID to notify on exit. 0 = unset.
     pub exit_notification_ep: AtomicU64,
     /// Send endpoint ID to notify on hardware fault (page fault, GPF, #DE). 0 = unset.
@@ -255,7 +266,10 @@ pub struct Task {
 
 impl Task {
     /// Create a new kernel-mode task.
-    pub fn new(entry: fn() -> !, priority: Priority, parent_id: Option<TaskId>) -> Self {
+    ///
+    /// `arg` is passed to the entry function via `rdi` (the first SysV AMD64 argument
+    /// register). The trampoline preserves `rdi` and calls the entry via `r15`.
+    pub fn new(entry: fn() -> !, arg: u64, priority: Priority, parent_id: Option<TaskId>) -> Self {
         let stack = GuardedStack::new_kernel(
             NORMAL_STACK_SIZE,
             StackId {
@@ -276,9 +290,9 @@ impl Task {
 
         // Initialize context in the Task struct
         let context = CpuContext {
-            r15: entry as u64, // trampoline reads entry fn from r15
+            r15: entry as u64, // trampoline calls entry via r15
             r14: 0, r13: 0, r12: 0, r11: 0, r10: 0, r9: 0, r8: 0,
-            rdi: 0, rsi: 0, rbp: 0, rbx: 0, rdx: 0, rcx: 0, rax: 0,
+            rdi: arg, rsi: 0, rbp: 0, rbx: 0, rdx: 0, rcx: 0, rax: 0,
             rip: task_trampoline as *const() as u64,
             cs,
             rflags: 0x200, // IF=1 (interrupts enabled on entry)
@@ -292,7 +306,7 @@ impl Task {
         Task {
             inner: Mutex::new(TaskInner {
                 context,
-                kernel_stack: stack,
+                kernel_stack: Some(stack),
                 kernel_stack_top: stack_top,
                 user_page_table: None,
                 user_vmas: NoditMap::new(),
@@ -302,9 +316,10 @@ impl Task {
             id: TaskId::new(),
             state: AtomicTaskState::new(TaskState::Initializing),
             kind: TaskKind::Kernel,
-            cr3,
+            cr3: AtomicU64::new(cr3),
             exit_code: AtomicU64::new(0),
             exit_waiter: Mutex::new(None),
+            ready_waiter: Mutex::new(None),
             exit_notification_ep: AtomicU64::new(0),
             fault_ep: AtomicU64::new(0),
             cpu_ticks: AtomicU64::new(0),
@@ -368,7 +383,7 @@ impl Task {
         Task {
             inner: Mutex::new(TaskInner {
                 context,
-                kernel_stack,
+                kernel_stack: Some(kernel_stack),
                 kernel_stack_top,
                 user_page_table: Some(page_table),
                 user_vmas,
@@ -378,9 +393,10 @@ impl Task {
             id: TaskId::new(),
             state: AtomicTaskState::new(TaskState::Initializing),
             kind: TaskKind::User,
-            cr3,
+            cr3: AtomicU64::new(cr3),
             exit_code: AtomicU64::new(0),
             exit_waiter: Mutex::new(None),
+            ready_waiter: Mutex::new(None),
             exit_notification_ep: AtomicU64::new(0),
             fault_ep: AtomicU64::new(0),
             cpu_ticks: AtomicU64::new(0),
@@ -435,7 +451,7 @@ impl Task {
         Task {
             inner: Mutex::new(TaskInner {
                 context,
-                kernel_stack,
+                kernel_stack: Some(kernel_stack),
                 kernel_stack_top,
                 user_page_table: None, // thread does NOT own/free the page table
                 user_vmas,
@@ -445,9 +461,10 @@ impl Task {
             id: TaskId::new(),
             state: AtomicTaskState::new(TaskState::Initializing),
             kind: TaskKind::User,
-            cr3,
+            cr3: AtomicU64::new(cr3),
             exit_code: AtomicU64::new(0),
             exit_waiter: Mutex::new(None),
+            ready_waiter: Mutex::new(None),
             exit_notification_ep: AtomicU64::new(0),
             fault_ep: AtomicU64::new(0),
             cpu_ticks: AtomicU64::new(0),
@@ -458,6 +475,57 @@ impl Task {
             priority: AtomicU8::new(priority as u8),
             parent_id,
         }
+    }
+
+    /// Create a Loading stub — a placeholder in TASK_TABLE while a kernel loader
+    /// task performs the ELF parse and address-space setup asynchronously.
+    ///
+    /// The stub is immediately visible to `sys_waitpid` and `sys_set_exit_channel`.
+    /// It transitions to `Ready` (via `spawn_task_activate`) once the loader succeeds,
+    /// or to `Zombie` if the load fails.
+    pub fn new_loading(
+        id: TaskId,
+        name: [u8; 32],
+        name_len: u8,
+        priority: Priority,
+        parent_id: Option<TaskId>,
+    ) -> Arc<Task> {
+        let stack = GuardedStack::new_kernel(
+            NORMAL_STACK_SIZE,
+            StackId {
+                _type: StackType::Normal,
+                cpu_id: get_local().kernel_id,
+            },
+        );
+        let stack_top = stack.top().as_u64();
+
+        Arc::new(Task {
+            inner: Mutex::new(TaskInner {
+                context: CpuContext::default(),
+                kernel_stack: Some(stack),
+                kernel_stack_top: stack_top,
+                user_page_table: None,
+                user_vmas: NoditMap::new(),
+                owned_endpoints: Vec::new(),
+                registered_services: Vec::new(),
+            }),
+            id,
+            state: AtomicTaskState::new(TaskState::Loading),
+            kind: TaskKind::User,
+            cr3: AtomicU64::new(0),
+            exit_code: AtomicU64::new(0),
+            exit_waiter: Mutex::new(None),
+            ready_waiter: Mutex::new(None),
+            exit_notification_ep: AtomicU64::new(0),
+            fault_ep: AtomicU64::new(0),
+            cpu_ticks: AtomicU64::new(0),
+            slice_start_tsc: AtomicU64::new(0),
+            cpu_ns: AtomicU64::new(0),
+            name,
+            name_len,
+            priority: AtomicU8::new(priority as u8),
+            parent_id,
+        })
     }
 
     /// Immediately frees the user-space page tables for this task.
@@ -485,13 +553,14 @@ impl Task {
     }
 }
 
-/// Loads the actual function from the first register
+/// Trampoline for kernel tasks: calls the entry function in r15 with rdi = arg.
+/// rdi is set in CpuContext by Task::new() and preserved through the iretq,
+/// so the entry function receives the arg as its first SysV AMD64 argument.
 #[unsafe(no_mangle)]
 #[unsafe(naked)]
 extern "C" fn task_trampoline() -> ! {
     core::arch::naked_asm!(
-        "mov rdi, r15",  // Move the function pointer to RDI
-        "call rdi",      // Call the function
-        "ud2",           // Should not return
+        "call r15",  // Call entry (fn ptr in r15), rdi = arg (preserved)
+        "ud2",       // Should not return
     )
 }

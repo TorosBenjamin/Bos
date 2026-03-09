@@ -19,7 +19,7 @@ pub fn test_context_switch_tasks() -> TestResult {
     TASK_SWITCH_SUCCESS.store(0, Ordering::SeqCst);
 
     // Spawn a task and let the timer-driven scheduler pick it up
-    spawn_task(Task::new(test_task_entry, Priority::Normal, None));
+    spawn_task(Task::new(test_task_entry, 0, Priority::Normal, None));
 
     x86_64::instructions::interrupts::enable();
 

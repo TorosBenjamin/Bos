@@ -20,7 +20,7 @@ use kernel::memory::cpu_local_data::{get_local, mark_current_cpu_crashed, mark_c
 use kernel::memory::guarded_stack::{GuardedStack, StackId, StackType, NORMAL_STACK_SIZE};
 use kernel::{acpi, apic, gdt, hlt_loop, interrupt, ioapic, logger, project_version, raw_syscall_handler, time};
 use kernel::interrupt::nmi_handler_state;
-use kernel::task::global_scheduler::{spawn_task, spawn_local_task};
+use kernel::task::global_scheduler::{reap_zombie_kernel_tasks, spawn_task, spawn_local_task};
 use kernel::task::local_scheduler::init_run_queue;
 use kernel::task::task::Task;
 use kernel_api_types::Priority;
@@ -91,7 +91,7 @@ extern "sysv64" fn init_bsp() -> ! {
     raw_syscall_handler::init();
     init_run_queue();
 
-    spawn_local_task(Task::new(idle_task, Priority::Background, None));
+    spawn_local_task(Task::new(idle_task, 0, Priority::Background, None));
     let init_task = create_user_task_from_elf(Priority::High, None);
     DISPLAY_OWNER.store(init_task.id.to_u64(), core::sync::atomic::Ordering::SeqCst);
     spawn_task(init_task);
@@ -148,8 +148,9 @@ extern "sysv64" fn init_ap() -> ! {
     time::lapic_timer::init();
     time::lapic_timer::set_deadline(1_000_000);
     mark_current_cpu_ready();
-
-    spawn_local_task(Task::new(idle_task, Priority::Background, None));
+    log::info!("AP {}: creating idle task", cpu_id);
+    spawn_local_task(Task::new(idle_task, 0, Priority::Background, None));
+    log::info!("AP {}: idle task spawned", cpu_id);
 
     x86_64::instructions::interrupts::enable();
 
@@ -160,6 +161,10 @@ extern "sysv64" fn init_ap() -> ! {
 
 fn idle_task() -> ! {
     loop {
+        // Reap zombie kernel tasks (e.g. finished ELF loader tasks).
+        // GuardedStack::drop calls the allocator, which cannot be called from
+        // interrupt context, so we do it here in task context instead.
+        reap_zombie_kernel_tasks();
         x86_64::instructions::hlt();
     }
 }

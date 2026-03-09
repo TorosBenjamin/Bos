@@ -31,6 +31,9 @@ unsafe extern "sysv64" fn entry_point() -> ! {
     let ds_id = ulib::sys_spawn_with_priority(ds_elf_bytes, 0, b"display_server", kernel_api_types::Priority::High as u8);
     ulib::sys_munmap(ds_buf, ds_size);
 
+    // Wait for the display_server ELF to finish loading before transferring ownership.
+    // This blocks (via sleep) until the kernel loader task sets up its address space.
+    ulib::sys_wait_task_ready(ds_id);
     // Transfer display ownership to display_server
     ulib::sys_transfer_display(ds_id);
 

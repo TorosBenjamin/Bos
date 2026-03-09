@@ -7,7 +7,6 @@ use crate::task::task::{
     CTX_RIP, CTX_CS, CTX_RFLAGS, CTX_RSP, CTX_SS,
 };
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
 
 pub static TIMER_INTERRUPT_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -16,45 +15,124 @@ pub static TIMER_INTERRUPT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static TIMER_STACK_ALIGNMENT_OK: AtomicBool = AtomicBool::new(false);
 use crate::interrupt::nmi_handler_state::{NmiHandlerState, NMI_HANDLER_STATES};
 
-pub extern "x86-interrupt" fn page_fault_handler(
-    stack_frame: InterruptStackFrame,
-    error_code: PageFaultErrorCode,
-) {
-    // Read CR2 first — it holds the faulting address and must be captured
-    // before any other exception could overwrite it.
-    let accessed_address = Cr2::read_raw();
+/// Page fault handler with swapgs and SS RPL fix.
+///
+/// The demand-paging success path returns to user mode via iretq. Without the
+/// SS RPL fix, KVM's stripped SS (0x18 instead of 0x1B) would cause a #GP on
+/// iretq. This naked wrapper applies the same fix as the timer/keyboard/mouse
+/// handlers.
+///
+/// CPU pushes error_code before the iretq frame, so we skip it (`add rsp, 8`)
+/// before the iretq epilogue.
+#[unsafe(naked)]
+pub extern "C" fn page_fault_handler() {
+    core::arch::naked_asm!(
+        // Entry: [rsp+0]=error_code, [rsp+8]=rip, [rsp+16]=cs, ...
+        // --- Entry swapgs ---
+        "push r11",
+        "mov r11, [rsp + 24]",   // CS: +8(r11) +8(err) +8(rip) = +24
+        "test r11, 3",
+        "jz 1f",
+        "swapgs",
+        "1:",
+        "pop r11",
 
-    // Check whether the fault originated in ring 3 (user space).
-    // CS bits [1:0] are the RPL; 3 = ring 3.
-    if stack_frame.code_segment.0 & 3 == 3 {
-        // The CPU does NOT automatically swap GS on exception entry (unlike SYSCALL).
-        // Do it manually so get_local() and demand-fill work correctly.
-        unsafe { core::arch::asm!("swapgs", options(nostack, nomem)); }
+        // Save 9 caller-saved registers
+        "push rax",
+        "push rcx",
+        "push rdx",
+        "push rsi",
+        "push rdi",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
+        // Stack: [9 regs=72][error_code][rip][cs][rflags][rsp][ss]
 
-        // Not-present fault (PROTECTION_VIOLATION bit clear) → try demand-fill.
-        if !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
-            if crate::memory::demand::try_demand_fill(accessed_address) {
-                // Success: swap GS back and iretq will retry the faulting instruction.
-                unsafe { core::arch::asm!("swapgs", options(nostack, nomem)); }
-                return;
+        // Read CR2 before anything else can overwrite it
+        "mov rdi, cr2",          // arg1: faulting address
+        "mov rsi, [rsp + 72]",   // arg2: error_code
+        "lea rdx, [rsp + 80]",   // arg3: pointer to iretq frame
+
+        "call {inner}",
+
+        // Inner returned → demand paging succeeded, return to user mode.
+        // (All other paths in inner are -> ! and never reach here.)
+
+        // Restore 8 of 9 saved registers (rax stays for SS fix)
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        // Stack: [rax][error_code][rip][cs][rflags][rsp][ss]
+
+        // Pop rax, skip error_code
+        "pop rax",
+        "add rsp, 8",
+        // Stack: [rip][cs][rflags][rsp][ss]
+
+        // --- SS RPL fix + swapgs epilogue (same as keyboard handler) ---
+        "push rax",
+        // Stack: [rax][rip][cs][rflags][rsp][ss]
+        "mov rax, [rsp + 16]",   // CS
+        "and rax, 3",
+        "cmp rax, 3",
+        "jne 2f",
+        "mov rax, [rsp + 40]",   // SS
+        "or rax, 3",
+        "mov [rsp + 40], rax",
+        "2:",
+        "mov rax, [rsp + 16]",   // CS
+        "test rax, 3",
+        "jz 3f",
+        "swapgs",
+        "3:",
+        "pop rax",
+        "iretq",
+
+        inner = sym page_fault_handler_inner,
+    )
+}
+
+/// Inner page fault handler called from the naked wrapper.
+///
+/// Returns normally only when demand paging succeeds (the wrapper will iretq
+/// back to the faulting instruction). All other paths (`kill_from_exception`
+/// or `panic!`) never return.
+///
+/// # Arguments
+/// * `cr2` — faulting virtual address (from CR2)
+/// * `error_code` — raw page fault error code
+/// * `iretq_frame` — pointer to `[rip, cs, rflags, rsp, ss]` on the stack
+extern "C" fn page_fault_handler_inner(cr2: u64, error_code: u64, iretq_frame: *const u64) {
+    let cs = unsafe { *iretq_frame.add(1) };
+    let rip = unsafe { *iretq_frame };
+
+    if cs & 3 == 3 {
+        // Ring 3 page fault — swapgs already done by wrapper.
+        let pf_code = PageFaultErrorCode::from_bits_truncate(error_code);
+        if !pf_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
+            if crate::memory::demand::try_demand_fill(cr2) {
+                return; // wrapper does SS fix + swapgs + iretq
             }
         }
-
         log::warn!(
             "User task page fault: addr={:#x} ip={:#x} err={:?} — killing task",
-            accessed_address,
-            stack_frame.instruction_pointer.as_u64(),
-            error_code,
+            cr2, rip, pf_code,
         );
         crate::syscall_handlers::kill_from_exception(
             kernel_api_types::FAULT_PAGE_FAULT,
-            accessed_address,
-            stack_frame.instruction_pointer.as_u64(),
+            cr2,
+            rip,
         );
     }
 
     // Kernel-mode fault — check guard pages then panic.
-    let accessed_address = x86_64::VirtAddr::new(accessed_address);
+    let accessed_address = x86_64::VirtAddr::new(cr2);
     if let Some(stack) = STACK_GUARD_PAGES
         .lock()
         .iter()
@@ -69,7 +147,7 @@ pub extern "x86-interrupt" fn page_fault_handler(
         panic!("Stack overflow: {stack:#X?}");
     } else {
         panic!(
-            "Page fault! Stack frame: {stack_frame:#?}. Error code: {error_code:#?}. Accessed address: {accessed_address:?}."
+            "Page fault! addr={accessed_address:?} ip={rip:#x} err={error_code:#x}"
         );
     }
 }

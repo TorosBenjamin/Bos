@@ -153,8 +153,12 @@ pub fn schedule_from_interrupt(cpu: &CpuLocalData) -> *mut CpuContext {
         }
 
         match prev_task.state.load(Ordering::Relaxed) {
-            // Zombie: being cleaned up by scheduler drop
-            // Sleeping: waiter slot holds the only remaining Arc; just drop this one
+            // Zombie: kernel tasks are left in TASK_TABLE by sys_exit so the Arc
+            // count stays ≥2 here — dropping prev_task only goes 2→1, no cleanup.
+            // User Zombie tasks also have had free_address_space_now() called already;
+            // GuardedStack::drop is the only work left, and it is safe for user tasks
+            // (timer fired from user-mode, so the kernel allocator isn't held).
+            // Sleeping: waiter slot holds a reference; dropping this clone is safe.
             TaskState::Zombie | TaskState::Sleeping => {}
             _ => {
                 let prev_prio = Priority::from_u8(prev_task.priority.load(Ordering::Relaxed)) as usize;
@@ -175,7 +179,7 @@ pub fn schedule_from_interrupt(cpu: &CpuLocalData) -> *mut CpuContext {
     drop(next_inner);
 
     // Switch address space if needed
-    let next_cr3 = next_task.cr3;
+    let next_cr3 = next_task.cr3.load(Ordering::Relaxed);
     let (current_cr3_frame, _) = Cr3::read();
     let current_cr3 = current_cr3_frame.start_address().as_u64();
     if next_cr3 != current_cr3 {

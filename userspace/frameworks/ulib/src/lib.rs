@@ -246,6 +246,16 @@ pub fn sys_channel_close(endpoint_id: u64) -> u64 {
     args[6]
 }
 
+/// Block until the target task has finished loading its ELF (leaves Loading state).
+/// Returns 0 on success, 1 if task not found, 2 if load failed.
+pub fn sys_wait_task_ready(task_id: u64) -> u64 {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::WaitTaskReady as u64;
+    args[1] = task_id;
+    syscall(&mut args);
+    args[6]
+}
+
 pub fn sys_transfer_display(new_owner_task_id: u64) -> u64 {
     let mut args = [0u64; 7];
     args[0] = SysCallNumber::TransferDisplay as u64;

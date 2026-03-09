@@ -13,7 +13,7 @@ pub fn init() {
         idt.divide_error.set_handler_fn(divide_error_handler);
         unsafe {
             idt.page_fault
-                .set_handler_fn(page_fault_handler)
+                .set_handler_addr(VirtAddr::new(page_fault_handler as *const() as u64))
                 .set_stack_index(u8::from(IstStackIndexes::Exception).into())
         };
         unsafe {

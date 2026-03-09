@@ -4,7 +4,10 @@ use crate::memory::cpu_local_data::get_local;
 use crate::memory::hhdm_offset::hhdm_offset;
 use crate::memory::physical_memory::{MemoryType, OffsetMappedPhysAddr};
 use crate::memory::vaddr_allocator::OffsetMappedVirtAddr;
-use crate::task::task::{Task, TaskId};
+use crate::task::task::{Task, TaskId, CpuContext};
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::sync::atomic::Ordering;
 use kernel_api_types::Priority;
 use bitflags::bitflags;
 use core::num::NonZero;
@@ -442,6 +445,198 @@ pub fn create_user_task_from_elf_bytes(elf_bytes: &[u8], child_arg: u64, name: &
     let user_ss = gdt.user_data_selector().0;
 
     Ok(Task::new_user(entry_point.get(), rsp, l4_frame, cr3, user_cs, user_ss, user_vmas, child_arg, name, priority, parent_id))
+}
+
+/// Arguments passed via Box to the kernel loader task for async ELF loading.
+pub(crate) struct ElfLoaderArgs {
+    pub stub_task: Arc<Task>,
+    pub elf_bytes: Vec<u8>,
+    pub child_arg: u64,
+    pub name: [u8; 32],
+    pub name_len: u8,
+    pub priority: u8,
+    pub parent_id: TaskId,
+}
+
+/// Fill a Loading stub with a parsed ELF address space.
+///
+/// Performs the same work as `create_user_task_from_elf_bytes` but writes the
+/// results into `stub` instead of creating a new Task.  On success, `stub.cr3`
+/// is set with `Ordering::Release` and `stub.inner` holds the complete context,
+/// page table, and VMAs.
+pub(crate) fn fill_loading_task(
+    stub: &Arc<Task>,
+    elf_bytes: &[u8],
+    child_arg: u64,
+    _name: [u8; 32],
+    _name_len: u8,
+    _priority: u8,
+    _parent_id: TaskId,
+) -> Result<(), SpawnError> {
+    let elf = ElfBytes::<AnyEndian>::minimal_parse(elf_bytes)
+        .map_err(|_| {
+            let magic = if elf_bytes.len() >= 4 { &elf_bytes[..4] } else { elf_bytes };
+            log::warn!("fill_loading_task: ELF parse failed, first 4 bytes: {:02x?}", magic);
+            SpawnError::InvalidElf
+        })?;
+
+    // The loader runs as a kernel task with interrupts ENABLED. physical_memory
+    // is a spinlock; if the timer preempts us while holding it, any same-CPU
+    // syscall that also needs physical_memory (e.g. sys_munmap) will spin with
+    // interrupts disabled → deadlock. Disable interrupts for the lock's lifetime,
+    // matching the old synchronous syscall-handler behavior.
+    let (l4_frame, user_vmas, entry_point, user_cs, user_ss, rsp) =
+        x86_64::instructions::interrupts::without_interrupts(|| -> Result<_, SpawnError> {
+            let mut user_vmas: NoditMap<u64, Interval<u64>, VmaEntry> = NoditMap::new();
+
+            let memory = MEMORY.get().unwrap();
+            let mut physical_memory = memory.physical_memory.lock();
+            let (l4_frame, mut mapper) = unsafe {
+                create_user_page_table(&mut physical_memory)
+            };
+
+            let page_size = Size4KiB::SIZE;
+
+            // Map ELF LOAD segments
+            for segment in elf.segments().ok_or(SpawnError::InvalidElf)? {
+                if ElfSegmentType::try_from(segment.p_type) != Ok(ElfSegmentType::Load) {
+                    continue;
+                }
+
+                if segment.p_offset + segment.p_filesz > elf_bytes.len() as u64 {
+                    return Err(SpawnError::InvalidElf);
+                }
+
+                let start_page: Page<Size4KiB> = Page::containing_address(
+                    VirtAddr::new(segment.p_vaddr),
+                );
+
+                let file_pages_len = if segment.p_filesz > 0 {
+                    (segment.p_vaddr + segment.p_filesz).div_ceil(page_size)
+                        - segment.p_vaddr / page_size
+                } else {
+                    0
+                };
+
+                let elf_flags = ElfSegmentFlags::from(segment);
+                let flags = elf_flags_to_page_table_flags(elf_flags);
+
+                for i in 0..file_pages_len {
+                    let page = start_page + i;
+                    let frame = physical_memory
+                        .allocate_frame_with_type(MemoryType::UsedByUserMode)
+                        .ok_or(SpawnError::OutOfMemory)?;
+
+                    let frame_virt = frame.start_address().offset_mapped().as_mut_ptr::<u8>();
+                    let frame_virt = NonNull::new(frame_virt).unwrap();
+                    unsafe { frame_virt.write_bytes(0, page_size as usize) };
+
+                    let page_vaddr = page.start_address().as_u64();
+                    let seg_file_start = segment.p_vaddr;
+                    let seg_file_end = segment.p_vaddr + segment.p_filesz;
+                    let copy_start_vaddr = page_vaddr.max(seg_file_start);
+                    let copy_end_vaddr = (page_vaddr + page_size).min(seg_file_end);
+
+                    if copy_start_vaddr < copy_end_vaddr {
+                        let offset_in_page = (copy_start_vaddr - page_vaddr) as usize;
+                        let offset_in_file = (segment.p_offset + (copy_start_vaddr - segment.p_vaddr)) as usize;
+                        let count = (copy_end_vaddr - copy_start_vaddr) as usize;
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(
+                                elf_bytes.as_ptr().add(offset_in_file),
+                                frame_virt.as_ptr().add(offset_in_page),
+                                count,
+                            );
+                        }
+                    }
+
+                    let mut frame_allocator = physical_memory.get_user_mode_frame_allocator();
+                    unsafe { mapper.map_to(page, frame, flags, &mut frame_allocator) }
+                        .map_err(|_| SpawnError::OutOfMemory)?
+                        .ignore();
+                }
+
+                let mut total_pages = file_pages_len;
+
+                if segment.p_memsz > segment.p_filesz {
+                    let extra_pages_len = (segment.p_vaddr + segment.p_memsz)
+                        .div_ceil(page_size)
+                        - (segment.p_vaddr + segment.p_filesz).div_ceil(page_size);
+                    let bss_start_page = start_page + file_pages_len;
+                    for i in 0..extra_pages_len {
+                        let page = bss_start_page + i;
+                        let frame = physical_memory
+                            .allocate_frame_with_type(MemoryType::UsedByUserMode)
+                            .ok_or(SpawnError::OutOfMemory)?;
+                        let frame_ptr =
+                            NonNull::new(frame.start_address().offset_mapped().as_mut_ptr::<u8>()).unwrap();
+                        unsafe { frame_ptr.write_bytes(0, page_size as usize) };
+                        let mut frame_allocator = physical_memory.get_user_mode_frame_allocator();
+                        unsafe { mapper.map_to(page, frame, flags, &mut frame_allocator) }
+                            .map_err(|_| SpawnError::OutOfMemory)?
+                            .ignore();
+                    }
+                    total_pages += extra_pages_len;
+                }
+
+                if total_pages > 0 {
+                    let seg_start = start_page.start_address().as_u64();
+                    let seg_end = seg_start + total_pages * page_size;
+                    user_vmas
+                        .insert_strict(
+                            ie(seg_start, seg_end),
+                            VmaEntry { flags, backing: VmaBacking::EagerlyMapped },
+                        )
+                        .expect("ELF segment vaddr overlap");
+                }
+            }
+
+            let entry_point = NonZero::new(elf.ehdr.e_entry).ok_or(SpawnError::InvalidElf)?;
+
+            let rsp = (crate::consts::LOWER_HALF_END + 1) - 0x1000;
+            {
+                let stack_size: u64 = 64 * 0x400;
+                let pages_len = stack_size.div_ceil(page_size);
+                let stack_start_vaddr = rsp - pages_len * page_size;
+                let stack_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE
+                    | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
+                user_vmas
+                    .insert_strict(
+                        ie(stack_start_vaddr, stack_start_vaddr + pages_len * page_size),
+                        VmaEntry { flags: stack_flags, backing: VmaBacking::Anonymous },
+                    )
+                    .expect("user stack vaddr overlap");
+            }
+
+            drop(physical_memory);
+
+            let local = get_local();
+            let gdt = local.gdt.get().unwrap();
+            let user_cs = gdt.user_code_selector().0;
+            let user_ss = gdt.user_data_selector().0;
+
+            Ok((l4_frame, user_vmas, entry_point, user_cs, user_ss, rsp))
+        })?;
+
+    // Fill the stub's inner (context, page table, VMAs).
+    // kernel_stack and kernel_stack_top were already set by new_loading().
+    {
+        let mut inner = stub.inner.lock();
+        inner.context = CpuContext {
+            r15: 0, r14: 0, r13: 0, r12: 0, r11: 0, r10: 0, r9: 0, r8: 0,
+            rdi: child_arg, rsi: 0, rbp: 0, rbx: 0, rdx: 0, rcx: 0, rax: 0,
+            rip: entry_point.get(),
+            cs: user_cs as u64,
+            rflags: 0x200,
+            rsp,
+            ss: user_ss as u64,
+        };
+        inner.user_page_table = Some(l4_frame);
+        inner.user_vmas = user_vmas;
+    }
+    stub.cr3.store(l4_frame.start_address().as_u64(), Ordering::Release);
+
+    Ok(())
 }
 
 bitflags! {
