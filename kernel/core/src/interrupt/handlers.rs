@@ -17,7 +17,7 @@ pub static TIMER_STACK_ALIGNMENT_OK: AtomicBool = AtomicBool::new(false);
 use crate::interrupt::nmi_handler_state::{NmiHandlerState, NMI_HANDLER_STATES};
 
 pub extern "x86-interrupt" fn page_fault_handler(
-    stack_frame: InterruptStackFrame,
+    mut stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
     // Read CR2 first — it holds the faulting address and must be captured
@@ -34,6 +34,14 @@ pub extern "x86-interrupt" fn page_fault_handler(
         // Not-present fault (PROTECTION_VIOLATION bit clear) → try demand-fill.
         if !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
             if crate::memory::demand::try_demand_fill(accessed_address) {
+                // Fix SS RPL (KVM may strip RPL bits from the pushed SS on ring-3 entry).
+                unsafe {
+                    stack_frame.as_mut().update(|f| {
+                        if f.stack_segment.0 & 3 == 0 {
+                            f.stack_segment.0 |= 3;
+                        }
+                    });
+                }
                 // Success: swap GS back and iretq will retry the faulting instruction.
                 unsafe { core::arch::asm!("swapgs", options(nostack, nomem)); }
                 return;
@@ -131,8 +139,15 @@ pub extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFr
     panic!("Kernel divide by zero! Stack frame: {stack_frame:#?}");
 }
 
-pub extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
+pub extern "x86-interrupt" fn breakpoint_handler(mut stack_frame: InterruptStackFrame) {
     log::info!("Breakpoint! Stack frame: {stack_frame:#?}");
+    if stack_frame.code_segment.0 & 3 == 3 {
+        unsafe {
+            stack_frame.as_mut().update(|f| {
+                if f.stack_segment.0 & 3 == 0 { f.stack_segment.0 |= 3; }
+            });
+        }
+    }
 }
 
 pub extern "x86-interrupt" fn nmi_handler(_stack_frame: InterruptStackFrame) {

@@ -44,6 +44,9 @@ fn main() {
         "file={disk_img},if=ide,format=raw,media=disk"
     ));
 
+    qemu.arg("-device").arg("e1000,netdev=net0");
+    qemu.arg("-netdev").arg("user,id=net0");
+
     let exit_status = qemu.status().expect("Failed to run QEMU");
     process::exit(exit_status.code().unwrap_or(1));
 }

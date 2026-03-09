@@ -47,6 +47,10 @@ pub enum SysCallNumber {
     Mprotect       = 36,
     Mremap         = 37,
     SetFaultEp     = 38,
+    PciConfigRead  = 39,
+    PciConfigWrite = 40,
+    MapPciBar      = 41,
+    AllocDma       = 42,
 }
 
 /// High bit set in exit_code means the task was killed by a hardware fault.
