@@ -285,15 +285,26 @@ pub fn sys_spawn(elf_ptr: u64, elf_len: u64, child_arg: u64, name_ptr: u64, name
     child_id.to_u64()
 }
 
-/// Kernel loader task: parses an ELF and fills a Loading stub asynchronously.
+/// Naked trampoline for the kernel ELF loader task.
 ///
-/// Receives `args_ptr` (a `Box<ElfLoaderArgs>` as u64) via `rdi`. On success,
-/// transitions the stub to Ready. On failure, marks it Zombie and wakes any
-/// waitpid waiter.
+/// `Task::new` stores the args pointer in `CpuContext.rdi` and the entry address
+/// in `r15`. The task trampoline does `call r15`, preserving `rdi`. This naked
+/// function has no compiler-generated prologue, so `rdi` is guaranteed untouched
+/// when we jump to the inner function which receives it as its first SysV argument.
+#[unsafe(naked)]
 fn elf_loader_entry() -> ! {
-    // Read the args pointer from rdi (set in CpuContext.rdi by Task::new)
-    let args_ptr: u64;
-    unsafe { core::arch::asm!("mov {}, rdi", out(reg) args_ptr, options(nomem, nostack)); }
+    core::arch::naked_asm!(
+        "jmp {inner}",
+        inner = sym elf_loader_entry_inner,
+    )
+}
+
+/// Inner function: parses an ELF and fills a Loading stub asynchronously.
+///
+/// Receives `args_ptr` (a `Box<ElfLoaderArgs>` as u64) via the first SysV
+/// argument register (`rdi`). On success, transitions the stub to Ready.
+/// On failure, marks it Zombie and wakes any waitpid waiter.
+extern "sysv64" fn elf_loader_entry_inner(args_ptr: u64) -> ! {
     let args = unsafe { *Box::from_raw(args_ptr as *mut ElfLoaderArgs) };
     let stub = args.stub_task.clone();
 
@@ -356,15 +367,22 @@ pub fn sys_wait_task_ready(task_id: u64, _: u64, _: u64, _: u64, _: u64, _: u64)
 
         // Still Loading: sleep on ready_waiter until the loader wakes us.
         if let Some((self_task, cpu_id)) = current_task_and_cpu() {
-            *target.ready_waiter.lock() = Some((self_task.clone(), cpu_id));
-            // Double-check after registering: if the loader finished between our
-            // first state check and here, it stored state=Ready before checking
-            // ready_waiter, so we'd miss the wakeup. Clear and loop immediately.
+            {
+                let mut slot = target.ready_waiter.lock();
+                // Set Sleeping BEFORE storing the waiter so that a concurrent
+                // spawn_task_activate sees Sleeping when it takes the slot.
+                self_task.state.store(TaskState::Sleeping, Ordering::Release);
+                *slot = Some((self_task.clone(), cpu_id));
+            }
+            // Re-check: the loader may have finished between the first state
+            // check and waiter registration. spawn_task_activate acquires the
+            // same lock, so if it ran while we held it, it couldn't take the
+            // waiter yet. If it ran after we released, it already woke us.
             if target.state.load(Ordering::Acquire) != TaskState::Loading {
+                self_task.state.store(TaskState::Ready, Ordering::Release);
                 *target.ready_waiter.lock() = None;
                 continue;
             }
-            self_task.state.store(TaskState::Sleeping, Ordering::Release);
         }
 
         x86_64::instructions::interrupts::enable();
@@ -488,10 +506,22 @@ pub fn sys_waitpid(target_id: u64, exit_code_out_ptr: u64, _: u64, _: u64, _: u6
             return 0;
         }
 
-        // Target still alive: register as exit waiter and sleep
+        // Target still alive: register as exit waiter and sleep.
+        // Set Sleeping BEFORE storing the waiter so that a concurrent
+        // sys_exit wake sees Sleeping when it takes the slot.
         if let Some((self_task, cpu_id)) = current_task_and_cpu() {
-            *target.exit_waiter.lock() = Some((self_task.clone(), cpu_id));
-            self_task.state.store(TaskState::Sleeping, Ordering::Release);
+            {
+                let mut slot = target.exit_waiter.lock();
+                self_task.state.store(TaskState::Sleeping, Ordering::Release);
+                *slot = Some((self_task.clone(), cpu_id));
+            }
+            // Re-check: target may have exited between the state check
+            // and waiter registration.
+            if target.state.load(Ordering::Acquire) == TaskState::Zombie {
+                self_task.state.store(TaskState::Ready, Ordering::Release);
+                *target.exit_waiter.lock() = None;
+                continue;
+            }
         }
 
         x86_64::instructions::interrupts::enable();
