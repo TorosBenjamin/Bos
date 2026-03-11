@@ -1,12 +1,17 @@
 use linked_list_allocator::LockedHeap;
 use kernel_api_types::{MMAP_WRITE, SVC_ERR_NOT_FOUND};
-use ulib::window::{Window, WindowEvent};
+use ulib::window::{Window, WindowEvent, KeyEvent};
 use crate::App;
 
 static mut CHILD_REQUEST: Option<(u32, u32)> = None;
+static mut REDRAW_REQUESTED: bool = false;
 
 pub(crate) fn request_open_child(w: u32, h: u32) {
     unsafe { core::ptr::addr_of_mut!(CHILD_REQUEST).write(Some((w, h))); }
+}
+
+pub(crate) fn request_redraw_impl() {
+    unsafe { core::ptr::addr_of_mut!(REDRAW_REQUESTED).write(true); }
 }
 
 struct ChildState {
@@ -59,6 +64,7 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
     let mut cursor_x: f32 = (window.width() / 2) as f32;
     let mut cursor_y: f32 = (window.height() / 2) as f32;
     let mut click: Option<(f32, f32)> = None;
+    let mut key: Option<KeyEvent> = None;
 
     let mut child: Option<ChildState> = None;
 
@@ -90,9 +96,23 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
                     needs_redraw = true;
                     frame_presented = true;
                 }
+                WindowEvent::KeyPress(ev) => {
+                    key = Some(ev);
+                    needs_redraw = true;
+                    frame_presented = true;
+                }
                 _ => {}
             }
         }
+
+        // Let the app signal it needs another render (e.g. after a state transition).
+        let redraw_req = unsafe {
+            let ptr = core::ptr::addr_of_mut!(REDRAW_REQUESTED);
+            let v = ptr.read();
+            ptr.write(false);
+            v
+        };
+        if redraw_req { needs_redraw = true; }
 
         if frame_presented && needs_redraw {
             frame_presented = false;
@@ -103,7 +123,7 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
             let info = *window.display_info();
             let pixels = window.pixels_mut();
 
-            let ctx = stub_egui::Context::new(pixels, w, h, info, cursor_x, cursor_y, click.take());
+            let ctx = stub_egui::Context::new(pixels, w, h, info, cursor_x, cursor_y, click.take(), key.take());
             app.update(&ctx);
 
             window.mark_dirty_all();
@@ -175,7 +195,7 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
 
                 let child_ctx = stub_egui::Context::new(
                     pixels, cw, ch, info,
-                    cs.cursor_x, cs.cursor_y, cs.click.take(),
+                    cs.cursor_x, cs.cursor_y, cs.click.take(), None,
                 );
                 app.child_update(&child_ctx);
 

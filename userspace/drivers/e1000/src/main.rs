@@ -6,7 +6,7 @@ mod driver;
 mod regs;
 
 use driver::{E1000, MAX_FRAME};
-use regs::{MSG_SUBSCRIBE, MSG_TX_PACKET};
+use regs::{MSG_SUBSCRIBE, MSG_TX_PACKET, MSG_GET_MAC};
 use ulib::{sys_channel_create, sys_register_service, sys_try_channel_recv, sys_try_channel_send, sys_yield};
 use kernel_api_types::{IPC_OK, IPC_ERR_PEER_CLOSED};
 
@@ -101,6 +101,13 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                     if !added {
                         ulib::sys_debug_log(ep, 0xE1_0001);
                     }
+                }
+                MSG_GET_MAC if n >= 9 => {
+                    let reply_ep = u64::from_le_bytes([
+                        msg_buf[1], msg_buf[2], msg_buf[3], msg_buf[4],
+                        msg_buf[5], msg_buf[6], msg_buf[7], msg_buf[8],
+                    ]);
+                    sys_try_channel_send(reply_ep, &driver.mac);
                 }
                 _ => {} // unknown or malformed message — ignore
             }

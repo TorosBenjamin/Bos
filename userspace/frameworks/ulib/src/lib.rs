@@ -2,6 +2,7 @@
 
 pub mod display;
 pub mod fs;
+pub mod net;
 pub mod window;
 pub mod test_framework;
 

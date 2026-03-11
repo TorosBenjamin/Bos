@@ -538,6 +538,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "boser"
+version = "0.1.0"
+dependencies = [
+ "bos_egui",
+ "http_client",
+ "ulib",
+]
+
+[[package]]
 name = "btree_monstrousity"
 version = "0.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1720,6 +1729,21 @@ name = "hexf-parse"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
+
+[[package]]
+name = "http_client"
+version = "0.1.0"
+dependencies = [
+ "httparse",
+ "kernel_api_types",
+ "ulib",
+]
+
+[[package]]
+name = "httparse"
+version = "1.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "iana-time-zone"
@@ -2969,6 +2993,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 name = "runner"
 version = "0.1.0"
 dependencies = [
+ "boser",
  "display_server",
  "e1000",
  "fatfs",

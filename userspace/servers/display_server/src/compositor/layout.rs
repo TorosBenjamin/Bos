@@ -1,3 +1,4 @@
+use core::f32::consts::GOLDEN_RATIO;
 use super::{Compositor, MAX_WINDOWS, MIN_RATIO};
 use kernel_api_types::window::{ConfigureEvent, WindowEventType, WindowId};
 

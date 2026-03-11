@@ -1,0 +1,16 @@
+[package]
+name = "boser"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+bos_egui     = { path = "../../frameworks/bos_egui" }
+ulib         = { path = "../../frameworks/ulib" }
+http_client  = { path = "../../libs/http_client" }
+
+[[bin]]
+name = "boser"
+path = "src/main.rs"
+test = false
+bench = false

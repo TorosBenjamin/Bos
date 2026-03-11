@@ -180,10 +180,15 @@ pub fn create_user_task_from_elf(priority: Priority, parent_id: Option<TaskId>) 
                 });
             }
 
-            // We need to allocate, zero, and map additional frames
+            // We need to allocate, zero, and map additional frames.
+            // bss_start_page = start_page + file_pages_len; we need pages from
+            // that page up to (but not including) ceil((vaddr+memsz)/4K).
+            // Using ceil((vaddr+filesz)/4K) as the subtrahend is wrong when
+            // filesz=0 and vaddr is not page-aligned (ceil > floor = start_page).
             let extra_pages_len = (segment.p_vaddr + segment.p_memsz)
                 .div_ceil(page_size)
-                - (segment.p_vaddr + segment.p_filesz).div_ceil(page_size);
+                - start_page.start_address().as_u64() / page_size
+                - file_pages_len;
             let extra_start_page = start_page + file_pages_len;
             for i in 0..extra_pages_len {
                 let page = extra_start_page + i;
@@ -379,11 +384,13 @@ pub fn create_user_task_from_elf_bytes(elf_bytes: &[u8], child_arg: u64, name: &
 
         let mut total_pages = file_pages_len;
 
-        // Handle BSS (p_memsz > p_filesz): allocate zeroed extra pages
+        // Handle BSS (p_memsz > p_filesz): allocate zeroed extra pages.
+        // Same fix as above: use floor(vaddr/4K)+file_pages_len, not ceil((vaddr+filesz)/4K).
         if segment.p_memsz > segment.p_filesz {
             let extra_pages_len = (segment.p_vaddr + segment.p_memsz)
                 .div_ceil(page_size)
-                - (segment.p_vaddr + segment.p_filesz).div_ceil(page_size);
+                - start_page.start_address().as_u64() / page_size
+                - file_pages_len;
             let bss_start_page = start_page + file_pages_len;
             for i in 0..extra_pages_len {
                 let page = bss_start_page + i;

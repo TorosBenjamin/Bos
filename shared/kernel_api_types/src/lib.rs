@@ -5,6 +5,7 @@ extern crate std;
 
 pub mod fs;
 pub mod graphics;
+pub mod net;
 pub mod window;
 
 #[repr(u64)]

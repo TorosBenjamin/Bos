@@ -16,6 +16,7 @@ use embedded_graphics::{
 };
 
 use kernel_api_types::graphics::DisplayInfo;
+pub use kernel_api_types::{KeyEvent, KeyEventType};
 use super::pixel_draw::PixelBuf;
 
 // ── Colours ──────────────────────────────────────────────────────────────────
@@ -42,6 +43,8 @@ struct Inner {
     cursor_y: f32,
     /// Mouse click coordinates this frame (window-relative), if any.
     click: Option<(f32, f32)>,
+    /// Key event this frame, if any.
+    key: Option<KeyEvent>,
     /// Current vertical drawing position for the layout pass.
     draw_y: i32,
     /// Left margin.
@@ -67,6 +70,7 @@ impl Context {
         cursor_x: f32,
         cursor_y: f32,
         click: Option<(f32, f32)>,
+        key: Option<KeyEvent>,
     ) -> Self {
         // Clear to background
         let bg = info.build_pixel(BG.r(), BG.g(), BG.b());
@@ -81,6 +85,7 @@ impl Context {
                 cursor_x,
                 cursor_y,
                 click,
+                key,
                 draw_y: 0,
                 margin: 12,
                 draw_x: 0,
@@ -88,6 +93,18 @@ impl Context {
                 horiz_max_h: 0,
             }),
         }
+    }
+
+    /// Returns `true` if a key of the given type was pressed this frame.
+    pub fn key_pressed(&self, code: KeyEventType) -> bool {
+        self.inner.borrow().key
+            .map_or(false, |k| k.event_type == code && k.pressed)
+    }
+
+    /// Returns the window size in pixels.
+    pub fn screen_size(&self) -> (u32, u32) {
+        let inner = self.inner.borrow();
+        (inner.width, inner.height)
     }
 
     fn pixels_mut<'a>(&'a self, inner: &'a mut Inner) -> PixelBuf<'a> {

@@ -12,6 +12,7 @@ use kernel_api_types::IPC_OK;
 
 pub const MSG_TX_PACKET: u8 = 1;
 pub const MSG_SUBSCRIBE: u8 = 2;
+pub const MSG_GET_MAC:   u8 = 3;
 
 /// Maximum Ethernet frame size (header + payload, no FCS).
 const MTU: usize = 1514;

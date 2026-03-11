@@ -1,0 +1,10 @@
+[package]
+name = "http_client"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ulib             = { path = "../../frameworks/ulib" }
+kernel_api_types = { path = "../../../shared/kernel_api_types" }
+httparse         = { version = "1", default-features = false }

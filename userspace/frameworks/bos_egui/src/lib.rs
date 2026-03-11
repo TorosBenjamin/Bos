@@ -21,6 +21,15 @@ pub trait App {
     fn child_update(&mut self, _ctx: &egui::Context) {}
 }
 
+/// Ask the run loop to render another frame even if no input event arrived.
+///
+/// Call this from within `App::update` when you change state that requires a
+/// follow-up render (e.g. transitioning from "Idle" to "WillFetch").
+#[cfg(not(target_os = "linux"))]
+pub fn request_redraw() { bos::request_redraw_impl(); }
+#[cfg(target_os = "linux")]
+pub fn request_redraw() {}
+
 /// Request a new floating OS window to be opened.
 ///
 /// On Bos the next run-loop iteration will create a compositor-managed floating window

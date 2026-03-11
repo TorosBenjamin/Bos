@@ -69,7 +69,7 @@ unsafe extern "sysv64" fn entry_point() -> ! {
         // Normal mode: spawn launcher first (hidden, toggled by Super+Space), then regular apps.
         for (path, name) in [
             ("LAUNCH.ELF", b"launcher" as &[u8]),
-            ("HELLO.ELF",  b"hello_egui"),
+            ("BOSER.ELF",  b"boser"),
         ] {
             if let Some((buf_id, size)) = ulib::fs::fs_map_file(fs_ep, path) {
                 let ptr = ulib::sys_map_shared_buf(buf_id);

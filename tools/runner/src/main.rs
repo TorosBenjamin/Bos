@@ -1,8 +1,46 @@
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::process::Command;
 use std::{env, process};
 
+/// Serve a static HTML page over HTTP/1.0 on 127.0.0.1:8000.
+/// The guest reaches this via SLIRP at 10.0.2.2:8000.
+fn spawn_stub_http_server() {
+    std::thread::spawn(|| {
+        let Ok(listener) = TcpListener::bind("127.0.0.1:8000") else { return };
+        loop {
+            let Ok((mut stream, _)) = listener.accept() else { continue };
+            std::thread::spawn(move || {
+                // Read (and discard) the HTTP request.
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+
+                const BODY: &[u8] = b"<html><head><title>Bos OS</title></head><body>\
+<h1>Bos OS</h1>\
+<p>You are browsing the web from within a custom operating system!</p>\
+<ul>\
+<li>App: <b>boser</b> (Bos text browser)</li>\
+<li>HTTP client: <b>http_client</b> (no_std, HTTP/1.0)</li>\
+<li>TCP/IP stack: <b>smoltcp</b> inside <b>net_server</b></li>\
+<li>NIC driver: <b>e1000</b> (Intel 82540EM, DMA ring)</li>\
+<li>Networking: <b>QEMU user-mode (SLIRP)</b></li>\
+</ul>\
+<p>This page is served by the runner process on the host machine.</p>\
+</body></html>";
+                let header = format!(
+                    "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    BODY.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(BODY);
+            });
+        }
+    });
+}
+
 fn main() {
+    spawn_stub_http_server();
     let ovmf_code = "/usr/share/OVMF/OVMF_CODE_4M.fd";
     let ovmf_vars_readonly = "/usr/share/OVMF/OVMF_VARS_4M.fd";
 

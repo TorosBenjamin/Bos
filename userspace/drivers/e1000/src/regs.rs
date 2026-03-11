@@ -48,3 +48,4 @@ pub const DESC_DD: u8 = 1 << 0; // Descriptor Done
 // IPC message type bytes
 pub const MSG_TX_PACKET:  u8 = 1; // [type][len: u16 LE][data: len bytes]
 pub const MSG_SUBSCRIBE:  u8 = 2; // [type][send_ep: u64 LE]
+pub const MSG_GET_MAC:    u8 = 3; // [type][reply_ep: u64 LE]  → [mac: 6 bytes]
