@@ -217,6 +217,10 @@ pub fn sys_wait_for_event(
 
         // ── Step 4: sleep ─────────────────────────────────────────────────────
         task.state.store(TaskState::Sleeping, Release);
+        // Clear in_syscall so the timer handler saves kernel state (normal
+        // path) instead of returning directly to user-mode (syscall-yield
+        // path). This lets the retry loop resume after re-scheduling.
+        get_local().in_syscall_handler.store(0, Relaxed);
         x86_64::instructions::interrupts::enable();
         x86_64::instructions::hlt();
         x86_64::instructions::interrupts::disable();

@@ -96,7 +96,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
 
     let mut device = E1000Client::new(e1000_ep, rx_notify_recv_ep);
 
-    // Query the real MAC from the e1000 driver.
+    // Query the real MAC from the e1000 driver via blocking channel recv.
     let mac = {
         let (reply_send_ep, reply_recv_ep) = sys_channel_create(1);
         let mut req = [0u8; 9];
