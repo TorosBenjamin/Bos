@@ -39,10 +39,35 @@ fn spawn_stub_http_server() {
     });
 }
 
+fn find_ovmf() -> (String, String) {
+    const CANDIDATES: &[(&str, &str)] = &[
+        // Arch Linux (edk2-ovmf)
+        ("/usr/share/edk2/x64/OVMF_CODE.4m.fd",    "/usr/share/edk2/x64/OVMF_VARS.4m.fd"),
+        // Ubuntu/Debian (ovmf)
+        ("/usr/share/OVMF/OVMF_CODE_4M.fd",         "/usr/share/OVMF/OVMF_VARS_4M.fd"),
+        ("/usr/share/OVMF/OVMF_CODE.fd",            "/usr/share/OVMF/OVMF_VARS.fd"),
+        // Fedora/RHEL (edk2-ovmf)
+        ("/usr/share/edk2/ovmf/OVMF_CODE.fd",       "/usr/share/edk2/ovmf/OVMF_VARS.fd"),
+        // macOS homebrew (qemu)
+        ("/opt/homebrew/share/qemu/edk2-x86_64-code.fd", "/opt/homebrew/share/qemu/edk2-x86_64-vars.fd"),
+    ];
+    for &(code, vars) in CANDIDATES {
+        if std::path::Path::new(code).exists() && std::path::Path::new(vars).exists() {
+            return (code.to_string(), vars.to_string());
+        }
+    }
+    panic!(
+        "OVMF firmware not found. Install it (e.g. `pacman -S edk2-ovmf` or `apt install ovmf`) \
+         or set OVMF_CODE / OVMF_VARS environment variables."
+    );
+}
+
 fn main() {
     spawn_stub_http_server();
-    let ovmf_code = "/usr/share/OVMF/OVMF_CODE_4M.fd";
-    let ovmf_vars_readonly = "/usr/share/OVMF/OVMF_VARS_4M.fd";
+    let (ovmf_code, ovmf_vars_readonly) = (
+        env::var("OVMF_CODE").unwrap_or_else(|_| find_ovmf().0),
+        env::var("OVMF_VARS").unwrap_or_else(|_| find_ovmf().1),
+    );
 
     // Create a local path for the vars file so we can write to it
     let out_dir = env::current_dir().unwrap().join("target");
@@ -55,8 +80,11 @@ fn main() {
 
     let number_of_cpus = 5;
     let mut qemu = Command::new("qemu-system-x86_64");
+    // Force GTK to use XWayland so QEMU gets proper relative PS/2 mouse events.
+    qemu.env("GDK_BACKEND", "x11");
 
     qemu.arg("-enable-kvm");
+    qemu.arg("-display").arg("gtk");
     qemu.arg("-cdrom").arg(env!("ISO"));
 
     // Unit 0: The Code (Read-Only is fine)

@@ -53,8 +53,19 @@ fn main() {
 
     let out_dir    = PathBuf::from(env::var("OUT_DIR").unwrap());
     let runner_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let limine_dir = env::var("LIMINE_PATH").map(PathBuf::from)
-        .expect("LIMINE_PATH not set — point it at the directory containing BOOTX64.EFI etc.");
+    let limine_dir = env::var("LIMINE_PATH").map(PathBuf::from).unwrap_or_else(|_| {
+        // Default: limine git submodule at the workspace root (v10.x-binary branch).
+        let workspace_root = runner_dir.ancestors().nth(2)
+            .expect("could not determine workspace root")
+            .to_path_buf();
+        let default = workspace_root.join("limine");
+        assert!(
+            default.join("BOOTX64.EFI").exists(),
+            "LIMINE_PATH not set and limine submodule not initialized.\n\
+             Run: git submodule update --init"
+        );
+        default
+    });
 
     // ── ISO root ──────────────────────────────────────────────────────────────
     let iso_dir = out_dir.join("iso_root");

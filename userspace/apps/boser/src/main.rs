@@ -8,7 +8,7 @@ use bos_egui::{egui, egui::KeyEventType, App};
 
 // 10.0.2.2 = QEMU SLIRP gateway; the runner spawns an HTTP stub server on
 // the host at 127.0.0.1:8000, reachable from the guest at 10.0.2.2:8000.
-const URL: &str = "https://vms.gesztenye.eu/";
+const URL: &str = "https://wkipedia.org/";
 
 // ── Panic / entry ─────────────────────────────────────────────────────────────
 
