@@ -40,6 +40,7 @@ impl LayoutDir {
 /// Recursively compute golden-spiral (4-state-split) positions.
 /// `windows[0]` takes `ratios[0]` fraction of the rect, on the side determined
 /// by `dir`. The rest recurse with `dir.next_spiral()`.
+#[allow(clippy::too_many_arguments)]
 fn dwindle_recurse(
     windows:   &[WindowId],
     ratios:    &[f32],
@@ -132,10 +133,7 @@ impl Compositor {
         let mut ah = self.display_info.height;
 
         for slot in &self.windows {
-            if let Some(w) = slot {
-                if !w.is_panel {
-                    continue;
-                }
+            if let Some(w) = slot && w.is_panel {
                 match w.anchor {
                     0 => { // Top
                         let zone = w.exclusive_zone.min(ah);
@@ -265,9 +263,8 @@ impl Compositor {
             }
         }
 
-        for j in 0..n_pending {
-            let (ep, ref ev) = pending[j];
-            super::send_event(ep, ev);
+        for (ep, ev) in &pending[..n_pending] {
+            super::send_event(*ep, ev);
         }
 
         self.mark_full_redraw();

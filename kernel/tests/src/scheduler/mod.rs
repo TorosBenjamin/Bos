@@ -87,7 +87,7 @@ pub fn test_kernel_tasks_run() -> TestResult {
 }
 
 pub fn simple_task_creation() -> TestResult {
-    let task = Task::new(|| loop {}, 0, Priority::Normal, None);
+    let task = Task::new(|| loop { core::hint::spin_loop() }, 0, Priority::Normal, None);
     if task.run_state() == TaskState::Initializing {
         TestResult::Ok
     } else {

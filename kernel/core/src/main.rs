@@ -31,7 +31,7 @@ unsafe extern "C" fn kernel_main() -> ! {
 
     // Enable display
     let frame_buffer = FRAME_BUFFER_REQUEST.get_response().unwrap();
-    display::init(&frame_buffer);
+    display::init(frame_buffer);
 
     // Enable logger
     logger::init().unwrap();
@@ -181,16 +181,14 @@ fn rust_panic(_info: &core::panic::PanicInfo) -> ! {
     if !DID_PANIC.swap(true, Ordering::Relaxed) {
         // Try to identify which task was running when we panicked.
         // Use try_lock() to avoid deadlocking if the panic happened inside a locked section.
-        if let Some(cpu) = kernel::memory::cpu_local_data::try_get_local() {
-            if let Some(rq_mutex) = cpu.run_queue.get() {
-                if let Some(rq) = rq_mutex.try_lock() {
-                    if let Some(task) = &rq.current_task {
-                        let name = core::str::from_utf8(&task.name[..task.name_len as usize])
-                            .unwrap_or("?");
-                        log::error!("panic in task #{} \"{}\"", task.id.to_u64(), name);
-                    }
-                }
-            }
+        if let Some(cpu) = kernel::memory::cpu_local_data::try_get_local()
+            && let Some(rq_mutex) = cpu.run_queue.get()
+            && let Some(rq) = rq_mutex.try_lock()
+            && let Some(task) = &rq.current_task
+        {
+            let name = core::str::from_utf8(&task.name[..task.name_len as usize])
+                .unwrap_or("?");
+            log::error!("panic in task #{} \"{}\"", task.id.to_u64(), name);
         }
         log::error!("{_info}");
 

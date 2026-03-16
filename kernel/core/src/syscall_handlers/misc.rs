@@ -15,7 +15,7 @@ pub fn sys_get_time_ns(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
 /// Convention: 0x10 = all tests passed (exit 33), 0x11 = any failure (exit 35).
 pub fn sys_shutdown(exit_code: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
     unsafe { x86::io::outb(0xf4, exit_code as u8) }
-    loop {}
+    crate::hlt_loop();
 }
 use crate::memory::cpu_local_data::get_local;
 use crate::task::task::TaskState;

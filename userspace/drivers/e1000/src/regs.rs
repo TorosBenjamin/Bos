@@ -1,7 +1,7 @@
 // e1000 (82540EM) MMIO register offsets
 pub const CTRL:     u32 = 0x0000;
-pub const STATUS:   u32 = 0x0008;
-pub const EERD:     u32 = 0x0014;
+pub const _STATUS:  u32 = 0x0008;
+pub const _EERD:    u32 = 0x0014;
 pub const ICR:      u32 = 0x00C0;
 pub const IMC:      u32 = 0x00D8;
 pub const RCTL:     u32 = 0x0100;

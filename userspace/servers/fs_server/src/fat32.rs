@@ -1,10 +1,10 @@
-/// Minimal read/write FAT32 driver.
-///
-/// Assumes the FAT32 volume starts at LBA 0 (raw image, no MBR).
-/// Short filename (8.3) only — sufficient for app binaries.
-///
-/// All disk I/O is abstracted behind `BlockDev`, making the module
-/// unit-testable with an in-memory mock.
+//! Minimal read/write FAT32 driver.
+//!
+//! Assumes the FAT32 volume starts at LBA 0 (raw image, no MBR).
+//! Short filename (8.3) only — sufficient for app binaries.
+//!
+//! All disk I/O is abstracted behind `BlockDev`, making the module
+//! unit-testable with an in-memory mock.
 
 // ─── Block device abstraction ──────────────────────────────────────────────────
 
@@ -248,7 +248,10 @@ impl<D: BlockDev> Fat32<D> {
     }
 
     /// Read a file's data into `buf`. Returns bytes read.
-    pub fn read_file(&mut self, start_cluster: u32, size: u32, buf: *mut u8) -> usize {
+    ///
+    /// # Safety
+    /// `buf` must point to at least `size` bytes of writable memory.
+    pub unsafe fn read_file(&mut self, start_cluster: u32, size: u32, buf: *mut u8) -> usize {
         let mut cluster = start_cluster;
         let mut written = 0usize;
         let total = size as usize;
@@ -686,7 +689,7 @@ mod tests {
         let mut fs = Fat32::mount(disk).unwrap();
         let entry = fs.lookup("TEST.TXT").unwrap();
         let mut buf = [0u8; 64];
-        let n = fs.read_file(entry.cluster, entry.size, buf.as_mut_ptr());
+        let n = unsafe { fs.read_file(entry.cluster, entry.size, buf.as_mut_ptr()) };
         assert_eq!(n, content.len());
         assert_eq!(&buf[..n], content);
     }
@@ -699,7 +702,7 @@ mod tests {
         let mut fs = Fat32::mount(disk).unwrap();
         let entry = fs.lookup("BIG.BIN").unwrap();
         let mut buf = vec![0u8; content.len()];
-        let n = fs.read_file(entry.cluster, entry.size, buf.as_mut_ptr());
+        let n = unsafe { fs.read_file(entry.cluster, entry.size, buf.as_mut_ptr()) };
         assert_eq!(n, content.len());
         assert_eq!(buf, content);
     }
@@ -712,7 +715,7 @@ mod tests {
         let mut fs = Fat32::mount(disk).unwrap();
         let entry = fs.lookup("MULTI.BIN").unwrap();
         let mut buf = vec![0u8; content.len()];
-        let n = fs.read_file(entry.cluster, entry.size, buf.as_mut_ptr());
+        let n = unsafe { fs.read_file(entry.cluster, entry.size, buf.as_mut_ptr()) };
         assert_eq!(n, content.len());
         assert_eq!(buf, content);
     }
@@ -768,7 +771,7 @@ mod tests {
         assert!(fs.write_file("ROUND.TXT", content));
         let entry = fs.lookup("ROUND.TXT").unwrap();
         let mut buf = [0u8; 64];
-        let n = fs.read_file(entry.cluster, entry.size, buf.as_mut_ptr());
+        let n = unsafe { fs.read_file(entry.cluster, entry.size, buf.as_mut_ptr()) };
         assert_eq!(&buf[..n], content as &[u8]);
     }
 }

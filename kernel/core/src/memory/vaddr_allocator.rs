@@ -59,7 +59,11 @@ impl VirtualMemoryAllocator {
         let _ = self.set.cut(&nodit::interval::ii(start_addr, end_addr));
     }
 
-    /// Replaces l4_mut. Returns a standard x86_64 Mapper.
+    /// Returns a standard x86_64 Mapper backed by this address space's L4 table.
+    ///
+    /// # Safety
+    /// The returned mapper borrows the page table with `'static` lifetime.
+    /// The caller must ensure it does not outlive the physical L4 frame.
     pub unsafe fn mapper(&mut self) -> OffsetPageTable<'static> {
         let offset = VirtAddr::new(hhdm_offset().as_u64());
         let l4_virt = offset + self.l4_phys_frame.start_address().as_u64();

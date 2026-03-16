@@ -10,7 +10,7 @@ use kernel::{acpi, apic, gdt, interrupt, logger, time};
 unsafe extern "C" fn kernel_main() -> ! {
     // Enable display
     let frame_buffer = FRAME_BUFFER_REQUEST.get_response().unwrap();
-    display::init(&frame_buffer);
+    display::init(frame_buffer);
 
     // Enable logger
     logger::init().unwrap();
@@ -43,8 +43,7 @@ unsafe extern "C" fn kernel_main() -> ! {
     // Read the kernel cmdline from Limine to determine which test group to run.
     let group_filter = KERNEL_FILE_REQUEST
         .get_response()
-        .map(|r| tests::parse_test_group(r.file().string().to_bytes()))
-        .flatten();
+        .and_then(|r| tests::parse_test_group(r.file().string().to_bytes()));
 
     tests::run_tests(group_filter);
 }

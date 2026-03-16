@@ -351,7 +351,9 @@ pub fn sys_shutdown(exit_code: u64) -> ! {
     args[0] = SysCallNumber::Shutdown as u64;
     args[1] = exit_code;
     syscall(&mut args);
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 /// Read `count` sectors (each 512 bytes) from the IDE disk at `lba` into `buf`.

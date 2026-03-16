@@ -1,15 +1,15 @@
-/// Client-side wrappers for the net_server TCP/DNS socket API.
-///
-/// Typical usage:
-/// ```
-/// let net = net_lookup();                              // find net_server
-/// let sock = net_connect(net, [93,184,216,34], 80)?;  // TCP connect
-/// let rx   = net_recv_subscribe(net, sock);            // register RX channel
-/// net_send(net, sock, b"GET / HTTP/1.0\r\n\r\n");
-/// let mut buf = [0u8; 4096];
-/// let (_ret, n) = ulib::sys_channel_recv(rx, &mut buf); // blocking read
-/// net_close(net, sock);
-/// ```
+//! Client-side wrappers for the net_server TCP/DNS socket API.
+//!
+//! Typical usage:
+//! ```
+//! let net = net_lookup();                              // find net_server
+//! let sock = net_connect(net, [93,184,216,34], 80)?;  // TCP connect
+//! let rx   = net_recv_subscribe(net, sock);            // register RX channel
+//! net_send(net, sock, b"GET / HTTP/1.0\r\n\r\n");
+//! let mut buf = [0u8; 4096];
+//! let (_ret, n) = ulib::sys_channel_recv(rx, &mut buf); // blocking read
+//! net_close(net, sock);
+//! ```
 
 use kernel_api_types::net::*;
 use kernel_api_types::SVC_ERR_NOT_FOUND;

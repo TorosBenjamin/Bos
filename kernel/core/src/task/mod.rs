@@ -1,4 +1,4 @@
-
+#![allow(clippy::module_inception)]
 
 pub mod global_scheduler;
 pub mod local_scheduler;

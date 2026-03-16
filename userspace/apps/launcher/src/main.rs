@@ -32,7 +32,7 @@ fn bytes_contains_icase(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.len() > haystack.len() { return false; }
     'outer: for start in 0..=(haystack.len() - needle.len()) {
         for (i, &nc) in needle.iter().enumerate() {
-            if haystack[start + i].to_ascii_lowercase() != nc.to_ascii_lowercase() {
+            if !haystack[start + i].eq_ignore_ascii_case(&nc) {
                 continue 'outer;
             }
         }
@@ -73,6 +73,7 @@ impl Launcher {
         // is still hidden. Shared buffers are never destroyed so future launches only
         // need sys_map_shared_buf + sys_spawn_named + sys_munmap (no disk I/O).
         let mut preloaded: [Option<(u64, u64)>; MAX_APPS] = [None; MAX_APPS];
+        #[allow(clippy::needless_range_loop)]
         for i in 0..config.n_apps {
             let entry = &config.apps[i];
             if !entry.preload { continue; }
@@ -169,6 +170,7 @@ impl Launcher {
         } else {
             // Slow path: app not preloaded — read from disk.
             let path_len = entry.path_len as usize;
+            #[allow(clippy::collapsible_if)]
             if let Ok(path) = core::str::from_utf8(&entry.path[..path_len]) {
                 if let Some((buf_id, size)) = ulib::fs::fs_map_file(self.fs_ep, path) {
                     let ptr = ulib::sys_map_shared_buf(buf_id);
@@ -216,7 +218,7 @@ impl Launcher {
                 let ch = k.character;
                 if k.modifiers != 0 { return Action::None; }
                 // Digit 1-9: quick-launch nth item
-                if ch >= b'1' && ch <= b'9' {
+                if (b'1'..=b'9').contains(&ch) {
                     let idx = (ch - b'1') as usize;
                     if idx < self.nfilt {
                         return Action::Launch(self.filtered[idx]);
@@ -231,7 +233,7 @@ impl Launcher {
                     return Action::None;
                 }
                 // Other printable ASCII → append to search
-                if ch >= 0x20 && ch < 0x7f {
+                if (0x20..0x7f).contains(&ch) {
                     self.search.push(ch as char);
                     self.filter();
                     self.sel = 0;
@@ -479,7 +481,7 @@ impl<'a> Renderer<'a> {
                 }
 
                 // App name
-                let name_col = if j == state.sel { fg } else { fg };
+                let name_col = fg;
                 if let Ok(s) = core::str::from_utf8(name) {
                     self.draw_text_simple(s, m + 20, txt_y, name_col);
                 }

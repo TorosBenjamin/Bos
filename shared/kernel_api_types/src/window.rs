@@ -61,7 +61,6 @@ mod tests {
 ///
 /// Clients send WindowMessage requests to the display_server via IPC channels,
 /// and the server responds with WindowResponse messages.
-
 /// Window ID assigned by the display server
 pub type WindowId = u64;
 

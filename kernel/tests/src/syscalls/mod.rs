@@ -265,12 +265,12 @@ pub fn test_sys_mmap_returns_valid_addr() -> TestResult {
         if addr == 0 {
             return TestResult::Failed("sys_mmap returned 0".into());
         }
-        if addr % 4096 != 0 {
+        if !addr.is_multiple_of(4096) {
             return TestResult::Failed(format!(
                 "sys_mmap returned unaligned addr {addr:#x}"
             ));
         }
-        if addr < kernel::consts::USER_MIN || addr > kernel::consts::USER_MAX {
+        if !(kernel::consts::USER_MIN..=kernel::consts::USER_MAX).contains(&addr) {
             return TestResult::Failed(format!(
                 "sys_mmap addr {addr:#x} is outside user range [{:#x}, {:#x}]",
                 kernel::consts::USER_MIN,
@@ -439,7 +439,7 @@ pub fn test_sys_set_exit_channel_valid() -> TestResult {
     use kernel::task::global_scheduler::spawn_task;
     use kernel_api_types::Priority;
 
-    let task = Task::new(|| loop {}, 0, Priority::Normal, None);
+    let task = Task::new(|| loop { core::hint::spin_loop() }, 0, Priority::Normal, None);
     let task_id = task.id.to_u64();
     spawn_task(task);
 

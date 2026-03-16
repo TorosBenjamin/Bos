@@ -1,15 +1,15 @@
-/// Client-side window abstraction for communicating with the display_server.
-///
-/// The pixel backing store lives in shared physical memory allocated by the
-/// display server. The client maps those same pages and writes pixels directly;
-/// present() sends only a tiny dirty-rect notification (no pixel copy).
-///
-/// # Tiling model
-/// Toplevel windows have their size assigned by the DS (auto-tiling). Create them
-/// with `Window::new()`; the response includes the DS-assigned dimensions.
-/// If the DS later resizes the window (e.g. another toplevel is opened/closed),
-/// a `Configure` event arrives via `poll_event()`. The client must call
-/// `apply_configure()` to swap to the new shared buffer.
+//! Client-side window abstraction for communicating with the display_server.
+//!
+//! The pixel backing store lives in shared physical memory allocated by the
+//! display server. The client maps those same pages and writes pixels directly;
+//! present() sends only a tiny dirty-rect notification (no pixel copy).
+//!
+//! # Tiling model
+//! Toplevel windows have their size assigned by the DS (auto-tiling). Create them
+//! with `Window::new()`; the response includes the DS-assigned dimensions.
+//! If the DS later resizes the window (e.g. another toplevel is opened/closed),
+//! a `Configure` event arrives via `poll_event()`. The client must call
+//! `apply_configure()` to swap to the new shared buffer.
 
 use core::convert::Infallible;
 use embedded_graphics::draw_target::DrawTarget;

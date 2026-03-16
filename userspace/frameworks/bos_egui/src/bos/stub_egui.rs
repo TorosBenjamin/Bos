@@ -73,6 +73,7 @@ pub struct Context {
 }
 
 impl Context {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         pixels: &mut [u32],
         width: u32,
@@ -109,7 +110,7 @@ impl Context {
     /// Returns `true` if a key of the given type was pressed this frame.
     pub fn key_pressed(&self, code: KeyEventType) -> bool {
         self.inner.borrow().key
-            .map_or(false, |k| k.event_type == code && k.pressed)
+            .is_some_and(|k| k.event_type == code && k.pressed)
     }
 
     /// Returns the key event for this frame, if any.
@@ -154,6 +155,7 @@ impl Context {
 pub struct CentralPanel;
 
 impl CentralPanel {
+    #[allow(clippy::should_implement_trait)]
     pub fn default() -> Self { CentralPanel }
 
     pub fn show<R, F>(self, ctx: &Context, add_contents: F) -> R
@@ -272,6 +274,7 @@ impl<'a> Ui<'a> {
     ///
     /// Returns a `Response` whose `clicked` field is `true` if the user clicked
     /// inside the input box this frame.
+    #[allow(clippy::ptr_arg)]
     pub fn text_edit_singleline(
         &mut self,
         text: &mut String,
@@ -425,6 +428,7 @@ impl<'a> Ui<'a> {
         Canvas { buf, origin_x, origin_y, width, height }
     }
 
+    #[allow(clippy::ptr_arg)]
     pub fn text_edit_multiline(&mut self, text: &mut String) -> Response {
         let mut inner = self.ctx.inner.borrow_mut();
 

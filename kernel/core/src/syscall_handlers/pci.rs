@@ -100,7 +100,6 @@ pub fn sys_map_pci_bar(bus: u64, device: u64, function: u64, bar_index: u64, _: 
         match unsafe { mapper.map_to(page, frame, mmio_flags, &mut frame_allocator) } {
             Ok(flush) => flush.ignore(),
             Err(_) => {
-                drop(frame_allocator);
                 // Unmap already-installed pages (MMIO frames themselves are never freed)
                 for j in 0..i {
                     let p = Page::<Size4KiB>::containing_address(VirtAddr::new(vaddr + j * Size4KiB::SIZE));

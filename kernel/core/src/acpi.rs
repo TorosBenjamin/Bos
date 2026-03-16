@@ -30,7 +30,7 @@ impl acpi::Handler for KernelAcpiHandler {
         let phys_end = phys_start + size as u64;
 
         let aligned_phys_start = phys_start / page_size * page_size;
-        let aligned_phys_end = (phys_end + page_size - 1) / page_size * page_size;
+        let aligned_phys_end = phys_end.div_ceil(page_size) * page_size;
         let n_pages = (aligned_phys_end - aligned_phys_start) / page_size;
 
         // 1. Allocate virtual pages

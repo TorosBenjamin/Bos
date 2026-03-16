@@ -174,8 +174,8 @@ pub fn sys_wait_for_event(
 
     loop {
         // ── Step 1: non-blocking poll ─────────────────────────────────────────
-        for i in 0..count {
-            if channel_has_message(ep_ids[i]) { return RESULT_EVENT; }
+        for ep_id in &ep_ids[..count] {
+            if channel_has_message(*ep_id) { return RESULT_EVENT; }
         }
         if wait_mouse    && mouse::has_mouse()  { return RESULT_EVENT; }
         if wait_keyboard && keyboard::has_key() { return RESULT_EVENT; }
@@ -185,10 +185,10 @@ pub fn sys_wait_for_event(
         // Done BEFORE the re-poll so that any event arriving from this point
         // onward either (a) is caught by the re-poll below, or (b) wakes us
         // via ISR after we set state=Sleeping.
-        for i in 0..count {
+        for ep_id in &ep_ids[..count] {
             let channel = {
                 let registry = ENDPOINT_REGISTRY.lock();
-                registry.get(&ep_ids[i])
+                registry.get(ep_id)
                     .filter(|ep| ep.role == EndpointRole::Recv)
                     .map(|ep| ep.channel.clone())
             };

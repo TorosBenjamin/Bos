@@ -47,7 +47,7 @@ pub fn read_unix_timestamp() -> u64 {
 
     // Determine the full 4-digit year.
     // The century register is valid on most UEFI/ACPI systems (typically 0x32 or 0x37).
-    let full_year = if cent >= 19 && cent <= 21 {
+    let full_year = if (19..=21).contains(&cent) {
         cent as u32 * 100 + year
     } else {
         // Century register not available or garbage: use Y2K pivot (year >= 70 → 1900s).
@@ -63,7 +63,7 @@ pub fn read_unix_timestamp() -> u64 {
 }
 
 fn is_leap(year: u32) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
 fn days_in_month(m: u32, year: u32) -> u32 {

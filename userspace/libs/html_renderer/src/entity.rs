@@ -24,18 +24,14 @@ pub(crate) fn decode_entity(bytes: &[u8]) -> (Option<char>, usize) {
     if bytes.starts_with(b"&lsquo;") { return (Some('\''), 7); }
     if bytes.starts_with(b"&rsquo;") { return (Some('\''), 7); }
     if bytes.starts_with(b"&hellip;") { return (Some('.'), 8); }
-    if bytes.starts_with(b"&#") {
-        if let Some(semi) = bytes.iter().position(|&c| c == b';') {
-            return (None, semi + 1);
-        }
+    if bytes.starts_with(b"&#") && let Some(semi) = bytes.iter().position(|&c| c == b';') {
+        return (None, semi + 1);
     }
     // Unknown named entity — skip to semicolon if present
-    if bytes.starts_with(b"&") {
-        if let Some(semi) = bytes[1..].iter().position(|&c| c == b';') {
-            if semi < 10 { // reasonable entity name length
-                return (None, semi + 2);
-            }
-        }
+    if bytes.starts_with(b"&")
+        && let Some(semi) = bytes[1..].iter().position(|&c| c == b';') && semi < 10
+    {
+        return (None, semi + 2);
     }
     (None, 1)
 }
@@ -58,14 +54,14 @@ pub(crate) fn extract_attr_value(tag_bytes: &[u8], attr: &[u8]) -> Option<String
                         let content_start = val_start + 1;
                         if let Some(end) = tag_bytes[content_start..].iter().position(|&c| c == quote) {
                             let val = &tag_bytes[content_start..content_start + end];
-                            return core::str::from_utf8(val).ok().map(|s| String::from(s));
+                            return core::str::from_utf8(val).ok().map(String::from);
                         }
                     } else {
                         let end = tag_bytes[val_start..].iter()
                             .position(|&c| c == b' ' || c == b'>' || c == b'\t' || c == b'\n')
                             .unwrap_or(tag_bytes.len() - val_start);
                         let val = &tag_bytes[val_start..val_start + end];
-                        return core::str::from_utf8(val).ok().map(|s| String::from(s));
+                        return core::str::from_utf8(val).ok().map(String::from);
                     }
                 }
             }

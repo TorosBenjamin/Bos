@@ -151,6 +151,7 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
             ptr.write(None);
             val
         };
+        #[allow(clippy::collapsible_if)]
         if let Some((cw, ch)) = child_req {
             if child.is_none() {
                 if let Some(cwin) = Window::new_floating(display_ep, name, main_id, cw, ch, 0) {

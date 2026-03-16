@@ -72,7 +72,6 @@ pub fn try_demand_fill(faulting_addr: u64) -> bool {
     let page = Page::<Size4KiB>::containing_address(VirtAddr::new(page_addr));
     let mut frame_allocator = phys_mem.get_user_mode_frame_allocator();
     let map_result = unsafe { mapper.map_to(page, frame, entry.flags, &mut frame_allocator) };
-    drop(frame_allocator);
 
     match map_result {
         Ok(flush) => {
@@ -150,7 +149,6 @@ pub fn prefault_user_range(task: &Arc<Task>, start: u64, end: u64) -> bool {
 
         let mut frame_allocator = phys_mem.get_user_mode_frame_allocator();
         let map_result = unsafe { mapper.map_to(page, frame, vma.flags, &mut frame_allocator) };
-        drop(frame_allocator);
 
         match map_result {
             Ok(flush) => {

@@ -37,9 +37,8 @@ impl rand_core::RngCore for RdRandRng {
         if i < dest.len() {
             let val = self.next_u64();
             let bytes = val.to_le_bytes();
-            for j in 0..dest.len() - i {
-                dest[i + j] = bytes[j];
-            }
+            let remaining = dest.len() - i;
+            dest[i..i + remaining].copy_from_slice(&bytes[..remaining]);
         }
     }
 

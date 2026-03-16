@@ -232,8 +232,8 @@ impl Compositor {
         };
 
         ulib::sys_munmap(buf, buf_size);
-        for i in 0..n_pending {
-            ulib::sys_destroy_shared_buf(pending_ids[i]);
+        for id in &pending_ids[..n_pending] {
+            ulib::sys_destroy_shared_buf(*id);
         }
         ulib::sys_destroy_shared_buf(shared_buf_id);
         if event_ep != 0 {
@@ -305,15 +305,13 @@ impl Compositor {
             }
         }
 
-        for i in 0..n_cleanup {
-            self.complete_cleanup(to_cleanup[i]);
+        for id in &to_cleanup[..n_cleanup] {
+            self.complete_cleanup(*id);
         }
 
         for slot in &mut self.windows {
-            if let Some(w) = slot.as_mut() {
-                if to_inc[..n_inc].contains(&w.id) {
-                    w.close_attempts += 1;
-                }
+            if let Some(w) = slot.as_mut() && to_inc[..n_inc].contains(&w.id) {
+                w.close_attempts += 1;
             }
         }
     }
@@ -325,10 +323,8 @@ impl Compositor {
     fn topmost_toplevel_id(&self) -> Option<WindowId> {
         for i in (0..self.n_windows).rev() {
             let id = self.z_order[i];
-            if let Some(w) = self.windows.iter().filter_map(|w| w.as_ref()).find(|w| w.id == id) {
-                if !w.is_panel {
-                    return Some(id);
-                }
+            if let Some(w) = self.windows.iter().filter_map(|w| w.as_ref()).find(|w| w.id == id) && !w.is_panel {
+                return Some(id);
             }
         }
         None

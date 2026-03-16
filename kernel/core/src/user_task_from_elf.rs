@@ -599,6 +599,7 @@ fn read_from_parent(
 ///
 /// On success, `stub.cr3` is set with `Ordering::Release` and `stub.inner`
 /// holds the complete context, page table, and VMAs.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn fill_loading_task(
     stub: &Arc<Task>,
     parent_cr3: u64,

@@ -23,7 +23,7 @@ use tls::{do_tls_request_128, do_tls_request_256};
 use url::{parse_url, write_get_request, parse_ipv4_literal, find_header};
 
 /// Maximum accumulated response size before returning `HttpError::TooLarge`.
-pub const MAX_RESPONSE_BYTES: usize = 1 * 1024 * 1024; // 1 MiB
+pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024; // 1 MiB
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -149,6 +149,7 @@ fn http_get_host(
     };
 
     // ── 5. Follow redirect if present ────────────────────────────────────────
+    #[allow(clippy::collapsible_if)]
     if let Some((loc_buf, loc_len)) = redirect {
         if let Ok(loc) = core::str::from_utf8(&loc_buf[..loc_len]) {
             if loc.starts_with("https://") || loc.starts_with("http://") {

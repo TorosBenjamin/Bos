@@ -74,7 +74,7 @@ fn extract_reply_ep(msg: &[u8], after_offset: usize) -> Option<u64> {
     Some(u64::from_le_bytes(msg[after_offset..after_offset + 8].try_into().ok()?))
 }
 
-fn path_str<'a>(path: &'a [u8; 256], path_len: u16) -> Option<&'a str> {
+fn path_str(path: &[u8; 256], path_len: u16) -> Option<&str> {
     let len = path_len as usize;
     if len > 256 { return None; }
     core::str::from_utf8(&path[..len]).ok()
@@ -128,7 +128,7 @@ fn handle_map_file(fs: &mut Fat32<SysDisk>, msg: &[u8]) {
         return;
     }
 
-    let actual = fs.read_file(entry.cluster, entry.size, ptr);
+    let actual = unsafe { fs.read_file(entry.cluster, entry.size, ptr) };
     if actual < entry.size as usize {
         ulib::sys_destroy_shared_buf(buf_id);
         send_response(reply_ep, &err_resp(FsResult::IoError));
