@@ -223,9 +223,10 @@ pub fn sys_spawn(elf_ptr: u64, elf_len: u64, child_arg: u64, name_ptr: u64, name
     if elf_len == 0 || elf_len > 64 * 1024 * 1024 {
         return 0;
     }
-    if !super::validate_user_ptr(elf_ptr, elf_len) {
-        return 0;
-    }
+    let _guard_elf = match super::validate_user_ptr(elf_ptr, elf_len) {
+        Some(g) => g,
+        None => return 0,
+    };
 
     let cpu = get_local();
     let (parent_task, parent_id) = {
@@ -250,7 +251,7 @@ pub fn sys_spawn(elf_ptr: u64, elf_len: u64, child_arg: u64, name_ptr: u64, name
     let mut name_arr = [0u8; 32];
     let name_len_capped: u8 = if name_ptr != 0 && name_len != 0 {
         let capped = name_len.min(32) as usize;
-        if super::validate_user_ptr(name_ptr, capped as u64) {
+        if let Some(_guard_name) = super::validate_user_ptr(name_ptr, capped as u64) {
             unsafe { core::ptr::copy_nonoverlapping(name_ptr as *const u8, name_arr.as_mut_ptr(), capped); }
             capped as u8
         } else {
@@ -421,7 +422,7 @@ pub fn sys_thread_create(entry: u64, stack_top: u64, arg: u64, name_ptr: u64, na
     let mut name_buf = [0u8; 32];
     let name: &[u8] = if name_ptr != 0 && name_len != 0 {
         let capped = name_len.min(32) as usize;
-        if super::validate_user_ptr(name_ptr, capped as u64) {
+        if let Some(_guard_name) = super::validate_user_ptr(name_ptr, capped as u64) {
             unsafe { core::ptr::copy_nonoverlapping(name_ptr as *const u8, name_buf.as_mut_ptr(), capped); }
             &name_buf[..capped]
         } else {
@@ -489,7 +490,8 @@ pub fn sys_set_exit_channel(task_id: u64, send_ep_id: u64, _: u64, _: u64, _: u6
 /// Arguments: target_task_id, exit_code_out_ptr
 /// Returns: 0 on success, 1 on error (task not found or invalid pointer).
 pub fn sys_waitpid(target_id: u64, exit_code_out_ptr: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
-    if !super::validate_user_ptr(exit_code_out_ptr, 8) {
+    // Early validation (discard guard — we'll re-validate before writing).
+    if !super::check_user_ptr(exit_code_out_ptr, 8) {
         return 1;
     }
 
@@ -503,6 +505,11 @@ pub fn sys_waitpid(target_id: u64, exit_code_out_ptr: u64, _: u64, _: u64, _: u6
         if target.state.load(Ordering::Acquire) == TaskState::Zombie {
             let code = target.exit_code.load(Ordering::Acquire);
             TASK_TABLE.lock().remove(&TaskId::from_u64(target_id));
+            // Re-validate with guard before writing to user memory.
+            let _guard = match super::validate_user_ptr(exit_code_out_ptr, 8) {
+                Some(g) => g,
+                None => return 1,
+            };
             unsafe { core::ptr::write(exit_code_out_ptr as *mut u64, code) };
             return 0;
         }

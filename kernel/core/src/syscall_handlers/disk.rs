@@ -9,9 +9,10 @@ pub fn sys_block_read_sectors(lba: u64, count: u64, buf_ptr: u64, _: u64, _: u64
         return 0;
     }
     let byte_count = count * 512;
-    if !super::validate_user_ptr(buf_ptr, byte_count) {
-        return 0;
-    }
+    let _guard = match super::validate_user_ptr(buf_ptr, byte_count) {
+        Some(g) => g,
+        None => return 0,
+    };
     if !disk::DISK_PRESENT.load(core::sync::atomic::Ordering::Acquire) {
         return 0;
     }
@@ -28,9 +29,10 @@ pub fn sys_block_write_sectors(lba: u64, count: u64, buf_ptr: u64, _: u64, _: u6
         return 0;
     }
     let byte_count = count * 512;
-    if !super::validate_user_ptr(buf_ptr, byte_count) {
-        return 0;
-    }
+    let _guard = match super::validate_user_ptr(buf_ptr, byte_count) {
+        Some(g) => g,
+        None => return 0,
+    };
     if !disk::DISK_PRESENT.load(core::sync::atomic::Ordering::Acquire) {
         return 0;
     }

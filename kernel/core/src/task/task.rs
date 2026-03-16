@@ -223,6 +223,12 @@ impl Drop for TaskInner {
 
 pub struct Task {
     pub inner: Mutex<TaskInner>,
+    /// Protects user-space VMA integrity across concurrent syscalls.
+    ///
+    /// Read lock: held by `validate_user_ptr` while the kernel accesses user memory.
+    /// Write lock: held by `sys_munmap`/`sys_mprotect`/`sys_mremap` before modifying VMAs.
+    /// Prevents a TOCTOU race where one thread validates a pointer while another unmaps it.
+    pub vma_lock: spin::RwLock<()>,
     pub id: TaskId,
     pub state: AtomicTaskState,
     pub kind: TaskKind,
@@ -304,6 +310,7 @@ impl Task {
                 owned_endpoints: Vec::new(),
                 registered_services: Vec::new(),
             }),
+            vma_lock: spin::RwLock::new(()),
             id: TaskId::new(),
             state: AtomicTaskState::new(TaskState::Initializing),
             kind: TaskKind::Kernel,
@@ -382,6 +389,7 @@ impl Task {
                 owned_endpoints: Vec::new(),
                 registered_services: Vec::new(),
             }),
+            vma_lock: spin::RwLock::new(()),
             id: TaskId::new(),
             state: AtomicTaskState::new(TaskState::Initializing),
             kind: TaskKind::User,
@@ -451,6 +459,7 @@ impl Task {
                 owned_endpoints: Vec::new(),
                 registered_services: Vec::new(),
             }),
+            vma_lock: spin::RwLock::new(()),
             id: TaskId::new(),
             state: AtomicTaskState::new(TaskState::Initializing),
             kind: TaskKind::User,
@@ -502,6 +511,7 @@ impl Task {
                 owned_endpoints: Vec::new(),
                 registered_services: Vec::new(),
             }),
+            vma_lock: spin::RwLock::new(()),
             id,
             state: AtomicTaskState::new(TaskState::Loading),
             kind: TaskKind::User,
