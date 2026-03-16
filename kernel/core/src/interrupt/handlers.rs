@@ -152,6 +152,48 @@ extern "C" fn page_fault_handler_inner(cr2: u64, error_code: u64, iretq_frame: *
     }
 }
 
+/// Try to safely read the 5-entry iretq frame at `rsp`.
+///
+/// Returns `None` (instead of faulting) if:
+/// - `rsp` is misaligned
+/// - `rsp..rsp+40` overflows or falls outside the HHDM
+/// - the page(s) containing the range are not mapped
+fn try_read_iretq_frame(rsp: u64) -> Option<[u64; 5]> {
+    use x86_64::registers::control::Cr3;
+    use x86_64::structures::paging::{OffsetPageTable, PageTable, Translate};
+    use x86_64::VirtAddr;
+
+    if !rsp.is_multiple_of(8) {
+        return None;
+    }
+    let end = rsp.checked_add(5 * 8)?;
+
+    let hhdm = crate::limine_requests::HHDM_REQUEST
+        .get_response()?
+        .offset();
+    if rsp < hhdm || end < hhdm {
+        return None;
+    }
+
+    // Use the current page table to verify the page(s) are actually mapped.
+    let (cr3_frame, _) = Cr3::read();
+    let l4_virt = VirtAddr::new(hhdm + cr3_frame.start_address().as_u64());
+    let l4_table = unsafe { &mut *l4_virt.as_mut_ptr::<PageTable>() };
+    let mapper = unsafe { OffsetPageTable::new(l4_table, VirtAddr::new(hhdm)) };
+
+    // Check start page.
+    mapper.translate_addr(VirtAddr::new(rsp))?;
+    // If the range crosses a page boundary, check the end page too.
+    let start_page = rsp & !0xFFF;
+    let end_page = (end - 1) & !0xFFF;
+    if start_page != end_page && mapper.translate_addr(VirtAddr::new(end_page)).is_none() {
+        return None;
+    }
+
+    let ptr = rsp as *const u64;
+    Some(unsafe { [*ptr, *ptr.add(1), *ptr.add(2), *ptr.add(3), *ptr.add(4)] })
+}
+
 pub extern "x86-interrupt" fn general_protection_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
@@ -171,15 +213,19 @@ pub extern "x86-interrupt" fn general_protection_fault_handler(
         );
     }
 
-    // Kernel-mode GPF: if the fault was during iretq, dump the iretq frame.
+    // Kernel-mode GPF: if the fault was during iretq, try to dump the iretq frame.
+    // RSP may be corrupted, so validate thoroughly before dereferencing to avoid
+    // a recursive #GPF → double fault with an unhelpful message.
     let rsp = stack_frame.stack_pointer.as_u64();
-    if rsp > 0xFFFF800000000000 {
-        unsafe {
-            let ptr = rsp as *const u64;
+    match try_read_iretq_frame(rsp) {
+        Some([rip, cs, rflags, user_rsp, ss]) => {
             log::error!(
                 "IRETQ frame at RSP {:#x}: rip={:#x} cs={:#x} rflags={:#x} rsp={:#x} ss={:#x}",
-                rsp, *ptr, *ptr.add(1), *ptr.add(2), *ptr.add(3), *ptr.add(4)
+                rsp, rip, cs, rflags, user_rsp, ss
             );
+        }
+        None => {
+            log::error!("RSP {:#x} appears corrupt, skipping iretq frame dump", rsp);
         }
     }
     panic!("General Protection Fault! Stack frame: {stack_frame:#?}. Error code: {error_code}.")

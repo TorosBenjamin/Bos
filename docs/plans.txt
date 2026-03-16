@@ -28,10 +28,6 @@
 
 ===== Kernel: Bugs to Fix =====
 
-  4. [MED] GPF handler raw pointer dereference
-     interrupt/handlers.rs — reads iretq frame via raw pointer. If RSP is
-     corrupted, causes recursive #GPF -> double fault with unhelpful message.
-
   5. [LOW] Mouse/keyboard buffers silently drop on overflow
      No notification when input events are dropped.
 
@@ -48,17 +44,3 @@
   - Virtual memory swapping
   - Capability-based security
   - Preemption of blocking syscalls
-
-===== Already Done (remove after PR) =====
-
-  [DONE] ATA Bus Master DMA — replaced PIO with hardware DMA reads
-  [DONE] IDE polling timeouts — all loops have POLL_TIMEOUT
-  [DONE] Parallel ELF loading — async spawn, direct parent page read
-  [DONE] Deadlock fixes — fine-grained locking, interrupt-safe logger
-  [DONE] Priority scheduler — 3-band priority with starvation protection
-  [DONE] sys_spawn name validation — properly bounds-checked
-  [DONE] IPC endpoint ID overflow — 64-bit counter, not a real concern
-  [DONE] IPC deadlock detection — expected OS behavior, not a bug
-  [DONE] ELF size cap — 64 MiB limit in sys_spawn
-  [DONE] KVM SS.RPL workaround — works on real hardware too
-  [DONE] sys_exit hlt loop — correct behavior, not a bug
