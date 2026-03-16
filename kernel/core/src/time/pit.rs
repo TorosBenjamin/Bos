@@ -55,8 +55,12 @@ pub fn sleep_qs(microseconds: u32) -> Result<(), &'static str> {
         port_61.write(port_61_val | 0x1); // set bit 0
         // here, PIT channel 2 timer has started counting
 
-        // wait for PIT timer to reach 0, which is tested by checking bit 5
+        // PIT mode 1 (one-shot): OUT starts HIGH, goes LOW when counting starts,
+        // then goes HIGH again when the count reaches 0.
+        // Loop 1: wait for OUT to go LOW  → counting has started.
         while port_61.read() & 0x20 != 0 { }
+        // Loop 2: wait for OUT to go HIGH → counting is done (10 ms elapsed).
+        while port_61.read() & 0x20 == 0 { }
         Ok(())
     }
 }

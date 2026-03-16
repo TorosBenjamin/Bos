@@ -25,11 +25,11 @@ pub fn value() -> u64 {
 }
 
 fn has_rdtscp() -> bool {
-    let max_ext = __cpuid(0x8000_0000).eax;
+    let max_ext = unsafe { __cpuid(0x8000_0000) }.eax;
     if max_ext < 0x8000_0001 {
         return false;
     }
-    let res = __cpuid(0x8000_0001);
+    let res = unsafe { __cpuid(0x8000_0001) };
     (res.edx & (1 << 27)) != 0
 }
 

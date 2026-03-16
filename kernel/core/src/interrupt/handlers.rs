@@ -209,8 +209,15 @@ pub extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFr
     panic!("Kernel divide by zero! Stack frame: {stack_frame:#?}");
 }
 
-pub extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
+pub extern "x86-interrupt" fn breakpoint_handler(mut stack_frame: InterruptStackFrame) {
     log::info!("Breakpoint! Stack frame: {stack_frame:#?}");
+    if stack_frame.code_segment.0 & 3 == 3 {
+        unsafe {
+            stack_frame.as_mut().update(|f| {
+                if f.stack_segment.0 & 3 == 0 { f.stack_segment.0 |= 3; }
+            });
+        }
+    }
 }
 
 pub extern "x86-interrupt" fn nmi_handler(_stack_frame: InterruptStackFrame) {

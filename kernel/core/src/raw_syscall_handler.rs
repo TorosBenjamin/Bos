@@ -1,5 +1,5 @@
 use crate::memory::cpu_local_data::{CpuLocalData, IN_SYSCALL_HANDLER_OFFSET, CURRENT_CONTEXT_PTR_OFFSET, CURRENT_TASK_KERNEL_STACK_TOP_OFFSET, get_local};
-use crate::syscall_handlers::{sys_block_read_sectors, sys_block_write_sectors, sys_channel_close, sys_channel_create, sys_channel_recv, sys_channel_send, sys_create_shared_buf, sys_debug_log, sys_destroy_shared_buf, sys_exit, sys_get_bounding_box, sys_get_display_info, sys_get_module, sys_get_time_ns, sys_lookup_service, sys_map_shared_buf, sys_mmap, sys_munmap, sys_mprotect, sys_mremap, sys_read_key, sys_try_read_key, sys_read_mouse, sys_register_service, sys_set_exit_channel, sys_set_fault_ep, sys_set_priority, sys_shutdown, sys_sleep_ms, sys_spawn, sys_thread_create, sys_transfer_display, sys_wait_task_ready, sys_waitpid, sys_yield, sys_try_channel_recv, sys_try_channel_send, sys_wait_for_event};
+use crate::syscall_handlers::{sys_block_read_sectors, sys_block_write_sectors, sys_channel_close, sys_channel_create, sys_channel_recv, sys_channel_send, sys_create_shared_buf, sys_debug_log, sys_destroy_shared_buf, sys_exit, sys_get_bounding_box, sys_get_display_info, sys_get_module, sys_get_time_ns, sys_lookup_service, sys_map_shared_buf, sys_mmap, sys_munmap, sys_mprotect, sys_mremap, sys_read_key, sys_try_read_key, sys_read_mouse, sys_register_service, sys_set_exit_channel, sys_set_fault_ep, sys_set_priority, sys_shutdown, sys_sleep_ms, sys_spawn, sys_thread_create, sys_transfer_display, sys_wait_task_ready, sys_waitpid, sys_yield, sys_try_channel_recv, sys_try_channel_send, sys_wait_for_event, sys_pci_config_read, sys_pci_config_write, sys_map_pci_bar, sys_alloc_dma};
 use crate::task::task::{
     CTX_RAX, CTX_RBP, CTX_RBX, CTX_RCX, CTX_RDI, CTX_RDX, CTX_RSI,
     CTX_R8, CTX_R9, CTX_R10, CTX_R11, CTX_R12, CTX_R13, CTX_R14, CTX_R15,
@@ -241,6 +241,10 @@ pub fn init() {
         table[SysCallNumber::Mremap as usize] = Some(sys_mremap);
         table[SysCallNumber::SetFaultEp as usize] = Some(sys_set_fault_ep);
         table[SysCallNumber::WaitTaskReady as usize] = Some(sys_wait_task_ready);
+        table[SysCallNumber::PciConfigRead as usize] = Some(sys_pci_config_read);
+        table[SysCallNumber::PciConfigWrite as usize] = Some(sys_pci_config_write);
+        table[SysCallNumber::MapPciBar as usize] = Some(sys_map_pci_bar);
+        table[SysCallNumber::AllocDma as usize] = Some(sys_alloc_dma);
         table
     });
 }

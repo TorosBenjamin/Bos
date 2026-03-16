@@ -5,6 +5,7 @@ extern crate std;
 
 pub mod fs;
 pub mod graphics;
+pub mod net;
 pub mod window;
 
 #[repr(u64)]
@@ -48,6 +49,10 @@ pub enum SysCallNumber {
     Mremap         = 37,
     SetFaultEp     = 38,
     WaitTaskReady  = 39,
+    PciConfigRead  = 40,
+    PciConfigWrite = 41,
+    MapPciBar      = 42,
+    AllocDma       = 43,
 }
 
 /// High bit set in exit_code means the task was killed by a hardware fault.

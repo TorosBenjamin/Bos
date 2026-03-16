@@ -1,0 +1,18 @@
+[package]
+name = "tls_test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "tls_test"
+path = "src/main.rs"
+
+[dependencies]
+embedded-tls  = { version = "0.18", default-features = false }
+embedded-io   = "0.7"
+rand          = "0.8"
+rand_core     = "0.6"
+sha2          = { version = "0.10", default-features = false }
+http_client   = { path = "../../userspace/libs/http_client" }
+html_renderer = { path = "../../userspace/libs/html_renderer" }

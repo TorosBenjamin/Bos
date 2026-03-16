@@ -2,6 +2,7 @@
 
 pub mod display;
 pub mod fs;
+pub mod net;
 pub mod window;
 pub mod test_framework;
 
@@ -412,6 +413,67 @@ pub fn sys_block_write_sectors(lba: u64, count: u32, buf: &[u8]) -> u64 {
     args[3] = buf.as_ptr() as u64;
     syscall(&mut args);
     args[6]
+}
+
+/// Read from PCI configuration space.
+/// Returns the value (zero-extended to u32), or `None` on invalid arguments.
+pub fn pci_config_read(bus: u8, device: u8, function: u8, offset: u8, width: u8) -> Option<u32> {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::PciConfigRead as u64;
+    args[1] = bus as u64;
+    args[2] = device as u64;
+    args[3] = function as u64;
+    args[4] = offset as u64;
+    args[5] = width as u64;
+    syscall(&mut args);
+    if args[6] == u64::MAX {
+        None
+    } else {
+        Some(args[6] as u32)
+    }
+}
+
+/// Allocate one physically-backed 4 KiB page and return both its virtual address
+/// and physical address. Intended for DMA-capable drivers.
+///
+/// Returns null on failure. On success, writes the physical address to `*phys_out`.
+pub fn sys_alloc_dma(phys_out: &mut u64) -> *mut u8 {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::AllocDma as u64;
+    args[1] = 4096;
+    args[2] = phys_out as *mut u64 as u64;
+    syscall(&mut args);
+    args[6] as *mut u8
+}
+
+/// Map a PCI device's MMIO BAR into the calling task's address space.
+///
+/// Returns a pointer to the mapped region on success, or null on failure.
+/// The region is mapped uncached (NO_CACHE | WRITE_THROUGH | NO_EXECUTE).
+pub fn sys_map_pci_bar(bus: u8, device: u8, function: u8, bar_index: u8) -> *mut u8 {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::MapPciBar as u64;
+    args[1] = bus as u64;
+    args[2] = device as u64;
+    args[3] = function as u64;
+    args[4] = bar_index as u64;
+    syscall(&mut args);
+    args[6] as *mut u8
+}
+
+/// Write to PCI configuration space.
+/// Returns `true` on success, `false` on invalid arguments.
+pub fn pci_config_write(bus: u8, device: u8, function: u8, offset: u8, width: u8, value: u32) -> bool {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::PciConfigWrite as u64;
+    args[1] = bus as u64;
+    args[2] = device as u64;
+    args[3] = function as u64;
+    args[4] = offset as u64;
+    args[5] = width as u64;
+    args[6] = value as u64;
+    syscall(&mut args);
+    args[6] == 0
 }
 
 /// Block until any of the watched channels, mouse, or keyboard has data, or a timeout expires.
