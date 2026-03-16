@@ -4,7 +4,13 @@
 bindeps = true
 
 [target.x86_64-unknown-none]
-rustflags = ["-C", "relocation-model=static", "-C", "no-redzone"]
+rustflags = [
+    "-C", "relocation-model=static",
+    "-C", "no-redzone",
+    "--cfg", "curve25519_dalek_backend=\"fiat\"",
+    "--cfg", "aes_force_soft",
+    "--cfg", "polyval_force_soft",
+]
 
 [alias]
 ktest            = "run -p runner --features kernel_test --"

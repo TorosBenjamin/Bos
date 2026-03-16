@@ -378,6 +378,10 @@ pub fn sys_waitpid(target_id: u64, exit_code_out_ptr: u64, _: u64, _: u64, _: u6
             self_task.state.store(TaskState::Sleeping, Ordering::Release);
         }
 
+        // Clear in_syscall so the timer handler saves kernel state (normal
+        // path) instead of returning directly to user-mode (syscall-yield
+        // path). This lets the retry loop resume after re-scheduling.
+        get_local().in_syscall_handler.store(0, Ordering::Relaxed);
         x86_64::instructions::interrupts::enable();
         x86_64::instructions::hlt();
         x86_64::instructions::interrupts::disable();

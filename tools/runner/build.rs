@@ -14,6 +14,8 @@ const ISO_BINARIES: &[(&str, &str, &str)] = &[
     ("init_task",      "init_task",      "init_task"),
     ("display_server", "display_server", "display_server"),
     ("fs_server",      "fs_server",      "fs_server"),
+    ("e1000",          "e1000",          "e1000"),
+    ("net_server",     "net_server",     "net_server"),
 ];
 
 /// Binaries written into the FAT32 disk image for fs_server to load at runtime.
@@ -24,6 +26,7 @@ const FAT32_BINARIES: &[(&str, &str, &str)] = &[
     ("hello_egui", "hello_egui",      "HELLO.ELF"),
     ("files",      "files",           "FILES.ELF"),
     ("launcher",   "launcher",        "LAUNCH.ELF"),
+    ("boser",      "boser",           "BOSER.ELF"),
 ];
 
 /// Kernel test feature flags → test suite name passed on the kernel cmdline.
@@ -50,8 +53,19 @@ fn main() {
 
     let out_dir    = PathBuf::from(env::var("OUT_DIR").unwrap());
     let runner_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let limine_dir = env::var("LIMINE_PATH").map(PathBuf::from)
-        .expect("LIMINE_PATH not set — point it at the directory containing BOOTX64.EFI etc.");
+    let limine_dir = env::var("LIMINE_PATH").map(PathBuf::from).unwrap_or_else(|_| {
+        // Default: limine git submodule at the workspace root (v10.x-binary branch).
+        let workspace_root = runner_dir.ancestors().nth(2)
+            .expect("could not determine workspace root")
+            .to_path_buf();
+        let default = workspace_root.join("limine");
+        assert!(
+            default.join("BOOTX64.EFI").exists(),
+            "LIMINE_PATH not set and limine submodule not initialized.\n\
+             Run: git submodule update --init"
+        );
+        default
+    });
 
     // ── ISO root ──────────────────────────────────────────────────────────────
     let iso_dir = out_dir.join("iso_root");
@@ -106,6 +120,7 @@ fn main() {
     // Re-run if configs change
     println!("cargo:rerun-if-changed=bos_ds.conf");
     println!("cargo:rerun-if-changed=launcher.conf");
+    println!("cargo:rerun-if-changed=net.conf");
 
     // Stable symlink to out_dir for convenient inspection
     ensure_symlink(&out_dir, runner_dir.join("out_dir")).unwrap();
@@ -209,6 +224,11 @@ fn create_fat32_disk_image(path: &Path, runner_dir: &Path) {
         let launcher_conf = std::fs::read(runner_dir.join("launcher.conf")).unwrap_or_default();
         root.create_file("LAUNCH.CFG").expect("fatfs: create LAUNCH.CFG")
             .write_all(&launcher_conf).unwrap();
+
+        // Network config
+        let net_conf = std::fs::read(runner_dir.join("net.conf")).unwrap_or_default();
+        root.create_file("net.conf").expect("fatfs: create net.conf")
+            .write_all(&net_conf).unwrap();
     }
 
     std::fs::write(path, disk.into_inner()).expect("build.rs: failed to write disk.img");

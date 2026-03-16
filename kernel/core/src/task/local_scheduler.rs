@@ -22,6 +22,14 @@ pub struct RunQueue {
     pub ready: [VecDeque<Arc<Task>>; 3],
     /// How many ticks each band has been skipped without running.
     pub skip_counts: [u32; 3],
+    /// Holds the Arc of a zombie/sleeping task for exactly one scheduler tick.
+    ///
+    /// When a Zombie/Sleeping task is dequeued from `current_task`, dropping its
+    /// Arc would call `GuardedStack::drop`, unmapping the very kernel stack the
+    /// scheduler is currently running on. To avoid this, we defer the drop here.
+    /// On the *next* call to `schedule_from_interrupt` (when we're on a different
+    /// task's stack), this slot is cleared first — safely dropping the old Arc.
+    deferred_drop: Option<Arc<Task>>,
 }
 
 /// Starvation threshold per band: ticks skipped before a forced boost.
@@ -64,6 +72,7 @@ pub fn init_run_queue() {
             current_task: None,
             ready: [VecDeque::new(), VecDeque::new(), VecDeque::new()],
             skip_counts: [0u32; 3],
+            deferred_drop: None,
         })
     });
 }
@@ -117,6 +126,10 @@ pub fn schedule_from_interrupt(cpu: &CpuLocalData) -> *mut CpuContext {
 
     let mut rq = cpu.run_queue.get().unwrap().lock();
 
+    // Drop any task Arc deferred from the previous tick. We're now on a different
+    // task's kernel stack so it's safe to run that task's GuardedStack::drop here.
+    drop(rq.deferred_drop.take());
+
     // Get pointer to current context (saved by timer handler)
     let current_ctx_ptr = cpu.current_context_ptr.load(Ordering::Relaxed);
 
@@ -153,9 +166,11 @@ pub fn schedule_from_interrupt(cpu: &CpuLocalData) -> *mut CpuContext {
         }
 
         match prev_task.state.load(Ordering::Relaxed) {
-            // Zombie: being cleaned up by scheduler drop
-            // Sleeping: waiter slot holds the only remaining Arc; just drop this one
-            TaskState::Zombie | TaskState::Sleeping => {}
+            // Zombie/Sleeping: defer the Arc drop to the NEXT scheduler tick so we
+            // don't trigger GuardedStack::drop while still on this task's kernel stack.
+            TaskState::Zombie | TaskState::Sleeping => {
+                rq.deferred_drop = Some(prev_task);
+            }
             _ => {
                 let prev_prio = Priority::from_u8(prev_task.priority.load(Ordering::Relaxed)) as usize;
                 prev_task.state.store(TaskState::Ready, Ordering::Relaxed);

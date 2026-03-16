@@ -1,0 +1,13 @@
+[package]
+name = "image_test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "image_test"
+path = "src/main.rs"
+
+[dependencies]
+bos_image = { path = "../../userspace/libs/bos_image" }
+html_renderer = { path = "../../userspace/libs/html_renderer" }
