@@ -4,7 +4,6 @@ use crate::task::global_scheduler::{TASK_TABLE, preregister_task, spawn_task, sp
 use crate::task::task::{Task, TaskId, TaskKind, TaskState};
 use crate::user_task_from_elf::{ElfLoaderArgs, fill_loading_task};
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 use kernel_api_types::Priority;
 use x86_64::registers::control::Cr3;
@@ -244,10 +243,8 @@ pub fn sys_spawn(elf_ptr: u64, elf_len: u64, child_arg: u64, name_ptr: u64, name
     let parent_prio = Priority::from_u8(parent_task.priority.load(Ordering::Relaxed));
     let prio = Priority::from_u8(requested_priority as u8).min(parent_prio);
 
-    // Copy ELF bytes to kernel heap (fast — no MEMORY lock needed here)
-    let elf_bytes: Vec<u8> = unsafe {
-        core::slice::from_raw_parts(elf_ptr as *const u8, elf_len as usize).to_vec()
-    };
+    // Capture the parent's CR3 so the loader can read ELF pages directly
+    let parent_cr3 = parent_task.cr3.load(Ordering::Relaxed);
 
     // Extract name
     let mut name_arr = [0u8; 32];
@@ -271,7 +268,9 @@ pub fn sys_spawn(elf_ptr: u64, elf_len: u64, child_arg: u64, name_ptr: u64, name
     // Spawn a kernel loader task that fills the stub asynchronously
     let args = Box::new(ElfLoaderArgs {
         stub_task: stub,
-        elf_bytes,
+        parent_cr3,
+        elf_user_ptr: elf_ptr,
+        elf_len,
         child_arg,
         name: name_arr,
         name_len: name_len_capped,
@@ -310,7 +309,9 @@ extern "sysv64" fn elf_loader_entry_inner(args_ptr: u64) -> ! {
 
     let result = fill_loading_task(
         &stub,
-        &args.elf_bytes,
+        args.parent_cr3,
+        args.elf_user_ptr,
+        args.elf_len,
         args.child_arg,
         args.name,
         args.name_len,
@@ -318,7 +319,7 @@ extern "sysv64" fn elf_loader_entry_inner(args_ptr: u64) -> ! {
         args.parent_id,
     );
 
-    // Free the ELF bytes and all other args heap allocations NOW, before sys_exit.
+    // Free args heap allocations NOW, before sys_exit.
     // sys_exit() is `-> !` and never returns, so Rust drop glue does not run for
     // any local variable that is still live at the call site.
     drop(args);
