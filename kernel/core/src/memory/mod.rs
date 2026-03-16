@@ -24,9 +24,7 @@ pub mod vaddr_allocator;
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct Memory {
-    #[allow(unused)]
     pub physical_memory: spin::Mutex<PhysicalMemory>,
-    #[allow(unused)]
     pub virtual_memory: spin::Mutex<VirtualMemoryAllocator>,
     /// Physical address of the pml4 table
     pub new_kernel_cr3: PhysFrame<Size4KiB>,

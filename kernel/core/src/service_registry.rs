@@ -7,7 +7,6 @@ pub type ServiceName = [u8; MAX_SERVICE_NAME_LEN];
 
 struct ServiceEntry {
     send_endpoint_id: u64,
-    #[allow(dead_code)]
     owner_task_id: TaskId,
 }
 

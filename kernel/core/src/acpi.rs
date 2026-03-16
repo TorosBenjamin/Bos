@@ -92,7 +92,10 @@ impl acpi::Handler for KernelAcpiHandler {
             }
         }
 
-        // TODO: Free up vaddr
+        virtual_memory.free_kernel_pages(
+            start_page,
+            NonZero::new(n_pages).expect("ACPI unmap must be at least 1 page"),
+        );
     }
 
     fn read_u8(&self, _address: usize) -> u8 {
