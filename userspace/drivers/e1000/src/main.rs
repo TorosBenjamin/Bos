@@ -21,7 +21,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
     let mut driver = match E1000::init() {
         Some(d) => d,
         None => {
-            ulib::sys_debug_log(0xE1000_DEAD, 0xE1);
+            ulib::sys_debug_log(0x000E_1000_DEAD, 0xE1);
             ulib::sys_exit(1);
         }
     };

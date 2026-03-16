@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![allow(clippy::useless_format)]
 extern crate alloc;
 
 use alloc::string::String;

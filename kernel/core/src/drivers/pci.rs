@@ -158,7 +158,7 @@ pub fn read_bar(bus: u8, device: u8, function: u8, bar_index: u8) -> Option<(Phy
             if sz_low == 0 {
                 return None;
             }
-            (!(sz_low as u32) as u64).wrapping_add(1)
+            (!sz_low as u64).wrapping_add(1)
         }
     };
 

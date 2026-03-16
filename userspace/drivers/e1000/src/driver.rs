@@ -16,6 +16,7 @@ pub struct E1000 {
 
     rx_ring: *mut RxDesc,
     rx_bufs_virt: [*mut u8; N],
+    #[allow(dead_code)]
     rx_bufs_phys: [u64; N],
     /// Index of the next descriptor to check for a received packet.
     rx_next: usize,
@@ -97,6 +98,7 @@ impl E1000 {
         }
 
         // Initialise RX descriptors: point each at its buffer; clear status.
+        #[allow(clippy::needless_range_loop)]
         for i in 0..N {
             unsafe {
                 let desc = &mut *rx_ring.add(i);

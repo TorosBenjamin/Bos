@@ -29,7 +29,6 @@
 /// focus_down    = super+down
 /// ```
 /// Unknown keys/sections are silently ignored.
-
 use kernel_api_types::{KeyEventType, KEY_MOD_SHIFT, KEY_MOD_ALT, KEY_MOD_SUPER};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -228,27 +227,24 @@ impl DisplayConfig {
                         }
                     }
                     Section::Shortcuts => {
-                        if cfg.n_shortcuts < MAX_SHORTCUTS {
-                            if let Some(action) = parse_shortcut_action(key) {
-                                if let Some((mods, kt, ch)) = parse_key_combo(val) {
-                                    // Override any existing binding for this action.
-                                    let mut replaced = false;
-                                    for slot in cfg.shortcuts[..cfg.n_shortcuts].iter_mut() {
-                                        if let Some(b) = slot {
-                                            if b.action == action {
-                                                *b = ShortcutBinding { action, modifiers: mods, key_type: kt, character: ch };
-                                                replaced = true;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    if !replaced {
-                                        cfg.shortcuts[cfg.n_shortcuts] = Some(ShortcutBinding {
-                                            action, modifiers: mods, key_type: kt, character: ch,
-                                        });
-                                        cfg.n_shortcuts += 1;
-                                    }
+                        if cfg.n_shortcuts < MAX_SHORTCUTS
+                            && let Some(action) = parse_shortcut_action(key)
+                            && let Some((mods, kt, ch)) = parse_key_combo(val)
+                        {
+                            // Override any existing binding for this action.
+                            let mut replaced = false;
+                            for slot in cfg.shortcuts[..cfg.n_shortcuts].iter_mut() {
+                                if let Some(b) = slot && b.action == action {
+                                    *b = ShortcutBinding { action, modifiers: mods, key_type: kt, character: ch };
+                                    replaced = true;
+                                    break;
                                 }
+                            }
+                            if !replaced {
+                                cfg.shortcuts[cfg.n_shortcuts] = Some(ShortcutBinding {
+                                    action, modifiers: mods, key_type: kt, character: ch,
+                                });
+                                cfg.n_shortcuts += 1;
                             }
                         }
                     }

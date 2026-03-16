@@ -43,11 +43,11 @@ pub unsafe fn init(memory_map: &'static MemoryMapResponse) -> [Option<ClaimedReg
     let mut indices = [0u16; MAX_CLAIMED_REGIONS];
     let mut num_usable = 0;
     for (i, entry) in entries.iter().enumerate() {
-        if entry.entry_type == EntryType::USABLE && entry.length > 0 {
-            if num_usable < MAX_CLAIMED_REGIONS {
-                indices[num_usable] = i as u16;
-                num_usable += 1;
-            }
+        if entry.entry_type == EntryType::USABLE && entry.length > 0
+            && num_usable < MAX_CLAIMED_REGIONS
+        {
+            indices[num_usable] = i as u16;
+            num_usable += 1;
         }
     }
     // Simple insertion sort by length descending

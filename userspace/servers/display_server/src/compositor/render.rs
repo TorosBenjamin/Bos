@@ -44,6 +44,7 @@ impl Compositor {
 
     /// Blit `w×h` pixels from `src` into the back buffer at `(dst_x, dst_y)`,
     /// clipped to both screen bounds and the optional `clip` rect.
+    #[allow(clippy::too_many_arguments)]
     fn blit_to_back(
         &mut self,
         src: *const u32,
@@ -104,6 +105,7 @@ impl Compositor {
     }
 
     /// Blit with a uniform opacity (same alpha for every pixel). Used for inactive window dimming.
+    #[allow(clippy::too_many_arguments)]
     fn blit_to_back_uniform(
         &mut self,
         src: *const u32,
@@ -162,6 +164,7 @@ impl Compositor {
 
     /// Blit with per-pixel premultiplied alpha (bits 31–24 of each source pixel).
     /// `dim` applies an additional uniform scale (255 = no extra dimming).
+    #[allow(clippy::too_many_arguments)]
     fn blit_to_back_premul_alpha(
         &mut self,
         src: *const u32,
@@ -236,9 +239,9 @@ impl Compositor {
                     let g_d = bg >> info.green_mask_shift & 0xFF;
                     let b_d = bg >> info.blue_mask_shift  & 0xFF;
                     *dst.add(dst_off) = info.build_pixel(
-                        (r_s + (r_d * inv >> 8)) as u8,
-                        (g_s + (g_d * inv >> 8)) as u8,
-                        (b_s + (b_d * inv >> 8)) as u8,
+                        (r_s + ((r_d * inv) >> 8)) as u8,
+                        (g_s + ((g_d * inv) >> 8)) as u8,
+                        (b_s + ((b_d * inv) >> 8)) as u8,
                     );
                 }
             }
@@ -351,8 +354,8 @@ impl Compositor {
             self.pending_full_redraw = false;
             self.pending_damage = None;
             // Clear per-window dirty rects subsumed by the full redraw.
-            for slot in &mut self.windows {
-                if let Some(w) = slot { w.pending_dirty = None; }
+            for w in self.windows.iter_mut().flatten() {
+                w.pending_dirty = None;
             }
             self.update_scene_full();
             let sw = self.display_info.width;
@@ -368,21 +371,19 @@ impl Compositor {
             // Full redraw: every window's content is now on screen.
             let mut crashed = [0u64; MAX_WINDOWS];
             let mut n_crashed = 0usize;
-            for slot in &self.windows {
-                if let Some(w) = slot {
-                    if w.closing { continue; }
-                    let result = ulib::sys_try_channel_send(
-                        w.event_send_ep,
-                        &[WindowEventType::FramePresented as u8],
-                    );
-                    if result == IPC_ERR_PEER_CLOSED {
-                        crashed[n_crashed] = w.id;
-                        n_crashed += 1;
-                    }
+            for w in self.windows.iter().flatten() {
+                if w.closing { continue; }
+                let result = ulib::sys_try_channel_send(
+                    w.event_send_ep,
+                    &[WindowEventType::FramePresented as u8],
+                );
+                if result == IPC_ERR_PEER_CLOSED {
+                    crashed[n_crashed] = w.id;
+                    n_crashed += 1;
                 }
             }
-            for i in 0..n_crashed {
-                self.initiate_close(crashed[i]);
+            for id in &crashed[..n_crashed] {
+                self.initiate_close(*id);
             }
             return;
         }
@@ -405,11 +406,9 @@ impl Compositor {
         }
 
         // Composite each region directly into back_buffer, then mark it dirty for present().
-        for opt_dr in &dirty_rects {
-            if let Some(dr) = opt_dr {
-                self.update_scene_region(*dr);
-                self.display.mark_dirty(dr.x, dr.y, dr.w, dr.h);
-            }
+        for dr in dirty_rects.iter().flatten() {
+            self.update_scene_region(*dr);
+            self.display.mark_dirty(dr.x, dr.y, dr.w, dr.h);
         }
 
         if let Some(cd) = extra_damage {
@@ -433,22 +432,20 @@ impl Compositor {
         let mut crashed = [0u64; MAX_WINDOWS];
         let mut n_crashed = 0usize;
         for (i, opt_dr) in dirty_rects.iter().enumerate() {
-            if opt_dr.is_some() {
-                if let Some(w) = &self.windows[i] {
-                    if w.closing { continue; }
-                    let result = ulib::sys_try_channel_send(
-                        w.event_send_ep,
-                        &[WindowEventType::FramePresented as u8],
-                    );
-                    if result == IPC_ERR_PEER_CLOSED {
-                        crashed[n_crashed] = w.id;
-                        n_crashed += 1;
-                    }
+            if opt_dr.is_some() && let Some(w) = &self.windows[i] {
+                if w.closing { continue; }
+                let result = ulib::sys_try_channel_send(
+                    w.event_send_ep,
+                    &[WindowEventType::FramePresented as u8],
+                );
+                if result == IPC_ERR_PEER_CLOSED {
+                    crashed[n_crashed] = w.id;
+                    n_crashed += 1;
                 }
             }
         }
-        for i in 0..n_crashed {
-            self.initiate_close(crashed[i]);
+        for id in &crashed[..n_crashed] {
+            self.initiate_close(*id);
         }
     }
 }

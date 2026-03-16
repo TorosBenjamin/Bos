@@ -15,7 +15,7 @@ mod handlers;
 pub const MAX_WINDOWS: usize = 32;
 const MAX_MSG_SIZE: usize = 4096;
 pub(super) const CLOSE_MAX_ATTEMPTS: u32 = 20;   // 20 × 100 ms ≈ 2-second timeout
-const CLOSE_POLL_TIMEOUT_MS: u64 = 100;
+const _CLOSE_POLL_TIMEOUT_MS: u64 = 100;
 
 const MIN_SIZE: u32 = 100;
 pub(super) const MIN_RATIO: f32 = 0.1;
@@ -202,10 +202,8 @@ impl Compositor {
     fn resolve_floating(&self, app_id: &[u8], flags: u32, parent_id: u64) -> bool {
         // Config rule has highest priority
         for i in 0..self.n_window_rules {
-            if let Some(ref r) = self.window_rules[i] {
-                if &r.app_id[..r.app_id_len as usize] == app_id {
-                    return r.mode == WindowMode::Floating;
-                }
+            if let Some(ref r) = self.window_rules[i] && &r.app_id[..r.app_id_len as usize] == app_id {
+                return r.mode == WindowMode::Floating;
             }
         }
         // Dialog parent → always float
@@ -309,10 +307,8 @@ impl Compositor {
     /// Find a window by its app_id string. Returns the WindowId if found.
     fn find_by_app_id(&self, id: &[u8]) -> Option<WindowId> {
         for slot in &self.windows {
-            if let Some(w) = slot.as_ref() {
-                if &w.app_id[..w.app_id_len as usize] == id {
-                    return Some(w.id);
-                }
+            if let Some(w) = slot.as_ref() && &w.app_id[..w.app_id_len as usize] == id {
+                return Some(w.id);
             }
         }
         None
@@ -469,10 +465,8 @@ impl Compositor {
                 }
                 match b.action {
                     ShortcutAction::CloseWindow => {
-                        if let Some(id) = self.focused_window {
-                            if !self.is_protected(id) {
+                        if let Some(id) = self.focused_window && !self.is_protected(id) {
                                 self.initiate_close(id);
-                            }
                         }
                     }
                     ShortcutAction::FocusNext | ShortcutAction::FocusRight | ShortcutAction::FocusDown => {
@@ -653,32 +647,30 @@ impl Compositor {
                     .find(|w| w.id == drag.window_id)
                     .map(|w| (w.x, w.y, w.width, w.height));
 
-                if let Some((old_x, old_y, ww, wh)) = old_info {
-                    if old_x != new_x || old_y != new_y {
-                        if let Some(w) = self.windows.iter_mut()
-                            .filter_map(|w| w.as_mut())
-                            .find(|w| w.id == drag.window_id)
-                        {
-                            w.x = new_x;
-                            w.y = new_y;
-                        }
+                if let Some((old_x, old_y, ww, wh)) = old_info && (old_x != new_x || old_y != new_y) {
+                    if let Some(w) = self.windows.iter_mut()
+                        .filter_map(|w| w.as_mut())
+                        .find(|w| w.id == drag.window_id)
+                    {
+                        w.x = new_x;
+                        w.y = new_y;
+                    }
 
-                        // Dirty = old_rect ∪ new_rect, both padded by border_width.
-                        // Avoids a full-screen redraw: only the vacated area and the
-                        // new area need compositing, typically a small delta per frame.
-                        let bw = self.border_width;
-                        let bwu = bw.max(0) as u32;
-                        let old_rect = self.screen_rect(old_x - bw, old_y - bw, ww + 2 * bwu, wh + 2 * bwu);
-                        let new_rect = self.screen_rect(new_x - bw, new_y - bw, ww + 2 * bwu, wh + 2 * bwu);
-                        let damage = match (old_rect, new_rect) {
-                            (Some(mut a), Some(b)) => { a.expand(b.x, b.y, b.w, b.h); Some(a) }
-                            (Some(a), None) => Some(a),
-                            (None, Some(b)) => Some(b),
-                            (None, None) => None,
-                        };
-                        if let Some(d) = damage {
-                            self.mark_damage(d);
-                        }
+                    // Dirty = old_rect ∪ new_rect, both padded by border_width.
+                    // Avoids a full-screen redraw: only the vacated area and the
+                    // new area need compositing, typically a small delta per frame.
+                    let bw = self.border_width;
+                    let bwu = bw.max(0) as u32;
+                    let old_rect = self.screen_rect(old_x - bw, old_y - bw, ww + 2 * bwu, wh + 2 * bwu);
+                    let new_rect = self.screen_rect(new_x - bw, new_y - bw, ww + 2 * bwu, wh + 2 * bwu);
+                    let damage = match (old_rect, new_rect) {
+                        (Some(mut a), Some(b)) => { a.expand(b.x, b.y, b.w, b.h); Some(a) }
+                        (Some(a), None) => Some(a),
+                        (None, Some(b)) => Some(b),
+                        (None, None) => None,
+                    };
+                    if let Some(d) = damage {
+                        self.mark_damage(d);
                     }
                 }
             }
@@ -688,11 +680,9 @@ impl Compositor {
                 // After the swap, the dragged window occupies the cursor's tile,
                 // so hit_test_tiled returns the dragged window itself until the
                 // cursor moves into a different tile — preventing repeated swaps.
-                if let Some(target_id) = self.hit_test_tiled(self.cursor_x, self.cursor_y) {
-                    if target_id != drag.window_id {
-                        self.swap_tiled_windows(drag.window_id, target_id);
-                        self.recalculate_toplevel_layout();
-                    }
+                if let Some(target_id) = self.hit_test_tiled(self.cursor_x, self.cursor_y) && target_id != drag.window_id {
+                    self.swap_tiled_windows(drag.window_id, target_id);
+                    self.recalculate_toplevel_layout();
                 }
             }
             DragKind::ResizeFloating { start_x, start_y, start_w, start_h, resize_left, resize_top } => {
@@ -719,10 +709,9 @@ impl Compositor {
                 if let Some(w) = self.windows.iter_mut()
                     .filter_map(|w| w.as_mut())
                     .find(|w| w.id == drag.window_id)
+                    && w.reconfigure(new_x, new_y, new_w, new_h)
                 {
-                    if w.reconfigure(new_x, new_y, new_w, new_h) {
-                        configure_info = Some((w.event_send_ep, new_w, new_h, w.shared_buf_id));
-                    }
+                    configure_info = Some((w.event_send_ep, new_w, new_h, w.shared_buf_id));
                 }
                 if let Some((ep, w, h, buf_id)) = configure_info {
                     send_event(ep, &ConfigureEvent {
@@ -782,10 +771,8 @@ impl Compositor {
             self.move_tiled_to_back(id);
         } else {
             // Swap with the tiled window under the cursor
-            if let Some(target) = self.hit_test_tiled(cx, cy) {
-                if target != id {
-                    self.swap_tiled_windows(id, target);
-                }
+            if let Some(target) = self.hit_test_tiled(cx, cy) && target != id {
+                self.swap_tiled_windows(id, target);
             }
         }
 
@@ -869,23 +856,21 @@ impl Compositor {
 
             // Notify the focused window of the new cursor position (window-relative),
             // but only when no drag is consuming mouse input.
-            if self.drag_state.is_none() && (total_dx != 0 || total_dy != 0) {
-                if let Some(fw_id) = self.focused_window {
-                    let info = self.windows.iter()
-                        .filter_map(|w| w.as_ref())
-                        .find(|w| w.id == fw_id)
-                        .map(|w| (w.x, w.y, w.event_send_ep));
-                    if let Some((wx, wy, ep)) = info {
-                        if ep != 0 {
-                            send_event(ep, &MouseMoveEvent {
-                                event_type: WindowEventType::MouseMove as u8,
-                                _pad: [0; 3],
-                                x: self.cursor_x - wx,
-                                y: self.cursor_y - wy,
-                                delta_ns,
-                            });
-                        }
-                    }
+            if self.drag_state.is_none() && (total_dx != 0 || total_dy != 0)
+                && let Some(fw_id) = self.focused_window
+            {
+                let info = self.windows.iter()
+                    .filter_map(|w| w.as_ref())
+                    .find(|w| w.id == fw_id)
+                    .map(|w| (w.x, w.y, w.event_send_ep));
+                if let Some((wx, wy, ep)) = info && ep != 0 {
+                    send_event(ep, &MouseMoveEvent {
+                        event_type: WindowEventType::MouseMove as u8,
+                        _pad: [0; 3],
+                        x: self.cursor_x - wx,
+                        y: self.cursor_y - wy,
+                        delta_ns,
+                    });
                 }
             }
 
@@ -895,13 +880,13 @@ impl Compositor {
             let super_held    = cur_modifiers & KEY_MOD_SUPER != 0;
 
             // Complete drag on button release
-            if had_drag && just_released & (MOUSE_LEFT | MOUSE_RIGHT) != 0 {
-                if let Some(drag) = self.drag_state.take() {
-                    if matches!(drag.kind, DragKind::MoveTiled) {
-                        self.apply_tiled_drop(drag.window_id, self.cursor_x, self.cursor_y);
-                    }
-                    self.mark_full_redraw();
+            if had_drag && just_released & (MOUSE_LEFT | MOUSE_RIGHT) != 0
+                && let Some(drag) = self.drag_state.take()
+            {
+                if matches!(drag.kind, DragKind::MoveTiled) {
+                    self.apply_tiled_drop(drag.window_id, self.cursor_x, self.cursor_y);
                 }
+                self.mark_full_redraw();
             }
 
             // Start drag or handle regular click (only when no drag was already active)
@@ -920,44 +905,44 @@ impl Compositor {
                         self.set_focus(hit);
                     }
                 }
-                if just_pressed & MOUSE_RIGHT != 0 && super_held {
-                    if let Some(id) = self.hit_test(self.cursor_x, self.cursor_y) {
-                        self.start_resize_drag(id);
-                    }
+                if just_pressed & MOUSE_RIGHT != 0 && super_held
+                    && let Some(id) = self.hit_test(self.cursor_x, self.cursor_y)
+                {
+                    self.start_resize_drag(id);
                 }
             }
 
             self.prev_mouse_buttons = cur_buttons;
 
             // Route mouse button events to the focused window (skip during drag)
-            if !had_drag && self.drag_state.is_none() && (just_pressed | just_released) != 0 {
-                if let Some(fw_id) = self.focused_window {
-                    let pos = self.windows.iter()
-                        .filter_map(|w| w.as_ref())
-                        .find(|w| w.id == fw_id)
-                        .map(|w| (w.x, w.y));
-                    if let Some((wx, wy)) = pos {
-                        let ep = self.window_event_ep(fw_id);
-                        if ep != 0 {
-                            for &bit in &[MOUSE_LEFT, MOUSE_RIGHT, MOUSE_MIDDLE] {
-                                if just_pressed & bit != 0 {
-                                    send_event(ep, &MouseButtonEvent {
-                                        event_type: WindowEventType::MouseButtonPress as u8,
-                                        button: bit,
-                                        _pad: [0; 2],
-                                        x: self.cursor_x - wx,
-                                        y: self.cursor_y - wy,
-                                    });
-                                }
-                                if just_released & bit != 0 {
-                                    send_event(ep, &MouseButtonEvent {
-                                        event_type: WindowEventType::MouseButtonRelease as u8,
-                                        button: bit,
-                                        _pad: [0; 2],
-                                        x: self.cursor_x - wx,
-                                        y: self.cursor_y - wy,
-                                    });
-                                }
+            if !had_drag && self.drag_state.is_none() && (just_pressed | just_released) != 0
+                && let Some(fw_id) = self.focused_window
+            {
+                let pos = self.windows.iter()
+                    .filter_map(|w| w.as_ref())
+                    .find(|w| w.id == fw_id)
+                    .map(|w| (w.x, w.y));
+                if let Some((wx, wy)) = pos {
+                    let ep = self.window_event_ep(fw_id);
+                    if ep != 0 {
+                        for &bit in &[MOUSE_LEFT, MOUSE_RIGHT, MOUSE_MIDDLE] {
+                            if just_pressed & bit != 0 {
+                                send_event(ep, &MouseButtonEvent {
+                                    event_type: WindowEventType::MouseButtonPress as u8,
+                                    button: bit,
+                                    _pad: [0; 2],
+                                    x: self.cursor_x - wx,
+                                    y: self.cursor_y - wy,
+                                });
+                            }
+                            if just_released & bit != 0 {
+                                send_event(ep, &MouseButtonEvent {
+                                    event_type: WindowEventType::MouseButtonRelease as u8,
+                                    button: bit,
+                                    _pad: [0; 2],
+                                    x: self.cursor_x - wx,
+                                    y: self.cursor_y - wy,
+                                });
                             }
                         }
                     }

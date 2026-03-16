@@ -173,15 +173,19 @@ pub fn try_get_ready_cpu(id: u32) -> Option<&'static CpuLocalData> {
     Some(cpu)
 }
 
-/// Initialize CPU local data for the BSP
+/// Initialize CPU local data for the BSP.
 ///
-/// # Safety:
-/// Must be called on the AP
+/// # Safety
+/// Must be called exactly once on the BSP, after memory is initialized.
 pub unsafe fn init_bsp() {
     // Always assign 0 to BSP
     init_cpu(0, mp_response().bsp_lapic_id())
 }
 
+/// Initialize CPU local data for an AP.
+///
+/// # Safety
+/// Must be called exactly once per AP, after BSP memory is initialized.
 pub unsafe fn init_ap(cpu: &Cpu) {
     let local_apic_id = cpu.lapic_id;
     init_cpu(

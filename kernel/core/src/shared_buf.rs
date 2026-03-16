@@ -80,7 +80,6 @@ pub fn create_shared_buf(task: &Task, n_pages: u64) -> Option<(SharedBufId, u64)
 
         let mut pt_alloc = phys_mem.get_user_mode_frame_allocator();
         let result = unsafe { mapper.map_to(page, frame, page_flags, &mut pt_alloc) };
-        drop(pt_alloc);
 
         if result.is_err() {
             let _ = phys_mem.free_frame(frame, MemoryType::SharedBuffer);
@@ -141,7 +140,6 @@ pub fn map_shared_buf(id: SharedBufId, task: &Task) -> Option<u64> {
 
         let mut pt_alloc = phys_mem.get_user_mode_frame_allocator();
         let result = unsafe { mapper.map_to(page, frame, page_flags, &mut pt_alloc) };
-        drop(pt_alloc);
 
         if result.is_err() {
             // Rollback page table entries only — do NOT free the shared frames.

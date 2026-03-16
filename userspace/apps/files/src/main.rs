@@ -3,18 +3,11 @@
 
 #[cfg(not(target_os = "linux"))]
 extern crate alloc;
-#[cfg(not(target_os = "linux"))]
-use alloc::format;
 use bos_egui::{egui, App};
 
+#[derive(Default)]
 pub struct FilesApp {
 
-}
-
-impl Default for FilesApp {
-    fn default() -> Self {
-        Self { }
-    }
 }
 
 impl App for FilesApp {

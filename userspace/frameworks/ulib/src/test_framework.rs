@@ -13,6 +13,12 @@ pub struct TestRunner {
 const PASS_TAG: u64 = 0x5041_5353; // "PASS"
 const FAIL_TAG: u64 = 0x4641_494C; // "FAIL"
 
+impl Default for TestRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TestRunner {
     pub const fn new() -> Self {
         TestRunner { passed: 0, failed: 0, index: 0 }

@@ -29,6 +29,12 @@ pub struct Display {
     n_dirty: usize,
 }
 
+impl Default for Display {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Display {
     /// Create a new buffered display. Queries the kernel for display info and
     /// allocates a user-space pixel buffer via sys_mmap.
@@ -115,6 +121,7 @@ impl Display {
     ///
     /// `black` and `white` must already be in the native framebuffer pixel format
     /// (build them once with `DisplayInfo::build_pixel`).
+    #[allow(clippy::too_many_arguments)]
     pub fn blit_cursor(
         &mut self,
         cx: i32,

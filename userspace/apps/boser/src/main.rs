@@ -134,7 +134,7 @@ impl BoserApp {
 
     fn cursor_visible(&self) -> bool {
         let elapsed = ulib::sys_get_time_ns().wrapping_sub(self.blink_reset_ns);
-        (elapsed / BLINK_INTERVAL_NS) % 2 == 0
+        (elapsed / BLINK_INTERVAL_NS).is_multiple_of(2)
     }
 }
 
@@ -152,6 +152,7 @@ impl App for BoserApp {
         }
 
         // ── Lazy image loading (one per frame) ──────────────────────────────
+        #[allow(clippy::collapsible_if)]
         if let Page::Ready { ref url, ref mut blocks, .. } = self.tab_mut().page {
             if let Some(idx) = blocks.iter().position(|b| matches!(b, ResolvedBlock::ImagePending { .. })) {
                 let img_src = match &blocks[idx] {
@@ -172,6 +173,7 @@ impl App for BoserApp {
         }
 
         // ── Keyboard input ───────────────────────────────────────────────────
+        #[allow(clippy::collapsible_if)]
         if let Some(key) = ctx.key_event() {
             if key.pressed {
                 if self.input_focused {
@@ -188,7 +190,7 @@ impl App for BoserApp {
                         }
                         KeyEventType::Char => {
                             let ch = key.character;
-                            if ch >= 0x20 && ch < 0x7f {
+                            if (0x20..0x7f).contains(&ch) {
                                 self.tab_mut().input.push(ch as char);
                             }
                         }
@@ -270,10 +272,8 @@ impl App for BoserApp {
                     }
 
                     // Close button (only if more than one tab)
-                    if self.tabs.len() > 1 {
-                        if ui.button("x").clicked() {
-                            close_tab = Some(i);
-                        }
+                    if self.tabs.len() > 1 && ui.button("x").clicked() {
+                        close_tab = Some(i);
                     }
                 }
 
@@ -398,13 +398,12 @@ fn render_blocks(
                         let font = if span.style.bold { &FONT_8X13_BOLD } else { &FONT_8X13 };
                         let span_w = (span.text.len() as i32) * 8;
 
-                        if let Some((cx, cy)) = click_rel {
-                            if span.href.is_some()
-                                && cx >= x && cx < x + span_w
-                                && cy >= y && cy < y + LINE_H
-                            {
-                                clicked_href = span.href.clone();
-                            }
+                        if let Some((cx, cy)) = click_rel
+                            && span.href.is_some()
+                            && cx >= x && cx < x + span_w
+                            && cy >= y && cy < y + LINE_H
+                        {
+                            clicked_href = span.href.clone();
                         }
 
                         canvas.draw_text(&span.text, x, y, color, font);

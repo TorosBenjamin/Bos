@@ -118,7 +118,7 @@ pub fn parse_html(html: &str, cols: usize) -> Vec<ContentBlock> {
                     let open_tag = Tag::from_name(&open_name);
                     if open_tag == skip_tag {
                         let gt = find_byte(&bytes[i..], b'>');
-                        let self_closing = gt.map_or(false, |p| p > 0 && bytes[i + p - 1] == b'/');
+                        let self_closing = gt.is_some_and(|p| p > 0 && bytes[i + p - 1] == b'/');
                         if !self_closing {
                             skip_depth += 1;
                         }
@@ -172,7 +172,7 @@ pub fn parse_html(html: &str, cols: usize) -> Vec<ContentBlock> {
             let tag_name = parse_tag_name(&bytes[name_start..]);
 
             let gt_pos = find_byte(&bytes[i..], b'>');
-            let is_self_closing = gt_pos.map_or(false, |p| p > 0 && bytes[i + p - 1] == b'/');
+            let is_self_closing = gt_pos.is_some_and(|p| p > 0 && bytes[i + p - 1] == b'/');
 
             if tag_name.is_empty() {
                 i += 1;
@@ -224,13 +224,13 @@ pub fn parse_html(html: &str, cols: usize) -> Vec<ContentBlock> {
                 }
                 if tag.is_block() || tag.is_heading() {
                     flush_line(&mut lines, &mut col);
-                    if !lines.last().map_or(true, |l| l.is_empty()) {
+                    if !lines.last().is_none_or(|l| l.is_empty()) {
                         lines.push(StyledLine::default());
                         col = 0;
                     }
                 }
             } else if !is_self_closing {
-                let has_hidden = tag_content.map_or(false, |c| has_attr(c, b"hidden"));
+                let has_hidden = tag_content.is_some_and(|c| has_attr(c, b"hidden"));
 
                 if tag.is_opaque() || has_hidden {
                     skip_depth = 1;
@@ -241,7 +241,7 @@ pub fn parse_html(html: &str, cols: usize) -> Vec<ContentBlock> {
 
                 if tag.is_block() || tag.is_heading() {
                     flush_line(&mut lines, &mut col);
-                    if !lines.last().map_or(true, |l| l.is_empty()) {
+                    if !lines.last().is_none_or(|l| l.is_empty()) {
                         lines.push(StyledLine::default());
                         col = 0;
                     }
@@ -315,7 +315,7 @@ pub fn parse_html(html: &str, cols: usize) -> Vec<ContentBlock> {
         }
 
         // ── Regular text ─────────────────────────────────────────────────
-        if b >= 0x20 && b < 0x80 {
+        if (0x20..0x80).contains(&b) {
             emit_char(&mut lines, &mut col, b as char, &tag_stack, cols);
             prev_space = false;
         }
@@ -371,12 +371,10 @@ fn emit_char(
     let href = href_from_stack(tag_stack);
     let line = lines.last_mut().unwrap();
 
-    if let Some(last) = line.spans.last_mut() {
-        if spans_style_eq(&last.style, &style) && last.href == href {
-            last.text.push(ch);
-            *col += 1;
-            return;
-        }
+    if let Some(last) = line.spans.last_mut() && spans_style_eq(&last.style, &style) && last.href == href {
+        last.text.push(ch);
+        *col += 1;
+        return;
     }
 
     let mut text = String::new();
@@ -392,12 +390,10 @@ fn flush_line_to_blocks(
     blocks: &mut Vec<ContentBlock>,
 ) {
     // Trim trailing whitespace on the last span
-    if let Some(line) = lines.last_mut() {
-        if let Some(last) = line.spans.last_mut() {
-            let trimmed = last.text.trim_end();
-            if trimmed.len() != last.text.len() {
-                last.text = String::from(trimmed);
-            }
+    if let Some(line) = lines.last_mut() && let Some(last) = line.spans.last_mut() {
+        let trimmed = last.text.trim_end();
+        if trimmed.len() != last.text.len() {
+            last.text = String::from(trimmed);
         }
     }
     // Move all accumulated lines into blocks
@@ -409,12 +405,10 @@ fn flush_line_to_blocks(
 }
 
 fn flush_line(lines: &mut Vec<StyledLine>, col: &mut usize) {
-    if let Some(line) = lines.last_mut() {
-        if let Some(last) = line.spans.last_mut() {
-            let trimmed = last.text.trim_end();
-            if trimmed.len() != last.text.len() {
-                last.text = String::from(trimmed);
-            }
+    if let Some(line) = lines.last_mut() && let Some(last) = line.spans.last_mut() {
+        let trimmed = last.text.trim_end();
+        if trimmed.len() != last.text.len() {
+            last.text = String::from(trimmed);
         }
     }
     lines.push(StyledLine::default());
@@ -487,7 +481,7 @@ fn find_byte(haystack: &[u8], needle: u8) -> Option<usize> {
 fn find_tag_ci(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() { return Some(0); }
     haystack.windows(needle.len()).position(|w| {
-        w.iter().zip(needle).all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
+        w.iter().zip(needle).all(|(a, b)| a.eq_ignore_ascii_case(b))
     })
 }
 

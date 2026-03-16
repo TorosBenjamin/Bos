@@ -4,7 +4,6 @@
 ///   TX request → e1000: [0x01][len: u16 LE][frame: len bytes]
 ///   RX notify  ← e1000: [len: u16 LE][frame: len bytes]
 ///   Subscribe  → e1000: [0x02][send_ep: u64 LE]
-
 use smoltcp::phy::{Device, DeviceCapabilities, Medium};
 use smoltcp::time::Instant;
 use ulib::{sys_try_channel_recv, sys_try_channel_send};

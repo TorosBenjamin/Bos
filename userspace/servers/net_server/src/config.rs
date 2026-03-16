@@ -56,14 +56,13 @@ impl NetConfig {
             let val = val.trim();
 
             match section {
-                "general" => match key {
-                    "mode" => {
+                "general" => {
+                    if key == "mode" {
                         cfg.mode = match val {
                             "static" => NetMode::Static,
                             _ => NetMode::Dhcp,
                         };
                     }
-                    _ => {}
                 },
                 "static" => match key {
                     "address" => cfg.address = parse_cidr(val),
@@ -71,9 +70,10 @@ impl NetConfig {
                     "dns"     => cfg.dns = parse_ipv4(val),
                     _ => {}
                 },
-                "ping" => match key {
-                    "enabled" => cfg.ping_enabled = val == "true",
-                    _ => {}
+                "ping" => {
+                    if key == "enabled" {
+                        cfg.ping_enabled = val == "true";
+                    }
                 },
                 _ => {}
             }

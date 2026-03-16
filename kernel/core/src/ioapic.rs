@@ -159,7 +159,7 @@ pub fn init(acpi_tables: &AcpiTables<impl acpi::Handler>) {
 
         IoApicState {
             info,
-            interrupt_source_overrides: *ISO_STORAGE.get().unwrap(),
+            interrupt_source_overrides: ISO_STORAGE.get().unwrap(),
         }
     });
 }
@@ -198,16 +198,10 @@ pub fn enable_keyboard_irq(vector: u8, dest_apic_id: u32) {
     // Destination mode: physical (bit 11 = 0)
 
     // Polarity (bit 13)
-    match polarity {
-        Polarity::ActiveLow => entry_low |= 1 << 13,
-        _ => {}
-    }
+    if polarity == Polarity::ActiveLow { entry_low |= 1 << 13; }
 
     // Trigger mode (bit 15)
-    match trigger_mode {
-        TriggerMode::Level => entry_low |= 1 << 15,
-        _ => {}
-    }
+    if trigger_mode == TriggerMode::Level { entry_low |= 1 << 15; }
 
     // Unmask (bit 16 = 0, already clear)
 
@@ -248,15 +242,9 @@ pub fn enable_mouse_irq(vector: u8, dest_apic_id: u32) {
     // Build the redirection table entry
     let mut entry_low: u32 = vector as u32;
 
-    match polarity {
-        Polarity::ActiveLow => entry_low |= 1 << 13,
-        _ => {}
-    }
+    if polarity == Polarity::ActiveLow { entry_low |= 1 << 13; }
 
-    match trigger_mode {
-        TriggerMode::Level => entry_low |= 1 << 15,
-        _ => {}
-    }
+    if trigger_mode == TriggerMode::Level { entry_low |= 1 << 15; }
 
     let entry_high: u32 = (dest_apic_id & 0xFF) << 24;
 
@@ -289,14 +277,8 @@ pub fn enable_ata_irq(vector: u8, dest_apic_id: u32) {
     let pin = (gsi - state.info.gsi_base) as u8;
 
     let mut entry_low: u32 = vector as u32;
-    match polarity {
-        Polarity::ActiveLow => entry_low |= 1 << 13,
-        _ => {}
-    }
-    match trigger_mode {
-        TriggerMode::Level => entry_low |= 1 << 15,
-        _ => {}
-    }
+    if polarity == Polarity::ActiveLow { entry_low |= 1 << 13; }
+    if trigger_mode == TriggerMode::Level { entry_low |= 1 << 15; }
 
     let entry_high: u32 = (dest_apic_id & 0xFF) << 24;
 

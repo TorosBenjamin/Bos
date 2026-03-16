@@ -1,10 +1,10 @@
-/// Launcher configuration parsed from LAUNCH.CFG.
-///
-/// Sections:
-///   [apps]    — `Name = FILE.ELF` entries
-///   [pinned]  — one app name per line (marks that app as pinned)
-///   [preload] — one app name per line (ELF pre-loaded at launcher startup)
-///   [visual]  — `width = N`
+//! Launcher configuration parsed from LAUNCH.CFG.
+//!
+//! Sections:
+//!   [apps]    — `Name = FILE.ELF` entries
+//!   [pinned]  — one app name per line (marks that app as pinned)
+//!   [preload] — one app name per line (ELF pre-loaded at launcher startup)
+//!   [visual]  — `width = N`
 
 pub const MAX_APPS: usize = 32;
 
@@ -107,10 +107,8 @@ impl LauncherConfig {
                     if let Some(eq_pos) = line.iter().position(|&b| b == b'=') {
                         let key = trim_bytes(&line[..eq_pos]);
                         let val = trim_bytes(&line[eq_pos + 1..]);
-                        if key == b"width" {
-                            if let Some(v) = parse_u32(val) {
-                                cfg.width = v;
-                            }
+                        if key == b"width" && let Some(v) = parse_u32(val) {
+                            cfg.width = v;
                         }
                     }
                 }

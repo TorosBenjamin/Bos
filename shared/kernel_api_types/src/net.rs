@@ -15,7 +15,6 @@
 ///   connect reply:  [sock_id:u32][err:u32]   = 8 B
 ///   resolve reply:  [err:u32][ip:4]          = 8 B
 ///   recv data push: raw bytes, ≤ 4096 B each (zero-length = EOF)
-
 // Message type bytes
 pub const NET_MSG_CONNECT: u8 = 1;
 pub const NET_MSG_SEND:    u8 = 2;

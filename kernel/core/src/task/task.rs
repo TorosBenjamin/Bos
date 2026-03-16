@@ -35,7 +35,7 @@ use x86_64::{PhysAddr, VirtAddr};
 /// CPU context saved/restored on task switches.
 /// Layout matches assembly expectations - DO NOT reorder fields.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct CpuContext {
     // GPRs (offset 0-119, 15 registers * 8 bytes)
     pub r15: u64,  // offset 0
@@ -83,15 +83,6 @@ pub const CTX_RFLAGS: usize = 136;
 pub const CTX_RSP: usize = 144;
 pub const CTX_SS: usize = 152;
 
-impl Default for CpuContext {
-    fn default() -> Self {
-        Self {
-            r15: 0, r14: 0, r13: 0, r12: 0, r11: 0, r10: 0, r9: 0, r8: 0,
-            rdi: 0, rsi: 0, rbp: 0, rbx: 0, rdx: 0, rcx: 0, rax: 0,
-            rip: 0, cs: 0, rflags: 0, rsp: 0, ss: 0,
-        }
-    }
-}
 
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -290,7 +281,7 @@ impl Task {
 
         // Initialize context in the Task struct
         let context = CpuContext {
-            r15: entry as u64, // trampoline calls entry via r15
+            r15: entry as usize as u64, // trampoline calls entry via r15
             r14: 0, r13: 0, r12: 0, r11: 0, r10: 0, r9: 0, r8: 0,
             rdi: arg, rsi: 0, rbp: 0, rbx: 0, rdx: 0, rcx: 0, rax: 0,
             rip: task_trampoline as *const() as u64,
@@ -340,6 +331,7 @@ impl Task {
     /// - `cr3`: Physical address of the user page table's L4 frame
     /// - `user_cs`: User code segment selector
     /// - `user_ss`: User data segment selector
+    #[allow(clippy::too_many_arguments)]
     pub fn new_user(
         entry_rip: u64,
         user_rsp: u64,
@@ -413,6 +405,7 @@ impl Task {
     ///
     /// Unlike `new_user`, this does NOT take ownership of any page table frame —
     /// the parent process owns and will free the page table.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_thread(
         entry_rip: u64,
         user_rsp: u64,

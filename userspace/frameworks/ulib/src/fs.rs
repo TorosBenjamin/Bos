@@ -1,8 +1,8 @@
-/// Client-side filesystem wrappers.
-///
-/// The filesystem server registers itself as the `"fatfs"` service.
-/// All operations create a one-shot reply channel, send a request, and block
-/// until the response arrives — the same pattern as `ulib::window`.
+//! Client-side filesystem wrappers.
+//!
+//! The filesystem server registers itself as the `"fatfs"` service.
+//! All operations create a one-shot reply channel, send a request, and block
+//! until the response arrives — the same pattern as `ulib::window`.
 
 use core::mem;
 use kernel_api_types::fs::*;
@@ -101,7 +101,7 @@ fn send_request_and_recv<Req: Sized, Resp: Sized>(
 fn build_path_req(path: &str) -> ([u8; 256], u16) {
     let mut buf = [0u8; 256];
     let len = path.len().min(256);
-    buf[..len].copy_from_slice(path[..len].as_bytes());
+    buf[..len].copy_from_slice(&path.as_bytes()[..len]);
     (buf, len as u16)
 }
 

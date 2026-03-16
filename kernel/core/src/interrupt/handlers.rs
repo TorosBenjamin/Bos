@@ -115,10 +115,10 @@ extern "C" fn page_fault_handler_inner(cr2: u64, error_code: u64, iretq_frame: *
     if cs & 3 == 3 {
         // Ring 3 page fault — swapgs already done by wrapper.
         let pf_code = PageFaultErrorCode::from_bits_truncate(error_code);
-        if !pf_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
-            if crate::memory::demand::try_demand_fill(cr2) {
-                return; // wrapper does SS fix + swapgs + iretq
-            }
+        if !pf_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
+            && crate::memory::demand::try_demand_fill(cr2)
+        {
+            return; // wrapper does SS fix + swapgs + iretq
         }
         log::warn!(
             "User task page fault: addr={:#x} ip={:#x} err={:?} — killing task",
@@ -440,7 +440,7 @@ extern "C" fn timer_early_eoi() {
     if !TIMER_STACK_ALIGNMENT_OK.load(Ordering::Relaxed) {
         let rsp: u64;
         unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nostack, nomem)) };
-        if rsp % 8 == 0 {
+        if rsp.is_multiple_of(8) {
             TIMER_STACK_ALIGNMENT_OK.store(true, Ordering::Release);
         }
     }
@@ -585,7 +585,7 @@ extern "C" fn timer_interrupt_handler_inner() -> *mut CpuContext {
     if !TIMER_STACK_ALIGNMENT_OK.load(Ordering::Relaxed) {
         let rsp: u64;
         unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nostack, nomem)) };
-        if rsp % 8 == 0 {
+        if rsp.is_multiple_of(8) {
             TIMER_STACK_ALIGNMENT_OK.store(true, Ordering::Release);
         }
     }

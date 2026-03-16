@@ -301,13 +301,13 @@ fn read_sectors_dma(lba: u64, count: u32, buf: &mut [u8]) -> bool {
 
     // Build PRDT entries
     let prdt_virt = (hhdm + prdt_phys) as *mut [u32; 2];
-    for i in 0..n_pages {
+    for (i, &page_phys) in buf_phys.iter().enumerate().take(n_pages) {
         let bytes_this_page = if i == n_pages - 1 {
             total_bytes - i * Size4KiB::SIZE as usize
         } else {
             Size4KiB::SIZE as usize
         };
-        let phys = buf_phys[i] as u32;
+        let phys = page_phys as u32;
         let byte_count = if bytes_this_page == 0x10000 { 0u16 } else { bytes_this_page as u16 };
         let eot: u32 = if i == n_pages - 1 { 0x8000_0000 } else { 0 };
         unsafe {
@@ -372,8 +372,8 @@ fn read_sectors_dma(lba: u64, count: u32, buf: &mut [u8]) -> bool {
 
         // Copy data from DMA buffer pages to caller's buffer
         let mut copied = 0usize;
-        for i in 0..n_pages {
-            let src = (hhdm + buf_phys[i]) as *const u8;
+        for &page_phys in buf_phys.iter().take(n_pages) {
+            let src = (hhdm + page_phys) as *const u8;
             let chunk = (total_bytes - copied).min(Size4KiB::SIZE as usize);
             core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr().add(copied), chunk);
             copied += chunk;

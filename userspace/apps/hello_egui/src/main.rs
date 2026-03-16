@@ -8,15 +8,10 @@ use alloc::format;
 
 use bos_egui::{App, egui};
 
+#[derive(Default)]
 struct HelloApp {
     counter: i32,
     child_open: bool,
-}
-
-impl Default for HelloApp {
-    fn default() -> Self {
-        Self { counter: 0, child_open: false }
-    }
 }
 
 impl App for HelloApp {

@@ -46,10 +46,7 @@ pub fn sys_mmap(size: u64, flags: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
     }
 
     let entry = VmaEntry { flags: page_flags, backing: VmaBacking::Anonymous };
-    match user_vaddr::allocate_user_vma(&mut inner.user_vmas, n_pages, entry) {
-        Some(addr) => addr,
-        None => 0,
-    }
+    user_vaddr::allocate_user_vma(&mut inner.user_vmas, n_pages, entry).unwrap_or_default()
 }
 
 /// Syscall: unmap and free virtual memory pages previously allocated with sys_mmap.
@@ -57,7 +54,7 @@ pub fn sys_mmap(size: u64, flags: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
 /// Arguments: addr (start virtual address), size (bytes)
 /// Returns: 0 on success, !0 on failure.
 pub fn sys_munmap(addr: u64, size: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
-    if size == 0 || addr % Size4KiB::SIZE != 0 {
+    if size == 0 || !addr.is_multiple_of(Size4KiB::SIZE) {
         return !0u64;
     }
 
@@ -145,10 +142,7 @@ pub fn sys_map_shared_buf(id: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u6
         }
     };
 
-    match crate::shared_buf::map_shared_buf(id, &task) {
-        Some(vaddr) => vaddr,
-        None => 0,
-    }
+    crate::shared_buf::map_shared_buf(id, &task).unwrap_or_default()
 }
 
 /// Syscall: free the physical pages backing a shared buffer.
@@ -165,7 +159,7 @@ pub fn sys_destroy_shared_buf(id: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -
 /// Arguments: addr (page-aligned), size (bytes), flags (MMAP_WRITE | MMAP_EXEC)
 /// Returns: 0 on success, !0 on failure.
 pub fn sys_mprotect(addr: u64, size: u64, flags: u64, _: u64, _: u64, _: u64) -> u64 {
-    if addr % Size4KiB::SIZE != 0 || size == 0 {
+    if !addr.is_multiple_of(Size4KiB::SIZE) || size == 0 {
         return !0u64;
     }
 
@@ -226,7 +220,7 @@ pub fn sys_mprotect(addr: u64, size: u64, flags: u64, _: u64, _: u64, _: u64) ->
 /// Arguments: old_addr, old_size, new_size, flags (MREMAP_MAYMOVE)
 /// Returns: new start virtual address on success (may equal old_addr), 0 on failure.
 pub fn sys_mremap(old_addr: u64, old_size: u64, new_size: u64, flags: u64, _: u64, _: u64) -> u64 {
-    if old_addr % Size4KiB::SIZE != 0 || old_size == 0 || new_size == 0 {
+    if !old_addr.is_multiple_of(Size4KiB::SIZE) || old_size == 0 || new_size == 0 {
         return 0;
     }
 
@@ -345,7 +339,6 @@ pub fn sys_mremap(old_addr: u64, old_size: u64, new_size: u64, flags: u64, _: u6
 
         let mut frame_allocator = physical_memory.get_user_mode_frame_allocator();
         let map_result = unsafe { mapper.map_to(new_page, new_frame, preserved_flags, &mut frame_allocator) };
-        drop(frame_allocator);
 
         if let Err(MapToError::PageAlreadyMapped(_)) = map_result {
             // Shouldn't happen, but safe to ignore
@@ -441,7 +434,6 @@ pub fn sys_alloc_dma(size: u64, phys_out_ptr: u64, _: u64, _: u64, _: u64, _: u6
     let page = Page::<Size4KiB>::containing_address(VirtAddr::new(vaddr));
     let mut frame_allocator = phys_mem.get_user_mode_frame_allocator();
     let result = unsafe { mapper.map_to(page, frame, flags, &mut frame_allocator) };
-    drop(frame_allocator);
 
     match result {
         Ok(flush) => flush.flush(),

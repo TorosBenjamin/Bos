@@ -1,4 +1,4 @@
-/// Code by 'Theseus os'
+//! Code by 'Theseus os'
 
 use log::error;
 use spin::Mutex;

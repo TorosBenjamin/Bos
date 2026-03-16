@@ -52,7 +52,7 @@ struct TcpEntry {
     handle:        smoltcp::iface::SocketHandle,
     reply_ep:      Option<u64>, // pending connect; cleared once ESTABLISHED or CLOSED
     notify_ep:     Option<u64>, // RX data pushed here; client registers via MSG_RECV
-    local_port:    u16,
+    _local_port:   u16,
     created_at_ms: i64,        // for connect timeout
 }
 
@@ -63,7 +63,7 @@ struct DnsEntry {
 
 fn alloc_local_port(next: &mut u16) -> u16 {
     let p = *next;
-    *next = if *next >= 65535 { 49152 } else { *next + 1 };
+    *next = if *next == 65535 { 49152 } else { *next + 1 };
     p
 }
 
@@ -281,35 +281,37 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
         if !ping_done {
             let socket = sockets.get_mut::<icmp::Socket>(icmp_handle);
 
-            if !ping_sent && socket.can_send() && ping_target.is_some() {
-                const PAYLOAD: &[u8] = b"bos-ping";
-                let repr = Icmpv4Repr::EchoRequest {
-                    ident:  PING_IDENT,
-                    seq_no: PING_SEQ,
-                    data:   PAYLOAD,
-                };
-                if let Ok(buf) = socket.send(repr.buffer_len(), ping_target.unwrap()) {
-                    let mut pkt = Icmpv4Packet::new_unchecked(buf);
-                    repr.emit(&mut pkt, &ChecksumCapabilities::default());
-                    ping_sent    = true;
-                    ping_sent_at = sys_get_time_ns();
-                    ulib::sys_debug_log(PING_SEQ as u64, TAG_PING_SENT);
+            #[allow(clippy::collapsible_if)]
+            if let Some(target) = ping_target {
+                if !ping_sent && socket.can_send() {
+                    const PAYLOAD: &[u8] = b"bos-ping";
+                    let repr = Icmpv4Repr::EchoRequest {
+                        ident:  PING_IDENT,
+                        seq_no: PING_SEQ,
+                        data:   PAYLOAD,
+                    };
+                    if let Ok(buf) = socket.send(repr.buffer_len(), target) {
+                        let mut pkt = Icmpv4Packet::new_unchecked(buf);
+                        repr.emit(&mut pkt, &ChecksumCapabilities::default());
+                        ping_sent    = true;
+                        ping_sent_at = sys_get_time_ns();
+                        ulib::sys_debug_log(PING_SEQ as u64, TAG_PING_SENT);
+                    }
                 }
             }
 
             if ping_sent {
                 while socket.can_recv() {
+                    #[allow(clippy::collapsible_if)]
                     if let Ok((data, _src)) = socket.recv() {
                         if let Ok(pkt) = Icmpv4Packet::new_checked(data) {
                             let caps = ChecksumCapabilities::default();
-                            if let Ok(icmp_repr) = Icmpv4Repr::parse(&pkt, &caps) {
-                                if let Icmpv4Repr::EchoReply { ident, seq_no, .. } = icmp_repr {
-                                    if ident == PING_IDENT && seq_no == PING_SEQ {
-                                        let rtt_ms =
-                                            (sys_get_time_ns() - ping_sent_at) / 1_000_000;
-                                        ulib::sys_debug_log(rtt_ms, TAG_PING_REPLY);
-                                        ping_done = true;
-                                    }
+                            if let Ok(Icmpv4Repr::EchoReply { ident, seq_no, .. }) = Icmpv4Repr::parse(&pkt, &caps) {
+                                if ident == PING_IDENT && seq_no == PING_SEQ {
+                                    let rtt_ms =
+                                        (sys_get_time_ns() - ping_sent_at) / 1_000_000;
+                                    ulib::sys_debug_log(rtt_ms, TAG_PING_REPLY);
+                                    ping_done = true;
                                 }
                             }
                         }
@@ -327,10 +329,10 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
 
         // ── 2. TCP connect completions ────────────────────────────────────────
         let now_ms = now().total_millis();
-        for id in 0..MAX_TCP {
-            let (handle, reply_ep, _notify_ep, created_at_ms) = match &tcp_table[id] {
+        for (id, slot) in tcp_table.iter_mut().enumerate() {
+            let (handle, reply_ep, created_at_ms) = match slot {
                 None => continue,
-                Some(e) => (e.handle, e.reply_ep, e.notify_ep, e.created_at_ms),
+                Some(e) => (e.handle, e.reply_ep, e.created_at_ms),
             };
 
             let Some(rp) = reply_ep else { continue };
@@ -347,7 +349,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                     // rep[4..8] = NET_OK (zero)
                     sys_try_channel_send(rp, &rep);
                     sys_channel_close(rp);
-                    tcp_table[id].as_mut().unwrap().reply_ep = None;
+                    slot.as_mut().unwrap().reply_ep = None;
                 }
                 tcp::State::Closed | tcp::State::CloseWait => {
                     ulib::sys_debug_log(id as u64, 0xBEEF_2005);
@@ -356,7 +358,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                     sys_try_channel_send(rp, &rep);
                     sys_channel_close(rp);
                     sockets.remove(handle);
-                    tcp_table[id] = None;
+                    *slot = None;
                 }
                 _ if timed_out => {
                     // SynSent / SynReceived too long — give up.
@@ -367,15 +369,15 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                     sys_try_channel_send(rp, &rep);
                     sys_channel_close(rp);
                     sockets.remove(handle);
-                    tcp_table[id] = None;
+                    *slot = None;
                 }
                 _ => {} // SynSent / SynReceived — still connecting
             }
         }
 
         // ── 3. TCP RX push ────────────────────────────────────────────────────
-        for id in 0..MAX_TCP {
-            let (handle, notify_ep) = match &tcp_table[id] {
+        for slot in tcp_table.iter_mut() {
+            let (handle, notify_ep) = match slot {
                 None => continue,
                 Some(e) if e.reply_ep.is_some() => continue, // not yet connected
                 Some(e) => (e.handle, e.notify_ep),
@@ -391,14 +393,14 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                     Ok(n) => {
                         let ret = sys_try_channel_send(nep, &buf[..n]);
                         if ret == IPC_ERR_PEER_CLOSED {
-                            tcp_table[id].as_mut().unwrap().notify_ep = None;
+                            slot.as_mut().unwrap().notify_ep = None;
                             break;
                         }
                     }
                     Err(_) => {
                         // EOF — zero-length push signals connection closed
                         sys_try_channel_send(nep, &[]);
-                        tcp_table[id].as_mut().unwrap().notify_ep = None;
+                        slot.as_mut().unwrap().notify_ep = None;
                         break;
                     }
                 }
@@ -484,7 +486,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                                 handle,
                                 reply_ep: Some(reply_ep),
                                 notify_ep: None,
-                                local_port,
+                                _local_port: local_port,
                                 created_at_ms: now().total_millis(),
                             });
                         }
@@ -502,13 +504,11 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                 NET_MSG_SEND if n >= 6 => {
                     let sock_id =
                         u32::from_le_bytes(req_buf[1..5].try_into().unwrap()) as usize;
-                    if sock_id < MAX_TCP {
-                        if let Some(entry) = &tcp_table[sock_id] {
-                            let handle = entry.handle;
-                            let _ = sockets
-                                .get_mut::<tcp::Socket>(handle)
-                                .send_slice(&req_buf[5..n]);
-                        }
+                    if let Some(entry) = tcp_table.get(sock_id).and_then(|s| s.as_ref()) {
+                        let handle = entry.handle;
+                        let _ = sockets
+                            .get_mut::<tcp::Socket>(handle)
+                            .send_slice(&req_buf[5..n]);
                     }
                 }
 
@@ -518,10 +518,8 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                         u32::from_le_bytes(req_buf[1..5].try_into().unwrap()) as usize;
                     let notify_ep =
                         u64::from_le_bytes(req_buf[5..13].try_into().unwrap());
-                    if sock_id < MAX_TCP {
-                        if let Some(entry) = tcp_table[sock_id].as_mut() {
-                            entry.notify_ep = Some(notify_ep);
-                        }
+                    if let Some(entry) = tcp_table.get_mut(sock_id).and_then(|s| s.as_mut()) {
+                        entry.notify_ep = Some(notify_ep);
                     }
                 }
 
@@ -529,16 +527,14 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                 NET_MSG_CLOSE if n >= 5 => {
                     let sock_id =
                         u32::from_le_bytes(req_buf[1..5].try_into().unwrap()) as usize;
-                    if sock_id < MAX_TCP {
-                        if let Some(entry) = tcp_table[sock_id].take() {
-                            sockets.get_mut::<tcp::Socket>(entry.handle).close();
-                            sockets.remove(entry.handle);
-                            if let Some(ep) = entry.reply_ep {
-                                sys_channel_close(ep);
-                            }
-                            if let Some(ep) = entry.notify_ep {
-                                sys_channel_close(ep);
-                            }
+                    if let Some(entry) = tcp_table.get_mut(sock_id).and_then(|s| s.take()) {
+                        sockets.get_mut::<tcp::Socket>(entry.handle).close();
+                        sockets.remove(entry.handle);
+                        if let Some(ep) = entry.reply_ep {
+                            sys_channel_close(ep);
+                        }
+                        if let Some(ep) = entry.notify_ep {
+                            sys_channel_close(ep);
                         }
                     }
                 }
@@ -593,7 +589,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
 
         // ── 6. Sleep until RX frame or client request arrives ─────────────────
         let timeout_ms = match iface.poll_delay(now(), &sockets) {
-            Some(d) => (d.total_millis() as u64).clamp(1, 100),
+            Some(d) => d.total_millis().clamp(1, 100),
             None    => 100,
         };
         sys_wait_for_event(&[rx_notify_recv_ep, net_recv_ep], 0, timeout_ms);

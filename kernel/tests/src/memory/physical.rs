@@ -146,7 +146,7 @@ pub fn duplicate_allocation() -> TestResult {
 
         let addr = frame.start_address().as_u64();
 
-        if seen_addrs.iter().any(|&x| x == addr) {
+        if seen_addrs.contains(&addr) {
             let _ = pm.free_frame(frame, MemoryType::UsedByKernel(KernelMemoryUsageType::PageTables));
             return TestResult::Failed(format!("Duplicate frame allocated at 0x{:X}", addr));
         }
