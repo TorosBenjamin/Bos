@@ -1,12 +1,28 @@
 use linked_list_allocator::LockedHeap;
 use kernel_api_types::{MMAP_WRITE, SVC_ERR_NOT_FOUND};
-use ulib::window::{Window, WindowEvent};
+use ulib::window::{Window, WindowEvent, KeyEvent};
 use crate::App;
 
 static mut CHILD_REQUEST: Option<(u32, u32)> = None;
+static mut REDRAW_REQUESTED: bool = false;
+/// When non-zero, the run loop sleeps at most this many ms before the next frame.
+static mut TIMED_REDRAW_MS: u32 = 0;
 
 pub(crate) fn request_open_child(w: u32, h: u32) {
     unsafe { core::ptr::addr_of_mut!(CHILD_REQUEST).write(Some((w, h))); }
+}
+
+pub(crate) fn request_redraw_impl() {
+    unsafe { core::ptr::addr_of_mut!(REDRAW_REQUESTED).write(true); }
+}
+
+pub(crate) fn request_timed_redraw_impl(ms: u32) {
+    // Only set the timer — do NOT set REDRAW_REQUESTED.  The run loop will
+    // sleep on sys_wait_for_event with this timeout and only force a redraw
+    // when the timeout actually fires, avoiding a render-every-frame spin.
+    unsafe {
+        core::ptr::addr_of_mut!(TIMED_REDRAW_MS).write(ms);
+    }
 }
 
 struct ChildState {
@@ -59,6 +75,7 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
     let mut cursor_x: f32 = (window.width() / 2) as f32;
     let mut cursor_y: f32 = (window.height() / 2) as f32;
     let mut click: Option<(f32, f32)> = None;
+    let mut key: Option<KeyEvent> = None;
 
     let mut child: Option<ChildState> = None;
 
@@ -90,20 +107,37 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
                     needs_redraw = true;
                     frame_presented = true;
                 }
+                WindowEvent::KeyPress(ev) => {
+                    key = Some(ev);
+                    needs_redraw = true;
+                    frame_presented = true;
+                }
                 _ => {}
             }
         }
 
+        // Let the app signal it needs another render (e.g. after a state transition).
+        let redraw_req = unsafe {
+            let ptr = core::ptr::addr_of_mut!(REDRAW_REQUESTED);
+            let v = ptr.read();
+            ptr.write(false);
+            v
+        };
+        if redraw_req { needs_redraw = true; }
+
         if frame_presented && needs_redraw {
             frame_presented = false;
             needs_redraw = false;
+            // Clear the timed-redraw timer so the app must re-request it
+            // each frame (allows it to stop the timer by not calling it).
+            unsafe { core::ptr::addr_of_mut!(TIMED_REDRAW_MS).write(0); }
 
             let w = window.width();
             let h = window.height();
             let info = *window.display_info();
             let pixels = window.pixels_mut();
 
-            let ctx = stub_egui::Context::new(pixels, w, h, info, cursor_x, cursor_y, click.take());
+            let ctx = stub_egui::Context::new(pixels, w, h, info, cursor_x, cursor_y, click.take(), key.take());
             app.update(&ctx);
 
             window.mark_dirty_all();
@@ -175,7 +209,7 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
 
                 let child_ctx = stub_egui::Context::new(
                     pixels, cw, ch, info,
-                    cs.cursor_x, cs.cursor_y, cs.click.take(),
+                    cs.cursor_x, cs.cursor_y, cs.click.take(), None,
                 );
                 app.child_update(&child_ctx);
 
@@ -184,6 +218,23 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
             }
         }
 
-        ulib::sys_yield();
+        // Sleep efficiently: wait for window events or a timed-redraw timeout.
+        // Don't clear TIMED_REDRAW_MS here — it persists so we re-enter the
+        // timed wait after processing events (e.g. FramePresented) that don't
+        // trigger a render.  It is cleared at render time above.
+        let timed_ms = unsafe { core::ptr::addr_of!(TIMED_REDRAW_MS).read() };
+        if timed_ms > 0 {
+            let ep = window.event_recv_ep();
+            let channels = [ep];
+            let ret = ulib::sys_wait_for_event(&channels, 0, timed_ms as u64);
+            // ret == 1 means timeout (blink toggle); ret == 0 means a window
+            // event arrived (FramePresented, key, mouse) — the poll loop above
+            // will handle it on the next iteration without forcing a redraw.
+            if ret == 1 {
+                needs_redraw = true;
+            }
+        } else {
+            ulib::sys_yield();
+        }
     }
 }

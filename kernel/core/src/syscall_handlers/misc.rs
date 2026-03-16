@@ -70,6 +70,10 @@ pub fn sys_read_key(key_event_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u
             }
         }
 
+        // Clear in_syscall so the timer handler saves kernel state (normal
+        // path) instead of returning directly to user-mode (syscall-yield
+        // path). This lets the retry loop resume after re-scheduling.
+        get_local().in_syscall_handler.store(0, Ordering::Relaxed);
         x86_64::instructions::interrupts::enable();
         x86_64::instructions::hlt();
         x86_64::instructions::interrupts::disable();

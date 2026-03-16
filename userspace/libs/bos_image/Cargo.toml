@@ -1,0 +1,14 @@
+[package]
+name = "bos_image"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+default = ["std"]
+std = ["zune-jpeg/std"]
+
+[dependencies]
+minipng   = "1.0"
+zune-jpeg = { version = "0.5", default-features = false }
+zune-core = { version = "0.5", default-features = false }

@@ -1,10 +1,73 @@
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::process::Command;
 use std::{env, process};
 
+/// Serve a static HTML page over HTTP/1.0 on 127.0.0.1:8000.
+/// The guest reaches this via SLIRP at 10.0.2.2:8000.
+fn spawn_stub_http_server() {
+    std::thread::spawn(|| {
+        let Ok(listener) = TcpListener::bind("127.0.0.1:8000") else { return };
+        loop {
+            let Ok((mut stream, _)) = listener.accept() else { continue };
+            std::thread::spawn(move || {
+                // Read (and discard) the HTTP request.
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+
+                const BODY: &[u8] = b"<html><head><title>Bos OS</title></head><body>\
+<h1>Bos OS</h1>\
+<p>You are browsing the web from within a custom operating system!</p>\
+<ul>\
+<li>App: <b>boser</b> (Bos text browser)</li>\
+<li>HTTP client: <b>http_client</b> (no_std, HTTP/1.0)</li>\
+<li>TCP/IP stack: <b>smoltcp</b> inside <b>net_server</b></li>\
+<li>NIC driver: <b>e1000</b> (Intel 82540EM, DMA ring)</li>\
+<li>Networking: <b>QEMU user-mode (SLIRP)</b></li>\
+</ul>\
+<p>This page is served by the runner process on the host machine.</p>\
+</body></html>";
+                let header = format!(
+                    "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    BODY.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(BODY);
+            });
+        }
+    });
+}
+
+fn find_ovmf() -> (String, String) {
+    const CANDIDATES: &[(&str, &str)] = &[
+        // Arch Linux (edk2-ovmf)
+        ("/usr/share/edk2/x64/OVMF_CODE.4m.fd",    "/usr/share/edk2/x64/OVMF_VARS.4m.fd"),
+        // Ubuntu/Debian (ovmf)
+        ("/usr/share/OVMF/OVMF_CODE_4M.fd",         "/usr/share/OVMF/OVMF_VARS_4M.fd"),
+        ("/usr/share/OVMF/OVMF_CODE.fd",            "/usr/share/OVMF/OVMF_VARS.fd"),
+        // Fedora/RHEL (edk2-ovmf)
+        ("/usr/share/edk2/ovmf/OVMF_CODE.fd",       "/usr/share/edk2/ovmf/OVMF_VARS.fd"),
+        // macOS homebrew (qemu)
+        ("/opt/homebrew/share/qemu/edk2-x86_64-code.fd", "/opt/homebrew/share/qemu/edk2-x86_64-vars.fd"),
+    ];
+    for &(code, vars) in CANDIDATES {
+        if std::path::Path::new(code).exists() && std::path::Path::new(vars).exists() {
+            return (code.to_string(), vars.to_string());
+        }
+    }
+    panic!(
+        "OVMF firmware not found. Install it (e.g. `pacman -S edk2-ovmf` or `apt install ovmf`) \
+         or set OVMF_CODE / OVMF_VARS environment variables."
+    );
+}
+
 fn main() {
-    let ovmf_code = "/usr/share/OVMF/OVMF_CODE_4M.fd";
-    let ovmf_vars_readonly = "/usr/share/OVMF/OVMF_VARS_4M.fd";
+    spawn_stub_http_server();
+    let (ovmf_code, ovmf_vars_readonly) = (
+        env::var("OVMF_CODE").unwrap_or_else(|_| find_ovmf().0),
+        env::var("OVMF_VARS").unwrap_or_else(|_| find_ovmf().1),
+    );
 
     // Create a local path for the vars file so we can write to it
     let out_dir = env::current_dir().unwrap().join("target");
@@ -17,8 +80,13 @@ fn main() {
 
     let number_of_cpus = 5;
     let mut qemu = Command::new("qemu-system-x86_64");
+    // Force GTK to use XWayland so QEMU gets proper relative PS/2 mouse events.
+    qemu.env("GDK_BACKEND", "x11");
+    // Point SLIRP DNS relay at systemd-resolved stub instead of uplink resolv.conf.
+    qemu.env("QEMU_RESOLV_CONF", "/run/systemd/resolve/stub-resolv.conf");
 
     qemu.arg("-enable-kvm");
+    qemu.arg("-display").arg("gtk");
     qemu.arg("-cdrom").arg(env!("ISO"));
 
     // Unit 0: The Code (Read-Only is fine)
@@ -43,6 +111,9 @@ fn main() {
     qemu.arg("-drive").arg(format!(
         "file={disk_img},if=ide,format=raw,media=disk"
     ));
+
+    qemu.arg("-device").arg("e1000,netdev=net0");
+    qemu.arg("-netdev").arg("user,id=net0");
 
     let exit_status = qemu.status().expect("Failed to run QEMU");
     process::exit(exit_status.code().unwrap_or(1));
