@@ -22,9 +22,11 @@ impl MouseBuffer {
     }
 
     fn push(&mut self, event: MouseEvent) {
-        if self.count < MOUSE_BUFFER_SIZE {
-            self.buffer[self.tail] = event;
-            self.tail = (self.tail + 1) % MOUSE_BUFFER_SIZE;
+        self.buffer[self.tail] = event;
+        self.tail = (self.tail + 1) % MOUSE_BUFFER_SIZE;
+        if self.count == MOUSE_BUFFER_SIZE {
+            self.head = (self.head + 1) % MOUSE_BUFFER_SIZE;
+        } else {
             self.count += 1;
         }
     }

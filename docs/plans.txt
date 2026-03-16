@@ -26,13 +26,6 @@
      Add SetCursorMode { hidden, locked } message. Compositor suppresses
      cursor rendering and accumulates raw deltas for locked window.
 
-===== Kernel: Bugs to Fix =====
-
-  5. [LOW] Mouse/keyboard buffers silently drop on overflow
-     No notification when input events are dropped.
-
-  6. [LOW] Delete unused legacy context switch code
-     task/context.rs — entire file is dead code (#[allow(dead_code)]).
 
 ===== Kernel: Future Features =====
 
