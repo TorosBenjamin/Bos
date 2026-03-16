@@ -3,14 +3,18 @@
 
 extern crate alloc;
 
-use alloc::{format, string::String, vec::Vec};
+use alloc::{format, string::String, vec, vec::Vec};
 use bos_egui::{egui, egui::KeyEventType, App};
-use html_renderer::StyledLine;
+use html_renderer::{ContentBlock, StyledLine};
 
-/// Line height in pixels (uniform for all content lines).
+/// Line height in pixels (uniform for text lines).
 const LINE_H: i32 = 17;
 /// Header area: title(20) + sep(14) + search bar(28+8) + sep(14) = ~84
 const HEADER_H: u32 = 84;
+/// Maximum image file size to fetch (200 KB).
+const MAX_IMAGE_BYTES: usize = 200 * 1024;
+/// Maximum number of images to fetch per page.
+const MAX_IMAGES: usize = 10;
 
 // ── Panic / entry ─────────────────────────────────────────────────────────────
 
@@ -24,28 +28,38 @@ unsafe extern "sysv64" fn entry_point() -> ! {
     bos_egui::run("boser", BoserApp::new())
 }
 
+// ── Resolved content blocks ──────────────────────────────────────────────────
+
+enum ResolvedBlock {
+    Text(StyledLine),
+    Image { width: u32, height: u32, pixels: Vec<u8> },
+    ImagePending { url: String },
+}
+
+impl ResolvedBlock {
+    fn height(&self) -> i32 {
+        match self {
+            ResolvedBlock::Text(_) | ResolvedBlock::ImagePending { .. } => LINE_H,
+            ResolvedBlock::Image { height, .. } => *height as i32,
+        }
+    }
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 enum Page {
-    /// Empty start page — search bar is focused, nothing loaded yet.
     Home,
-    /// Fetching a URL (shows "Loading...").
     Loading { url: String },
-    /// A page has been fetched and parsed.
     #[allow(dead_code)]
-    Ready { url: String, lines: Vec<StyledLine>, scroll: usize },
-    /// Fetch failed.
+    Ready { url: String, blocks: Vec<ResolvedBlock>, scroll_y: i32 },
     #[allow(dead_code)]
     Error { url: String, msg: String },
 }
 
 struct BoserApp {
-    /// Text in the search/URL bar.
     input: String,
-    /// Whether the search bar is focused (accepts text input).
     input_focused: bool,
     page: Page,
-    /// Set to Some(url) to trigger a fetch on the next frame.
     pending_fetch: Option<String>,
 }
 
@@ -72,12 +86,10 @@ impl BoserApp {
             return;
         }
 
-        // If it looks like a URL, navigate directly
         if query.starts_with("http://") || query.starts_with("https://") {
             let url = String::from(query);
             self.navigate(url);
         } else {
-            // Search via DuckDuckGo HTML endpoint
             let encoded = url_encode(query);
             let url = format!("https://search.marginalia.nu/search?query={encoded}");
             self.navigate(url);
@@ -90,6 +102,26 @@ impl App for BoserApp {
         // ── Deferred fetch ───────────────────────────────────────────────────
         if let Some(url) = self.pending_fetch.take() {
             self.page = do_fetch(&url);
+        }
+
+        // ── Lazy image loading (one per frame) ──────────────────────────────
+        if let Page::Ready { ref url, ref mut blocks, .. } = self.page {
+            if let Some(idx) = blocks.iter().position(|b| matches!(b, ResolvedBlock::ImagePending { .. })) {
+                let img_src = match &blocks[idx] {
+                    ResolvedBlock::ImagePending { url } => url.clone(),
+                    _ => unreachable!(),
+                };
+                let resolved_url = resolve_url(url, &img_src);
+                match fetch_and_decode_image(&resolved_url) {
+                    Some((pixels, w, h)) => {
+                        blocks[idx] = ResolvedBlock::Image { width: w, height: h, pixels };
+                    }
+                    None => {
+                        blocks.remove(idx);
+                    }
+                }
+                bos_egui::request_redraw();
+            }
         }
 
         // ── Keyboard input ───────────────────────────────────────────────────
@@ -115,9 +147,7 @@ impl App for BoserApp {
                         _ => {}
                     }
                 } else {
-                    // Page scrolling and focus shortcuts
                     match key.event_type {
-                        // '/' or Tab focuses the search bar
                         KeyEventType::Tab => {
                             self.input_focused = true;
                         }
@@ -127,19 +157,20 @@ impl App for BoserApp {
                         _ => {}
                     }
 
-                    // Scroll the page content
-                    if let Page::Ready { ref lines, ref mut scroll, .. } = self.page {
+                    // Pixel-based scrolling
+                    if let Page::Ready { ref blocks, ref mut scroll_y, .. } = self.page {
                         let (_, h) = ctx.screen_size();
-                        let visible = (h.saturating_sub(HEADER_H) / LINE_H as u32) as usize;
-                        let max_scroll = lines.len().saturating_sub(visible);
+                        let viewport_h = h.saturating_sub(HEADER_H) as i32;
+                        let total_h: i32 = blocks.iter().map(|b| b.height()).sum();
+                        let max_scroll = (total_h - viewport_h).max(0);
 
                         match key.event_type {
-                            KeyEventType::ArrowDown if *scroll < max_scroll => *scroll += 1,
-                            KeyEventType::ArrowUp if *scroll > 0 => *scroll -= 1,
-                            KeyEventType::PageDown => *scroll = (*scroll + visible).min(max_scroll),
-                            KeyEventType::PageUp => *scroll = scroll.saturating_sub(visible),
-                            KeyEventType::Home => *scroll = 0,
-                            KeyEventType::End => *scroll = max_scroll,
+                            KeyEventType::ArrowDown => *scroll_y = (*scroll_y + LINE_H).min(max_scroll),
+                            KeyEventType::ArrowUp => *scroll_y = (*scroll_y - LINE_H).max(0),
+                            KeyEventType::PageDown => *scroll_y = (*scroll_y + viewport_h).min(max_scroll),
+                            KeyEventType::PageUp => *scroll_y = (*scroll_y - viewport_h).max(0),
+                            KeyEventType::Home => *scroll_y = 0,
+                            KeyEventType::End => *scroll_y = max_scroll,
                             _ => {}
                         }
                     }
@@ -150,7 +181,6 @@ impl App for BoserApp {
         // ── Draw ──────────────────────────────────────────────────────────────
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("boser");
-            // Search / URL bar
             ui.text_edit_singleline(&mut self.input);
             ui.separator();
 
@@ -166,9 +196,8 @@ impl App for BoserApp {
                     ui.label("Error:");
                     ui.label(msg.as_str());
                 }
-                Page::Ready { lines, scroll, url } => {
-                    if let Some(href) = render_styled(ui, ctx, lines, *scroll) {
-                        // Resolve relative URLs against the current page
+                Page::Ready { blocks, scroll_y, url } => {
+                    if let Some(href) = render_blocks(ui, ctx, blocks, *scroll_y) {
                         let nav_url = resolve_url(url, &href);
                         self.input = nav_url.clone();
                         self.navigate(nav_url);
@@ -179,14 +208,13 @@ impl App for BoserApp {
     }
 }
 
-// ── Styled content rendering ─────────────────────────────────────────────────
+// ── Content rendering ────────────────────────────────────────────────────────
 
-/// Render styled lines and return the href of a clicked link, if any.
-fn render_styled(
+fn render_blocks(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
-    lines: &[StyledLine],
-    scroll: usize,
+    blocks: &[ResolvedBlock],
+    scroll_y: i32,
 ) -> Option<String> {
     use egui::{
         FONT_8X13, FONT_8X13_BOLD,
@@ -194,67 +222,80 @@ fn render_styled(
     };
 
     let click = ctx.take_click();
-    let (_, h) = ctx.screen_size();
-    let visible: usize = (h.saturating_sub(HEADER_H) / LINE_H as u32) as usize;
-    let end = (scroll + visible).min(lines.len());
-
     let mut canvas = ui.canvas();
+    let canvas_h = canvas.height;
 
-    // Click coordinates relative to canvas origin
     let click_rel = click.map(|(cx, cy)| {
         (cx as i32 - canvas.origin_x, cy as i32 - canvas.origin_y)
     });
 
     let mut clicked_href: Option<String> = None;
-    let mut y: i32 = 0;
+    let mut y: i32 = -scroll_y;
 
-    for line in &lines[scroll..end] {
-        if line.spans.is_empty() {
-            y += LINE_H;
+    for block in blocks {
+        let block_h = block.height();
+
+        // Skip blocks entirely above viewport
+        if y + block_h <= 0 {
+            y += block_h;
             continue;
         }
-
-        let mut x: i32 = 0;
-        for span in &line.spans {
-            let color = if span.style.heading {
-                HEADING
-            } else if span.style.link {
-                LINK
-            } else if span.style.code {
-                CODE
-            } else if span.style.emphasis {
-                EMPHASIS
-            } else if span.style.indent > 0 && !span.style.bold {
-                DIMMED
-            } else {
-                FG
-            };
-
-            let font = if span.style.bold { &FONT_8X13_BOLD } else { &FONT_8X13 };
-
-            let span_w = (span.text.len() as i32) * 8;
-
-            // Check if click hits this span
-            if let Some((cx, cy)) = click_rel {
-                if span.href.is_some()
-                    && cx >= x && cx < x + span_w
-                    && cy >= y && cy < y + LINE_H
-                {
-                    clicked_href = span.href.clone();
-                }
-            }
-
-            canvas.draw_text(&span.text, x, y, color, font);
-            x += span_w;
+        // Stop if past the bottom
+        if y >= canvas_h {
+            break;
         }
 
-        y += LINE_H;
+        match block {
+            ResolvedBlock::Text(line) => {
+                if !line.spans.is_empty() {
+                    let mut x: i32 = 0;
+                    for span in &line.spans {
+                        let color = if span.style.heading {
+                            HEADING
+                        } else if span.style.link {
+                            LINK
+                        } else if span.style.code {
+                            CODE
+                        } else if span.style.emphasis {
+                            EMPHASIS
+                        } else if span.style.indent > 0 && !span.style.bold {
+                            DIMMED
+                        } else {
+                            FG
+                        };
+
+                        let font = if span.style.bold { &FONT_8X13_BOLD } else { &FONT_8X13 };
+                        let span_w = (span.text.len() as i32) * 8;
+
+                        if let Some((cx, cy)) = click_rel {
+                            if span.href.is_some()
+                                && cx >= x && cx < x + span_w
+                                && cy >= y && cy < y + LINE_H
+                            {
+                                clicked_href = span.href.clone();
+                            }
+                        }
+
+                        canvas.draw_text(&span.text, x, y, color, font);
+                        x += span_w;
+                    }
+                }
+            }
+            ResolvedBlock::Image { width, height, pixels } => {
+                canvas.draw_image(pixels, *width, *height, 0, y);
+            }
+            ResolvedBlock::ImagePending { .. } => {
+                canvas.draw_text("[loading image...]", 0, y, DIMMED, &FONT_8X13);
+            }
+        }
+
+        y += block_h;
     }
 
     clicked_href
 }
 
-// ── HTTP fetch ───────────────────────────────────────────────────────────────
+// ── HTTP fetch + image resolution ────────────────────────────────────────────
 
 fn do_fetch(url: &str) -> Page {
     match http_client::http_get(url) {
@@ -279,13 +320,70 @@ fn do_fetch(url: &str) -> Page {
         Ok(resp) => {
             ulib::sys_debug_log(resp.status as u64, 0xB05E_0002);
             let body_text = core::str::from_utf8(&resp.body).unwrap_or("(binary body)");
-            let lines = html_renderer::parse_html(body_text, 100);
-            Page::Ready { url: String::from(url), lines, scroll: 0 }
+            let content = html_renderer::parse_html(body_text, 100);
+            let blocks = build_blocks(&content);
+            Page::Ready { url: String::from(url), blocks, scroll_y: 0 }
         }
     }
 }
 
-// ── URL encoding ─────────────────────────────────────────────────────────────
+fn build_blocks(content: &[ContentBlock]) -> Vec<ResolvedBlock> {
+    let mut blocks = Vec::with_capacity(content.len());
+    let mut image_count = 0;
+
+    for block in content {
+        match block {
+            ContentBlock::Text(line) => {
+                blocks.push(ResolvedBlock::Text(line.clone()));
+            }
+            ContentBlock::Image { url } => {
+                if image_count >= MAX_IMAGES {
+                    continue;
+                }
+                blocks.push(ResolvedBlock::ImagePending { url: url.clone() });
+                image_count += 1;
+            }
+        }
+    }
+
+    blocks
+}
+
+fn fetch_and_decode_image(url: &str) -> Option<(Vec<u8>, u32, u32)> {
+    let resp = http_client::http_get(url).ok()?;
+    if resp.body.len() > MAX_IMAGE_BYTES {
+        return None;
+    }
+    let img = bos_image::decode(&resp.body).ok()?;
+    Some(scale_to_fit(img.pixels, img.width, img.height, 800))
+}
+
+/// Nearest-neighbor downscale if image is wider than `max_w`.
+fn scale_to_fit(pixels: Vec<u8>, w: u32, h: u32, max_w: u32) -> (Vec<u8>, u32, u32) {
+    if w <= max_w {
+        return (pixels, w, h);
+    }
+    let new_w = max_w;
+    let new_h = (h as u64 * max_w as u64 / w as u64) as u32;
+    if new_h == 0 {
+        return (vec![0u8; (new_w * 4) as usize], new_w, 1);
+    }
+    let mut out = vec![0u8; (new_w * new_h * 4) as usize];
+    for dy in 0..new_h {
+        let sy = (dy as u64 * h as u64 / new_h as u64) as u32;
+        let sy = sy.min(h - 1);
+        for dx in 0..new_w {
+            let sx = (dx as u64 * w as u64 / new_w as u64) as u32;
+            let sx = sx.min(w - 1);
+            let src_i = (sy * w + sx) as usize * 4;
+            let dst_i = (dy * new_w + dx) as usize * 4;
+            out[dst_i..dst_i + 4].copy_from_slice(&pixels[src_i..src_i + 4]);
+        }
+    }
+    (out, new_w, new_h)
+}
+
+// ── URL helpers ──────────────────────────────────────────────────────────────
 
 fn url_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);
@@ -305,14 +403,10 @@ fn url_encode(s: &str) -> String {
     out
 }
 
-/// Resolve a possibly-relative URL against a base URL.
 fn resolve_url(base: &str, href: &str) -> String {
-    // Absolute URL — use as-is
     if href.starts_with("http://") || href.starts_with("https://") {
         return String::from(href);
     }
-
-    // Protocol-relative (//example.com/path)
     if href.starts_with("//") {
         if base.starts_with("https://") {
             return format!("https:{href}");
@@ -321,7 +415,6 @@ fn resolve_url(base: &str, href: &str) -> String {
         }
     }
 
-    // Extract scheme + host from base
     let (scheme, rest) = if let Some(r) = base.strip_prefix("https://") {
         ("https://", r)
     } else if let Some(r) = base.strip_prefix("http://") {
@@ -336,10 +429,8 @@ fn resolve_url(base: &str, href: &str) -> String {
     };
 
     if href.starts_with('/') {
-        // Absolute path
         format!("{scheme}{host}{href}")
     } else {
-        // Relative path — append to base directory
         let base_path = match rest.rfind('/') {
             Some(i) => &rest[..i + 1],
             None => rest,

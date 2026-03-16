@@ -45,14 +45,23 @@ impl StyledLine {
     }
 }
 
+/// A block of content: either a line of styled text or an image reference.
+#[derive(Clone, Debug)]
+pub enum ContentBlock {
+    Text(StyledLine),
+    /// An image that needs to be fetched. The parser only extracts the URL.
+    Image { url: String },
+}
+
 // ── Parser ───────────────────────────────────────────────────────────────────
 
-/// Parse HTML into styled, word-wrapped lines suitable for rendering.
+/// Parse HTML into content blocks (styled text lines and image references).
 ///
 /// `cols` is the maximum number of characters per line (for word wrapping).
-pub fn parse_html(html: &str, cols: usize) -> Vec<StyledLine> {
+pub fn parse_html(html: &str, cols: usize) -> Vec<ContentBlock> {
     let bytes = html.as_bytes();
     let mut lines: Vec<StyledLine> = vec![StyledLine::default()];
+    let mut blocks: Vec<ContentBlock> = Vec::new();
     let mut tag_stack: Vec<(Tag, Option<String>)> = Vec::new();
     let mut col: usize = 0;
     let mut i: usize = 0;
@@ -173,9 +182,19 @@ pub fn parse_html(html: &str, cols: usize) -> Vec<StyledLine> {
             let tag = Tag::from_name(&tag_name);
             let tag_content = gt_pos.map(|p| &bytes[i..i + p + 1]);
 
-            // Handle <br> and <hr>
+            // Handle <br>, <hr>, and <img> (void elements)
             if !is_closing {
                 let name_lower: Vec<u8> = tag_name.iter().map(|b| b.to_ascii_lowercase()).collect();
+                if name_lower == b"img" {
+                    if let Some(src) = tag_content.and_then(|c| extract_attr_value(c, b"src")) {
+                        // Flush current text line into blocks
+                        flush_line_to_blocks(&mut lines, &mut col, &mut blocks);
+                        blocks.push(ContentBlock::Image { url: src });
+                    }
+                    if let Some(p) = gt_pos { i += p + 1; } else { i += 1; }
+                    prev_space = true;
+                    continue;
+                }
                 if name_lower == b"br" {
                     flush_line(&mut lines, &mut col);
                     if let Some(p) = gt_pos { i += p + 1; } else { i += 1; }
@@ -253,7 +272,11 @@ pub fn parse_html(html: &str, cols: usize) -> Vec<StyledLine> {
             }
 
             if let Some(p) = gt_pos { i += p + 1; } else { i += 1; }
-            prev_space = true;
+            // Only treat block-level tags as word boundaries.
+            // Inline tags (<a>, <b>, <em>, etc.) should not eat adjacent spaces.
+            if tag.is_block() || tag.is_heading() {
+                prev_space = true;
+            }
             continue;
         }
 
@@ -299,23 +322,31 @@ pub fn parse_html(html: &str, cols: usize) -> Vec<StyledLine> {
         i += 1;
     }
 
-    // Remove trailing empty lines
-    while lines.last().map_or(false, |l| l.is_empty()) {
-        lines.pop();
+    // Flush remaining text lines into blocks
+    for line in lines {
+        blocks.push(ContentBlock::Text(line));
     }
 
-    // Collapse runs of consecutive blank lines into a single blank line
-    let mut collapsed = Vec::with_capacity(lines.len());
+    // Remove trailing empty text blocks
+    while matches!(blocks.last(), Some(ContentBlock::Text(l)) if l.is_empty()) {
+        blocks.pop();
+    }
+
+    // Collapse consecutive blank text lines into a single blank line
+    let mut collapsed = Vec::with_capacity(blocks.len());
     let mut prev_blank = false;
-    for line in lines {
-        if line.is_empty() {
-            if !prev_blank {
-                collapsed.push(line);
+    for block in blocks {
+        match &block {
+            ContentBlock::Text(line) if line.is_empty() => {
+                if !prev_blank {
+                    collapsed.push(block);
+                }
+                prev_blank = true;
             }
-            prev_blank = true;
-        } else {
-            prev_blank = false;
-            collapsed.push(line);
+            _ => {
+                prev_blank = false;
+                collapsed.push(block);
+            }
         }
     }
 
@@ -352,6 +383,29 @@ fn emit_char(
     text.push(ch);
     line.spans.push(Span { text, style, href });
     *col += 1;
+}
+
+/// Flush accumulated text lines into the blocks vec, then reset to a fresh line.
+fn flush_line_to_blocks(
+    lines: &mut Vec<StyledLine>,
+    col: &mut usize,
+    blocks: &mut Vec<ContentBlock>,
+) {
+    // Trim trailing whitespace on the last span
+    if let Some(line) = lines.last_mut() {
+        if let Some(last) = line.spans.last_mut() {
+            let trimmed = last.text.trim_end();
+            if trimmed.len() != last.text.len() {
+                last.text = String::from(trimmed);
+            }
+        }
+    }
+    // Move all accumulated lines into blocks
+    for line in lines.drain(..) {
+        blocks.push(ContentBlock::Text(line));
+    }
+    lines.push(StyledLine::default());
+    *col = 0;
 }
 
 fn flush_line(lines: &mut Vec<StyledLine>, col: &mut usize) {

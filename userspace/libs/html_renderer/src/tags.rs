@@ -11,6 +11,7 @@ pub(crate) enum Tag {
     Li,
     P, Div, Span, Section, Article, Main, Header, Footer,
     Table, Tr, Td, Th, Tbody, Thead,
+    Img,
     Form, Head, Script, Style, Nav, Noscript, Svg, Math,
     Other,
 }
@@ -39,6 +40,7 @@ impl Tag {
             b"header" => Tag::Header, b"footer" => Tag::Footer,
             b"table" => Tag::Table, b"tr" => Tag::Tr, b"td" => Tag::Td,
             b"th" => Tag::Th, b"tbody" => Tag::Tbody, b"thead" => Tag::Thead,
+            b"img" => Tag::Img,
             b"form" => Tag::Form,
             b"head" => Tag::Head,
             b"script" => Tag::Script, b"style" => Tag::Style,

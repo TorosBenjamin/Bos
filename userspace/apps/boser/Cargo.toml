@@ -9,6 +9,7 @@ bos_egui      = { path = "../../frameworks/bos_egui" }
 ulib          = { path = "../../frameworks/ulib" }
 http_client   = { path = "../../libs/http_client" }
 html_renderer = { path = "../../libs/html_renderer", default-features = false }
+bos_image     = { path = "../../libs/bos_image", default-features = false }
 
 [[bin]]
 name = "boser"

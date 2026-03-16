@@ -459,6 +459,30 @@ impl<'a> Canvas<'a> {
         );
     }
 
+    /// Blit RGBA8 pixels onto the canvas at `(x, y)` relative to canvas origin.
+    ///
+    /// `src_w` and `src_h` are the source image dimensions.
+    /// Pixels outside the canvas are clipped. Fully transparent pixels are skipped.
+    pub fn draw_image(&mut self, pixels: &[u8], src_w: u32, src_h: u32, x: i32, y: i32) {
+        for row in 0..src_h as i32 {
+            let dst_y = self.origin_y + y + row;
+            if dst_y < 0 || dst_y >= self.buf.height as i32 { continue; }
+            for col in 0..src_w as i32 {
+                let dst_x = self.origin_x + x + col;
+                if dst_x < 0 || dst_x >= self.buf.width as i32 { continue; }
+                let src_idx = (row as usize * src_w as usize + col as usize) * 4;
+                if src_idx + 3 >= pixels.len() { continue; }
+                let r = pixels[src_idx];
+                let g = pixels[src_idx + 1];
+                let b = pixels[src_idx + 2];
+                let a = pixels[src_idx + 3];
+                if a == 0 { continue; }
+                let dst_idx = dst_y as usize * self.buf.width as usize + dst_x as usize;
+                self.buf.pixels[dst_idx] = self.buf.info.build_pixel(r, g, b);
+            }
+        }
+    }
+
     /// Draw a horizontal line spanning the full canvas width at `y` (relative to origin).
     pub fn draw_hline(&mut self, y: i32, color: Rgb888) {
         let abs_y = self.origin_y + y;

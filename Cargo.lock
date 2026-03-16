@@ -591,6 +591,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bos_image"
+version = "0.1.0"
+dependencies = [
+ "minipng",
+ "zune-core",
+ "zune-jpeg",
+]
+
+[[package]]
 name = "bos_std"
 version = "0.1.0"
 dependencies = [
@@ -604,6 +613,7 @@ name = "boser"
 version = "0.1.0"
 dependencies = [
  "bos_egui",
+ "bos_image",
  "html_renderer",
  "http_client",
  "ulib",
@@ -2225,6 +2235,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "image_test"
+version = "0.1.0"
+dependencies = [
+ "bos_image",
+ "html_renderer",
+]
+
+[[package]]
 name = "immutable-chunkmap"
 version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2525,6 +2543,12 @@ name = "micromath"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3c8dda44ff03a2f238717214da50f65d5a53b45cd213a7370424ffdb6fae815"
+
+[[package]]
+name = "minipng"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de129e6db0b4c69f59cde83990a5844989a93bbd23ab2dfbe48e68740a59327c"
 
 [[package]]
 name = "miniz_oxide"
@@ -5453,6 +5477,21 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
+
+[[package]]
+name = "zune-core"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb8a0807f7c01457d0379ba880ba6322660448ddebc890ce29bb64da71fb40f9"
+
+[[package]]
+name = "zune-jpeg"
+version = "0.5.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec5f41c76397b7da451efd19915684f727d7e1d516384ca6bd0ec43ec94de23c"
+dependencies = [
+ "zune-core",
+]
 
 [[package]]
 name = "zvariant"
