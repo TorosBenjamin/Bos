@@ -13,4 +13,5 @@ pub enum InterruptVector {
     Keyboard = 0x23,
     Reschedule = 0x24,
     Mouse = 0x25,
+    PrimaryAta = 0x26,
 }
