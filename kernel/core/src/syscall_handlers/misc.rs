@@ -20,7 +20,7 @@ pub fn sys_shutdown(exit_code: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u
 use crate::memory::cpu_local_data::get_local;
 use crate::task::task::TaskState;
 use core::sync::atomic::Ordering;
-use super::{current_task_and_cpu, validate_user_ptr};
+use super::{current_task_and_cpu, validate_user_ptr, check_user_ptr};
 
 /// Syscall: emit a debug value to the serial console.
 ///
@@ -35,14 +35,20 @@ pub fn sys_debug_log(value: u64, tag: u64, _: u64, _: u64, _: u64, _: u64) -> u6
 /// Registers the current task as the keyboard waiter, sets it Sleeping,
 /// enables interrupts, and halts. The keyboard ISR wakes it when a key arrives.
 pub fn sys_read_key(key_event_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
-    if !validate_user_ptr(key_event_out_ptr, core::mem::size_of::<kernel_api_types::KeyEvent>() as u64) {
+    let key_size = core::mem::size_of::<kernel_api_types::KeyEvent>() as u64;
+    if !check_user_ptr(key_event_out_ptr, key_size) {
         return 1;
     }
-    let out = key_event_out_ptr as *mut kernel_api_types::KeyEvent;
 
     loop {
         if let Some(event) = crate::drivers::keyboard::try_read_key() {
-            unsafe { core::ptr::write(out, event) };
+            // Re-validate with guard before writing — the pointer could have
+            // been unmapped by another thread while we were sleeping.
+            let _guard = match validate_user_ptr(key_event_out_ptr, key_size) {
+                Some(g) => g,
+                None => return 1,
+            };
+            unsafe { core::ptr::write(key_event_out_ptr as *mut kernel_api_types::KeyEvent, event) };
             return 0;
         }
 
@@ -85,14 +91,14 @@ pub fn sys_read_key(key_event_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u
 /// Writes a KeyEvent to `key_event_out_ptr` if one is available.
 /// Returns 0 (key available) or 1 (no key).
 pub fn sys_try_read_key(key_event_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
-    if !validate_user_ptr(key_event_out_ptr, core::mem::size_of::<kernel_api_types::KeyEvent>() as u64) {
-        return 1;
-    }
-    let out = key_event_out_ptr as *mut kernel_api_types::KeyEvent;
+    let _guard = match validate_user_ptr(key_event_out_ptr, core::mem::size_of::<kernel_api_types::KeyEvent>() as u64) {
+        Some(g) => g,
+        None => return 1,
+    };
 
     match crate::drivers::keyboard::try_read_key() {
         Some(event) => {
-            unsafe { core::ptr::write(out, event) };
+            unsafe { core::ptr::write(key_event_out_ptr as *mut kernel_api_types::KeyEvent, event) };
             0
         }
         None => 1,
@@ -103,14 +109,14 @@ pub fn sys_try_read_key(key_event_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, 
 ///
 /// Returns 0 and writes the event if one is available, or 1 if the buffer is empty.
 pub fn sys_read_mouse(mouse_event_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
-    if !validate_user_ptr(mouse_event_out_ptr, core::mem::size_of::<kernel_api_types::MouseEvent>() as u64) {
-        return 1;
-    }
-    let out = mouse_event_out_ptr as *mut kernel_api_types::MouseEvent;
+    let _guard = match validate_user_ptr(mouse_event_out_ptr, core::mem::size_of::<kernel_api_types::MouseEvent>() as u64) {
+        Some(g) => g,
+        None => return 1,
+    };
 
     match crate::drivers::mouse::try_read_mouse() {
         Some(event) => {
-            unsafe { core::ptr::write(out, event) };
+            unsafe { core::ptr::write(mouse_event_out_ptr as *mut kernel_api_types::MouseEvent, event) };
             0
         }
         None => 1,
@@ -127,9 +133,10 @@ pub fn sys_get_module(name_ptr: u64, name_len: u64, buf_ptr: u64, buf_cap: u64, 
     if name_len == 0 || name_len > 256 {
         return 0;
     }
-    if !validate_user_ptr(name_ptr, name_len) {
-        return 0;
-    }
+    let _guard_name = match validate_user_ptr(name_ptr, name_len) {
+        Some(g) => g,
+        None => return 0,
+    };
 
     let name_bytes = unsafe { core::slice::from_raw_parts(name_ptr as *const u8, name_len as usize) };
     let name = match core::str::from_utf8(name_bytes) {
@@ -166,9 +173,10 @@ pub fn sys_get_module(name_ptr: u64, name_len: u64, buf_ptr: u64, buf_cap: u64, 
     if buf_cap < module_size {
         return 0;
     }
-    if !validate_user_ptr(buf_ptr, buf_cap) {
-        return 0;
-    }
+    let _guard_buf = match validate_user_ptr(buf_ptr, buf_cap) {
+        Some(g) => g,
+        None => return 0,
+    };
 
     let src = module.addr() as *const u8;
     let magic = unsafe { core::slice::from_raw_parts(src, module_size.min(4) as usize) };

@@ -25,26 +25,50 @@ use crate::task::local_scheduler;
 use crate::task::task::{Task, TaskKind, TaskState};
 use core::sync::atomic::Ordering;
 
-/// Returns true if [ptr, ptr+size) is fully within the current user task's
-/// allocated virtual address space and within canonical lower-half bounds.
-fn validate_user_ptr(ptr: u64, size: u64) -> bool {
+/// RAII guard that holds a read lock on the current task's VMA lock.
+///
+/// While this guard is alive, no other thread can unmap or remap user-space
+/// pages (`sys_munmap`/`sys_mprotect`/`sys_mremap` acquire the write lock).
+/// This closes the TOCTOU window between pointer validation and kernel use.
+pub(crate) struct UserPtrGuard {
+    // Fields are dropped in declaration order:
+    //   1. `_guard` — releases the RwLock read lock
+    //   2. `_task`  — decrements the Arc refcount
+    //
+    // SAFETY: The `'static` lifetime is a transmuted lie. It is sound because:
+    //   - The guard borrows from `_task.vma_lock`, which lives as long as the Arc.
+    //   - `_guard` is dropped before `_task` (declaration order), so the borrow
+    //     is always released while the RwLock is still alive.
+    _guard: spin::RwLockReadGuard<'static, ()>,
+    _task: Arc<Task>,
+}
+
+/// Validates that `[ptr, ptr+size)` is within the current user task's
+/// allocated virtual address space, prefaults any lazy pages, and returns
+/// a guard that prevents concurrent unmapping while the kernel uses the pointer.
+///
+/// Returns `None` if the pointer is invalid.
+fn validate_user_ptr(ptr: u64, size: u64) -> Option<UserPtrGuard> {
     if ptr == 0 || size == 0 {
-        return false;
+        return None;
     }
-    let end = match ptr.checked_add(size) {
-        Some(e) => e,
-        None => return false,
-    };
+    let end = ptr.checked_add(size)?;
     if ptr < crate::consts::USER_MIN || end > crate::consts::USER_MAX + 1 {
-        return false;
+        return None;
     }
     let cpu = get_local();
     let rq = cpu.run_queue.get().unwrap().lock();
     let task = match &rq.current_task {
         Some(t) if t.kind == TaskKind::User => t.clone(),
-        _ => return false,
+        _ => return None,
     };
     drop(rq);
+
+    // Acquire the VMA read lock BEFORE checking VMAs. This prevents a
+    // concurrent sys_munmap (which takes the write lock) from removing the
+    // VMA or unmapping pages between our check and the caller's use.
+    let guard = task.vma_lock.read();
+
     {
         let inner = task.inner.lock();
         if !crate::memory::user_vaddr::is_user_vaddr_valid_range(
@@ -52,11 +76,29 @@ fn validate_user_ptr(ptr: u64, size: u64) -> bool {
             x86_64::VirtAddr::new(ptr),
             x86_64::VirtAddr::new(end),
         ) {
-            return false;
+            return None;
         }
     }
+
     // Ensure all lazy pages in the range are present before the kernel reads/writes them.
-    crate::memory::demand::prefault_user_range(&task, ptr, end)
+    if !crate::memory::demand::prefault_user_range(&task, ptr, end) {
+        return None;
+    }
+
+    // SAFETY: Transmute the guard lifetime from the stack borrow to 'static.
+    // Sound because UserPtrGuard drops _guard before _task (declaration order),
+    // and the Arc keeps the Task (and its vma_lock) alive.
+    let guard: spin::RwLockReadGuard<'static, ()> = unsafe { core::mem::transmute(guard) };
+
+    Some(UserPtrGuard { _guard: guard, _task: task })
+}
+
+/// Check that a user pointer is valid without returning a guard.
+///
+/// Use this only for early-fail checks in blocking syscalls that will
+/// re-validate (with a guard) before actually dereferencing the pointer.
+fn check_user_ptr(ptr: u64, size: u64) -> bool {
+    validate_user_ptr(ptr, size).is_some()
 }
 
 /// Returns the current task Arc and the local CPU's kernel_id, if a task is running.

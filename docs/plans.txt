@@ -28,10 +28,6 @@
 
 ===== Kernel: Bugs to Fix =====
 
-  3. [MED] User pointer TOCTOU race
-     syscall_handlers/mod.rs validate_user_ptr() — vaddr_set can be modified
-     concurrently by another thread. Low probability but possible.
-
   4. [MED] GPF handler raw pointer dereference
      interrupt/handlers.rs — reads iretq frame via raw pointer. If RSP is
      corrupted, causes recursive #GPF -> double fault with unhelpful message.

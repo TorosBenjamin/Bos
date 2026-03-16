@@ -69,6 +69,9 @@ pub fn sys_munmap(addr: u64, size: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
         }
     };
 
+    // Acquire the VMA write lock to prevent any concurrent validate_user_ptr
+    // (which holds a read lock) from racing with our unmap.
+    let _vma_write = task.vma_lock.write();
     let mut inner = task.inner.lock();
 
     let total_size = n_pages * Size4KiB::SIZE;
@@ -104,7 +107,11 @@ pub fn sys_munmap(addr: u64, size: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
 /// Returns: SharedBufId, or u64::MAX on failure.
 /// Writes the mapped virtual address to `vaddr_out_ptr`.
 pub fn sys_create_shared_buf(size: u64, vaddr_out_ptr: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
-    if size == 0 || !super::validate_user_ptr(vaddr_out_ptr, 8) {
+    let _guard_out = match super::validate_user_ptr(vaddr_out_ptr, 8) {
+        Some(g) => g,
+        None => return u64::MAX,
+    };
+    if size == 0 {
         return u64::MAX;
     }
 
@@ -175,6 +182,9 @@ pub fn sys_mprotect(addr: u64, size: u64, flags: u64, _: u64, _: u64, _: u64) ->
         }
     };
 
+    // Acquire the VMA write lock to prevent concurrent pointer validation
+    // from seeing stale page permissions.
+    let _vma_write = task.vma_lock.write();
     let mut inner = task.inner.lock();
 
     if !user_vaddr::is_user_vaddr_valid_range(
@@ -238,6 +248,9 @@ pub fn sys_mremap(old_addr: u64, old_size: u64, new_size: u64, flags: u64, _: u6
         }
     };
 
+    // Acquire the VMA write lock to prevent concurrent pointer validation
+    // from racing with VMA modification and page table changes.
+    let _vma_write = task.vma_lock.write();
     let mut inner = task.inner.lock();
 
     if !user_vaddr::is_user_vaddr_valid_range(
@@ -376,7 +389,11 @@ pub fn sys_mremap(old_addr: u64, old_size: u64, new_size: u64, flags: u64, _: u6
 /// Arguments: size (must be ≤ 4096), phys_out_ptr (u64* where phys addr is written)
 /// Returns: virtual address on success, 0 on failure.
 pub fn sys_alloc_dma(size: u64, phys_out_ptr: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
-    if size == 0 || size > Size4KiB::SIZE || !validate_user_ptr(phys_out_ptr, 8) {
+    let _guard_out = match validate_user_ptr(phys_out_ptr, 8) {
+        Some(g) => g,
+        None => return 0,
+    };
+    if size == 0 || size > Size4KiB::SIZE {
         return 0;
     }
 

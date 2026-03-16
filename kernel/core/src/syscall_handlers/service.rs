@@ -5,9 +5,10 @@ pub fn sys_register_service(name_ptr: u64, name_len: u64, send_ep: u64, _: u64, 
     if name_len == 0 || name_len > MAX_SERVICE_NAME_LEN as u64 {
         return SVC_ERR_INVALID_ARGS;
     }
-    if !super::validate_user_ptr(name_ptr, name_len) {
-        return SVC_ERR_INVALID_ARGS;
-    }
+    let _guard = match super::validate_user_ptr(name_ptr, name_len) {
+        Some(g) => g,
+        None => return SVC_ERR_INVALID_ARGS,
+    };
 
     // Verify send_ep exists and is a Send endpoint
     {
@@ -53,12 +54,14 @@ pub fn sys_lookup_service(name_ptr: u64, name_len: u64, ep_out_ptr: u64, _: u64,
     if name_len == 0 || name_len > MAX_SERVICE_NAME_LEN as u64 {
         return SVC_ERR_INVALID_ARGS;
     }
-    if !super::validate_user_ptr(name_ptr, name_len) {
-        return SVC_ERR_INVALID_ARGS;
-    }
-    if !super::validate_user_ptr(ep_out_ptr, 8) {
-        return SVC_ERR_INVALID_ARGS;
-    }
+    let _guard1 = match super::validate_user_ptr(name_ptr, name_len) {
+        Some(g) => g,
+        None => return SVC_ERR_INVALID_ARGS,
+    };
+    let _guard2 = match super::validate_user_ptr(ep_out_ptr, 8) {
+        Some(g) => g,
+        None => return SVC_ERR_INVALID_ARGS,
+    };
 
     let name_bytes = unsafe {
         core::slice::from_raw_parts(name_ptr as *const u8, name_len as usize)

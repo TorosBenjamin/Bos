@@ -1,7 +1,7 @@
 use crate::memory::cpu_local_data::get_local;
 use crate::task::task::TaskState;
 use core::sync::atomic::Ordering;
-use super::{current_task_and_cpu, validate_user_ptr};
+use super::{current_task_and_cpu, validate_user_ptr, check_user_ptr};
 
 /// Syscall: create a new IPC channel.
 ///
@@ -9,9 +9,14 @@ use super::{current_task_and_cpu, validate_user_ptr};
 /// Writes the two endpoint IDs to the output pointers.
 /// Returns: IPC status code.
 pub fn sys_channel_create(send_ep_out_ptr: u64, recv_ep_out_ptr: u64, capacity: u64, _: u64, _: u64, _: u64) -> u64 {
-    if !validate_user_ptr(send_ep_out_ptr, 8) || !validate_user_ptr(recv_ep_out_ptr, 8) {
-        return kernel_api_types::IPC_ERR_INVALID_ARGS;
-    }
+    let _g1 = match validate_user_ptr(send_ep_out_ptr, 8) {
+        Some(g) => g,
+        None => return kernel_api_types::IPC_ERR_INVALID_ARGS,
+    };
+    let _g2 = match validate_user_ptr(recv_ep_out_ptr, 8) {
+        Some(g) => g,
+        None => return kernel_api_types::IPC_ERR_INVALID_ARGS,
+    };
 
     let cap = if capacity == 0 {
         crate::ipc::DEFAULT_CHANNEL_CAPACITY
@@ -47,15 +52,20 @@ pub fn sys_channel_send(endpoint_id: u64, msg_ptr: u64, msg_len: u64, _: u64, _:
     if msg_len > crate::ipc::MAX_MESSAGE_SIZE as u64 {
         return kernel_api_types::IPC_ERR_MSG_TOO_LARGE;
     }
-    if msg_len > 0 && !validate_user_ptr(msg_ptr, msg_len) {
-        return kernel_api_types::IPC_ERR_INVALID_ARGS;
-    }
 
-    let data = if msg_len > 0 {
-        unsafe { core::slice::from_raw_parts(msg_ptr as *const u8, msg_len as usize) }
-    } else {
-        &[]
-    };
+    // Copy message data into a kernel buffer while the VMA guard is held.
+    // This avoids holding the read lock across the blocking sleep loop.
+    let mut kernel_buf = alloc::vec::Vec::new();
+    if msg_len > 0 {
+        let _guard = match validate_user_ptr(msg_ptr, msg_len) {
+            Some(g) => g,
+            None => return kernel_api_types::IPC_ERR_INVALID_ARGS,
+        };
+        kernel_buf.extend_from_slice(unsafe {
+            core::slice::from_raw_parts(msg_ptr as *const u8, msg_len as usize)
+        });
+    }
+    let data = &kernel_buf[..];
 
     // Get the channel Arc once so we can access its send_waiter on ChannelFull
     let channel_arc = {
@@ -115,7 +125,8 @@ pub fn sys_channel_send(endpoint_id: u64, msg_ptr: u64, msg_len: u64, _: u64, _:
 ///
 /// Blocks (via sleep+hlt) if channel is empty, woken by the sender.
 pub fn sys_channel_recv(endpoint_id: u64, buf_ptr: u64, buf_cap: u64, bytes_read_out_ptr: u64, _: u64, _: u64) -> u64 {
-    if !validate_user_ptr(buf_ptr, buf_cap) || !validate_user_ptr(bytes_read_out_ptr, 8) {
+    // Early validation (discard guard — we'll re-validate before writing).
+    if !check_user_ptr(buf_ptr, buf_cap) || !check_user_ptr(bytes_read_out_ptr, 8) {
         return kernel_api_types::IPC_ERR_INVALID_ARGS;
     }
 
@@ -133,6 +144,15 @@ pub fn sys_channel_recv(endpoint_id: u64, buf_ptr: u64, buf_cap: u64, bytes_read
         match crate::ipc::try_recv(endpoint_id) {
             Ok(msg) => {
                 let copy_len = msg.len().min(buf_cap as usize);
+                // Re-validate with guard before writing to user memory.
+                let _g1 = match validate_user_ptr(buf_ptr, buf_cap) {
+                    Some(g) => g,
+                    None => return kernel_api_types::IPC_ERR_INVALID_ARGS,
+                };
+                let _g2 = match validate_user_ptr(bytes_read_out_ptr, 8) {
+                    Some(g) => g,
+                    None => return kernel_api_types::IPC_ERR_INVALID_ARGS,
+                };
                 unsafe {
                     core::ptr::copy_nonoverlapping(msg.as_ptr(), buf_ptr as *mut u8, copy_len);
                     core::ptr::write(bytes_read_out_ptr as *mut u64, copy_len as u64);
@@ -184,9 +204,14 @@ pub fn sys_channel_recv(endpoint_id: u64, buf_ptr: u64, buf_cap: u64, bytes_read
 /// Returns IPC_OK and writes the message if one is available,
 /// or IPC_ERR_CHANNEL_FULL immediately if the channel is empty.
 pub fn sys_try_channel_recv(endpoint_id: u64, buf_ptr: u64, buf_cap: u64, bytes_read_out_ptr: u64, _: u64, _: u64) -> u64 {
-    if !validate_user_ptr(buf_ptr, buf_cap) || !validate_user_ptr(bytes_read_out_ptr, 8) {
-        return kernel_api_types::IPC_ERR_INVALID_ARGS;
-    }
+    let _g1 = match validate_user_ptr(buf_ptr, buf_cap) {
+        Some(g) => g,
+        None => return kernel_api_types::IPC_ERR_INVALID_ARGS,
+    };
+    let _g2 = match validate_user_ptr(bytes_read_out_ptr, 8) {
+        Some(g) => g,
+        None => return kernel_api_types::IPC_ERR_INVALID_ARGS,
+    };
 
     match crate::ipc::try_recv(endpoint_id) {
         Ok(msg) => {
@@ -210,9 +235,14 @@ pub fn sys_try_channel_send(endpoint_id: u64, msg_ptr: u64, msg_len: u64, _: u64
     if msg_len > crate::ipc::MAX_MESSAGE_SIZE as u64 {
         return kernel_api_types::IPC_ERR_MSG_TOO_LARGE;
     }
-    if msg_len > 0 && !validate_user_ptr(msg_ptr, msg_len) {
-        return kernel_api_types::IPC_ERR_INVALID_ARGS;
-    }
+    let _guard = if msg_len > 0 {
+        match validate_user_ptr(msg_ptr, msg_len) {
+            Some(g) => Some(g),
+            None => return kernel_api_types::IPC_ERR_INVALID_ARGS,
+        }
+    } else {
+        None
+    };
 
     let data = if msg_len > 0 {
         unsafe { core::slice::from_raw_parts(msg_ptr as *const u8, msg_len as usize) }

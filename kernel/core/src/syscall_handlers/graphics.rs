@@ -16,9 +16,10 @@ pub fn sys_get_bounding_box(rect_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _
     if !crate::graphics::display::is_display_owner() {
         return GraphicsResult::PermissionDenied as u64;
     }
-    if !validate_user_ptr(rect_out_ptr, core::mem::size_of::<Rect>() as u64) {
-        return GraphicsResult::InvalidInput as u64;
-    }
+    let _guard = match validate_user_ptr(rect_out_ptr, core::mem::size_of::<Rect>() as u64) {
+        Some(g) => g,
+        None => return GraphicsResult::InvalidInput as u64,
+    };
 
     let rect_out = unsafe { &mut *(rect_out_ptr as *mut Rect) };
     let bb = DISPLAY.bounding_box();
@@ -35,10 +36,13 @@ pub fn sys_get_bounding_box(rect_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _
 /// Arguments: info_out_ptr
 /// Returns: GraphicsResult code.
 pub fn sys_get_display_info(info_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
-    if !validate_user_ptr(info_out_ptr, core::mem::size_of::<DisplayInfo>() as u64) {
-        log::warn!("sys_get_display_info: invalid ptr {:#x}", info_out_ptr);
-        return GraphicsResult::InvalidInput as u64;
-    }
+    let _guard = match validate_user_ptr(info_out_ptr, core::mem::size_of::<DisplayInfo>() as u64) {
+        Some(g) => g,
+        None => {
+            log::warn!("sys_get_display_info: invalid ptr {:#x}", info_out_ptr);
+            return GraphicsResult::InvalidInput as u64;
+        }
+    };
 
     let info = DISPLAY.get_display_info();
     log::info!("sys_get_display_info: {}x{}", info.width, info.height);

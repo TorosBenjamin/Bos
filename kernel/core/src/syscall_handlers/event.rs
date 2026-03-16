@@ -135,9 +135,10 @@ pub fn sys_wait_for_event(
     // Validate and copy channel IDs from userspace.
     let mut ep_ids = [0u64; MAX_CHANNELS];
     if count > 0 {
-        if !validate_user_ptr(channels_ptr, (count as u64) * 8) {
-            return RESULT_INVALID;
-        }
+        let _guard = match validate_user_ptr(channels_ptr, (count as u64) * 8) {
+            Some(g) => g,
+            None => return RESULT_INVALID,
+        };
         unsafe {
             core::ptr::copy_nonoverlapping(
                 channels_ptr as *const u64,
@@ -145,6 +146,7 @@ pub fn sys_wait_for_event(
                 count,
             );
         }
+        // _guard dropped here; kernel uses the copied ep_ids from now on.
     }
 
     let wait_keyboard = flags & kernel_api_types::WAIT_KEYBOARD as u64 != 0;
