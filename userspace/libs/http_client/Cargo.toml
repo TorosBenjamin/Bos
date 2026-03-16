@@ -5,8 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-ulib             = { path = "../../frameworks/ulib" }
-kernel_api_types = { path = "../../../shared/kernel_api_types" }
+bos_std          = { path = "../../frameworks/bos_std" }
 httparse         = { version = "1", default-features = false }
 embedded-tls     = { version = "0.18", default-features = false }
 embedded-io      = "0.7"

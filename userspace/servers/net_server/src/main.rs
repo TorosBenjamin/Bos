@@ -260,6 +260,12 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                     iface.routes_mut().remove_default_ipv4_route();
                 }
 
+                // DEBUG: log DNS server count and first server IP
+                ulib::sys_debug_log(dns.len() as u64, 0x00DC_0003);
+                if let Some(IpAddress::Ipv4(a)) = dns.first() {
+                    ulib::sys_debug_log(u32::from_be_bytes(a.0) as u64, 0x00DC_0004);
+                }
+
                 sockets.get_mut::<dns::Socket>(dns_handle).update_servers(&dns);
 
                 // Set ping target to gateway once DHCP is configured.

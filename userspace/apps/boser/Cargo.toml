@@ -5,9 +5,10 @@ edition = "2024"
 publish = false
 
 [dependencies]
-bos_egui     = { path = "../../frameworks/bos_egui" }
-ulib         = { path = "../../frameworks/ulib" }
-http_client  = { path = "../../libs/http_client" }
+bos_egui      = { path = "../../frameworks/bos_egui" }
+ulib          = { path = "../../frameworks/ulib" }
+http_client   = { path = "../../libs/http_client" }
+html_renderer = { path = "../../libs/html_renderer", default-features = false }
 
 [[bin]]
 name = "boser"

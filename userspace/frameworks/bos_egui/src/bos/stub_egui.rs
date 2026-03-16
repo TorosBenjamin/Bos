@@ -7,9 +7,12 @@
 use core::cell::RefCell;
 use alloc::string::{String, ToString};
 
-use embedded_graphics::{
-    mono_font::{MonoFont, MonoTextStyle, ascii::{FONT_8X13, FONT_8X13_BOLD}},
+pub use embedded_graphics::{
+    mono_font::{MonoFont, ascii::{FONT_8X13, FONT_8X13_BOLD}},
     pixelcolor::Rgb888,
+};
+use embedded_graphics::{
+    mono_font::MonoTextStyle,
     prelude::*,
     primitives::{Rectangle, PrimitiveStyle, Line},
     text::Text,
@@ -21,16 +24,22 @@ use super::pixel_draw::PixelBuf;
 
 // ── Colours ──────────────────────────────────────────────────────────────────
 
-const BG:      Rgb888 = Rgb888::new(0x18, 0x18, 0x1e);
-const FG:      Rgb888 = Rgb888::new(0xca, 0xd3, 0xf5);
-const HEADING: Rgb888 = Rgb888::new(0x8a, 0xad, 0xf4);
-const SEP:     Rgb888 = Rgb888::new(0x36, 0x3a, 0x4f);
+pub const BG:      Rgb888 = Rgb888::new(0x18, 0x18, 0x1e);
+pub const FG:      Rgb888 = Rgb888::new(0xca, 0xd3, 0xf5);
+pub const HEADING: Rgb888 = Rgb888::new(0x8a, 0xad, 0xf4);
+pub const SEP:     Rgb888 = Rgb888::new(0x36, 0x3a, 0x4f);
 const BTN_BG:  Rgb888 = Rgb888::new(0x36, 0x3a, 0x4f);
 const BTN_HOV: Rgb888 = Rgb888::new(0x49, 0x4d, 0x64);
 const BTN_FG:  Rgb888 = Rgb888::new(0xca, 0xd3, 0xf5);
 const INPUT_BG: Rgb888 = Rgb888::new(0x1e, 0x1e, 0x2e);
 const INPUT_FG: Rgb888 = Rgb888::new(0xca, 0xd3, 0xf5);
 const INPUT_BR: Rgb888 = Rgb888::new(0x49, 0x4d, 0x64);
+
+// Additional theme colours for styled HTML content.
+pub const LINK:     Rgb888 = Rgb888::new(0x8b, 0xd5, 0xca); // teal
+pub const CODE:     Rgb888 = Rgb888::new(0xa6, 0xda, 0x95); // green
+pub const EMPHASIS: Rgb888 = Rgb888::new(0xb7, 0xbf, 0xf8); // lavender
+pub const DIMMED:   Rgb888 = Rgb888::new(0xa5, 0xad, 0xcb); // subtext
 
 // ── Context ───────────────────────────────────────────────────────────────────
 
@@ -101,10 +110,20 @@ impl Context {
             .map_or(false, |k| k.event_type == code && k.pressed)
     }
 
+    /// Returns the key event for this frame, if any.
+    pub fn key_event(&self) -> Option<KeyEvent> {
+        self.inner.borrow().key
+    }
+
     /// Returns the window size in pixels.
     pub fn screen_size(&self) -> (u32, u32) {
         let inner = self.inner.borrow();
         (inner.width, inner.height)
+    }
+
+    /// Returns and consumes the click coordinates for this frame, if any.
+    pub fn take_click(&self) -> Option<(f32, f32)> {
+        self.inner.borrow_mut().click.take()
     }
 
     fn pixels_mut<'a>(&'a self, inner: &'a mut Inner) -> PixelBuf<'a> {
@@ -334,6 +353,32 @@ impl<'a> Ui<'a> {
         result
     }
 
+    /// Claim the remaining vertical area as a raw pixel canvas for direct rendering.
+    ///
+    /// The returned `Canvas` starts at the current `draw_y` and extends to the
+    /// bottom of the window. `draw_y` is advanced to the window bottom so that
+    /// no further widgets are laid out below.
+    pub fn canvas(&mut self) -> Canvas<'_> {
+        let (origin_x, origin_y, width, height, pixels_ptr, pw, ph, info) = {
+            let mut inner = self.ctx.inner.borrow_mut();
+            let origin_x = inner.margin;
+            let origin_y = inner.draw_y;
+            let width = inner.width as i32 - inner.margin * 2;
+            let height = inner.height as i32 - origin_y;
+            inner.draw_y = inner.height as i32;
+            (origin_x, origin_y, width, height, inner.pixels, inner.width, inner.height, inner.info)
+        };
+        // Safety: the pixel buffer lives for the duration of the frame (owned by
+        // the Window). The RefMut is released above but the raw pointer remains valid.
+        let buf = PixelBuf {
+            pixels: unsafe { core::slice::from_raw_parts_mut(pixels_ptr, (pw * ph) as usize) },
+            width: pw,
+            height: ph,
+            info,
+        };
+        Canvas { buf, origin_x, origin_y, width, height }
+    }
+
     pub fn text_edit_multiline(&mut self, text: &mut String) -> Response {
         let mut inner = self.ctx.inner.borrow_mut();
 
@@ -376,6 +421,53 @@ impl<'a> Ui<'a> {
 
         // In a stub, we aren't handling focus/keyboard yet
         Response { clicked: false }
+    }
+}
+
+// ── Canvas ───────────────────────────────────────────────────────────────────
+
+/// A raw pixel canvas for direct rendering into the remaining vertical space.
+///
+/// Obtained via `Ui::canvas()`. Provides low-level drawing primitives so that
+/// apps can render styled content (e.g. HTML) without going through the
+/// label/heading widget API.
+pub struct Canvas<'a> {
+    pub buf: PixelBuf<'a>,
+    pub origin_x: i32,
+    pub origin_y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+impl<'a> Canvas<'a> {
+    /// Draw a string at `(x, y)` relative to the canvas origin.
+    pub fn draw_text(
+        &mut self,
+        text: &str,
+        x: i32,
+        y: i32,
+        color: Rgb888,
+        font: &MonoFont<'_>,
+    ) {
+        draw_text(
+            &mut self.buf,
+            text,
+            self.origin_x + x,
+            self.origin_y + y,
+            color,
+            font,
+        );
+    }
+
+    /// Draw a horizontal line spanning the full canvas width at `y` (relative to origin).
+    pub fn draw_hline(&mut self, y: i32, color: Rgb888) {
+        let abs_y = self.origin_y + y;
+        let _ = Line::new(
+            embedded_graphics::geometry::Point::new(self.origin_x, abs_y),
+            embedded_graphics::geometry::Point::new(self.origin_x + self.width, abs_y),
+        )
+        .into_styled(PrimitiveStyle::with_stroke(color, 1))
+        .draw(&mut self.buf);
     }
 }
 

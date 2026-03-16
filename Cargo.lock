@@ -591,10 +591,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bos_std"
+version = "0.1.0"
+dependencies = [
+ "embedded-io",
+ "kernel_api_types",
+ "ulib",
+]
+
+[[package]]
 name = "boser"
 version = "0.1.0"
 dependencies = [
  "bos_egui",
+ "html_renderer",
  "http_client",
  "ulib",
 ]
@@ -2048,16 +2058,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "html_renderer"
+version = "0.1.0"
+
+[[package]]
 name = "http_client"
 version = "0.1.0"
 dependencies = [
+ "bos_std",
  "embedded-io",
  "embedded-tls",
  "httparse",
- "kernel_api_types",
  "rand_core",
  "sha2",
- "ulib",
 ]
 
 [[package]]
@@ -3938,6 +3951,19 @@ checksum = "42d3e9c45c09de15d06dd8acf5f4e0e399e85927b7f00711024eb7ae10fa4869"
 dependencies = [
  "displaydoc",
  "zerovec",
+]
+
+[[package]]
+name = "tls_test"
+version = "0.1.0"
+dependencies = [
+ "embedded-io",
+ "embedded-tls",
+ "html_renderer",
+ "http_client",
+ "rand",
+ "rand_core",
+ "sha2",
 ]
 
 [[package]]

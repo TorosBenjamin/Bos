@@ -82,6 +82,8 @@ fn main() {
     let mut qemu = Command::new("qemu-system-x86_64");
     // Force GTK to use XWayland so QEMU gets proper relative PS/2 mouse events.
     qemu.env("GDK_BACKEND", "x11");
+    // Point SLIRP DNS relay at systemd-resolved stub instead of uplink resolv.conf.
+    qemu.env("QEMU_RESOLV_CONF", "/run/systemd/resolve/stub-resolv.conf");
 
     qemu.arg("-enable-kvm");
     qemu.arg("-display").arg("gtk");
