@@ -1,182 +1,153 @@
-# Roadmap: Multi-Window Visual Demo
+# Roadmap
 
-This roadmap tracks the path from the current single-task graphics demo to a multi-window visual demo with cooperating user tasks, mediated by a display server.
+This roadmap tracks the evolution of Bos from a bare-metal kernel to a functional desktop OS with windowed applications, networking, and a filesystem.
 
-## Design Decisions
+## Design decisions
 
-These decisions guide all phases below:
+These decisions guided the architecture:
 
-- **Task hierarchy:** Init process model. The kernel spawns one "init" user task, which uses `Spawn` to create all other user tasks.
-- **Display model:** Display server (single owner) + compositor. Only one designated task may call graphics syscalls. Other tasks communicate with it via IPC.
-- **Spawn mechanism:** The caller passes a pointer to ELF bytes in its own memory. The kernel parses the ELF and creates a new task.
-- **IPC:** Message passing first (kernel-mediated channels), then shared memory later (same physical frames mapped into two tasks at the same vaddr).
-
----
-
-## Phase 1: Spawn Syscall
-
-**Status:** Done
-**Blocked by:** Nothing (all prerequisites exist)
-
-**Goal:** One user task can create another from ELF bytes in its memory.
-
-**What to build:**
-- Implement the `Spawn` syscall handler (number 4, already reserved) -- caller passes `(elf_ptr, elf_len)`, kernel parses the ELF, creates a new address space, and schedules the child task
-- The child gets its own page table, stack, and vaddr set (like `create_user_task_from_elf` but reading from user memory instead of a Limine module)
-- Return a task ID to the parent so it can reference the child later
-- Kernel validates that `elf_ptr..elf_ptr+elf_len` is readable in the caller's address space
-- Add userland wrapper in `ulib/src/lib.rs`
-
-**Files to modify/create:**
-- `kernel/src/syscall_handlers.rs` -- add `sys_spawn`
-- `kernel/src/raw_syscall_handler.rs` -- register `Spawn` handler
-- `kernel/src/user_task_from_elf.rs` -- extract common logic, add variant that reads from user memory
-- `ulib/src/lib.rs` -- add `sys_spawn` wrapper
-
-**Tests:**
-- Init task spawns a child task that calls `Exit`. Init continues running.
+- **Init process model**: the kernel spawns one "init" user task, which loads and spawns all other tasks (servers, drivers, apps) from boot modules or the filesystem.
+- **Display server + compositor**: only one designated task owns the framebuffer. Other tasks communicate with it via IPC to create windows and submit pixel buffers.
+- **User-space drivers**: hardware drivers (e.g., e1000 NIC) run as user tasks with PCI BAR mapping and DMA allocation syscalls, keeping driver bugs out of ring 0.
+- **Service discovery**: tasks register named services (IPC endpoints) so clients can find them by name without hardcoded IDs.
+- **Shared memory for bulk data**: window pixel buffers and filesystem file contents use shared buffers (zero-copy) rather than IPC message copying.
 
 ---
 
-## Phase 2: Message Passing IPC
+## Phase 1: Spawn syscall
 
-**Status:** Done
-**Blocked by:** Phase 1 (need Spawn to test two tasks communicating)
+**Status: Done**
 
-**Goal:** Two tasks can send and receive fixed-size messages through kernel-mediated channels.
-
-**What to build:**
-- New kernel object: **Channel** -- a bounded queue of messages between exactly two endpoints
-- Syscalls:
-  - `ChannelCreate` -- returns two endpoint IDs (send-end, recv-end)
-  - `ChannelSend(endpoint, msg_ptr, msg_len)` -- copies message into kernel buffer, blocks or fails if full
-  - `ChannelRecv(endpoint, buf_ptr, buf_len)` -- copies message out, blocks if empty
-  - `ChannelClose(endpoint)` -- destroys the endpoint
-- Per-task table of owned endpoints (so the kernel can validate access and clean up on exit)
-- A way to pass an endpoint to a child task at spawn time (e.g. Spawn takes an extra argument specifying which endpoint the child inherits; child receives it in a register or at a known memory address)
-- Task `Blocked` state: scheduler skips blocked tasks, `ChannelSend` wakes blocked receivers, `ChannelRecv` wakes blocked senders
-
-**Design constraints:**
-- Fixed max message size (e.g. 4 KiB) to avoid dynamic kernel allocations per message
-- Start with blocking send/recv only; non-blocking variants later
-
-**Files to modify/create:**
-- `kernel_api_types/src/lib.rs` -- new syscall numbers and channel types
-- `kernel/src/ipc/` (new module) -- channel implementation, endpoint table
-- `kernel/src/syscall_handlers.rs` -- channel syscall handlers
-- `kernel/src/raw_syscall_handler.rs` -- register channel syscalls
-- `kernel/src/task/task.rs` -- per-task endpoint table, Blocked state integration
-- `ulib/src/lib.rs` -- channel wrappers
-
-**Tests:**
-- Init spawns a child, sends it a message, child receives and echoes it back. Init verifies the reply.
+One user task can create another from ELF bytes in its own memory. The child gets its own page table, stack, and VMA set. The kernel validates the ELF pointer range in the caller's address space and returns the child's task ID.
 
 ---
 
-## Phase 3: Restrict Graphics Syscalls
+## Phase 2: Message passing IPC
 
-**Status:** Done
-**Blocked by:** Phase 2 (need IPC so non-display tasks can still request drawing)
+**Status: Done**
 
-**Goal:** Only a designated "display server" task can call `PresentDisplay` / `GetBoundingBox`.
-
-**What to build:**
-- A global `AtomicU64` storing the task ID of the current display owner (init by default)
-- `PresentDisplay`, `GetBoundingBox` check the caller's task ID against the display owner; return error if mismatch
-- A mechanism for the display owner to transfer ownership to a child (e.g. a `TransferDisplay` syscall, or a flag on `Spawn`)
-- Alternatively, a per-task capability flag set at spawn time
-
-**Files to modify/create:**
-- `kernel/src/syscall_handlers.rs` -- add ownership check to graphics syscalls, add transfer mechanism
-- `kernel_api_types/src/lib.rs` -- new error codes or syscall for transfer
-
-**Tests:**
-- A non-display task calls `PresentDisplay` and gets an error back.
-- Display owner transfers ownership to a child; child can draw, parent can no longer draw.
+Bounded, unidirectional channels with send/recv endpoints. Blocking and non-blocking variants. 4 KiB max message size, configurable capacity (default 16, max 256). Per-task endpoint tracking for cleanup on exit. `WaitForEvent` syscall for multiplexed waiting across channels, keyboard, mouse, and timeouts.
 
 ---
 
-## Phase 4: Display Server Task
+## Phase 3: Display ownership
 
-**Status:** Not started
-**Blocked by:** Phase 2 (IPC), Phase 3 (display ownership)
+**Status: Done**
 
-**Goal:** A dedicated user task that owns the framebuffer and renders on behalf of clients via IPC.
-
-**What to build:**
-- A new user binary: `display_server/` -- receives draw commands over IPC, renders via graphics syscalls
-- A wire protocol for draw commands (serialized into message bytes):
-  - `FillRect { x, y, w, h, color }`
-  - `DrawPixels { data: [PixelData] }`
-  - `GetBounds` -- reply: `{ w, h }`
-- A client library (module in `ulib/` or separate crate) that wraps the protocol and implements `embedded_graphics::DrawTarget`, so existing drawing code works transparently
-- Init spawns the display server (passing it display ownership + recv endpoint), then spawns client tasks with send endpoints
-
-**Files to modify/create:**
-- `display_server/` (new crate) -- display server binary
-- `ulib/src/display_client.rs` (new) -- client-side DrawTarget wrapping IPC
-- `kernel_api_types/src/lib.rs` -- display protocol message types (shared between server and clients)
-
-**Tests:**
-- Init spawns display server + one client. Client sends "fill red rectangle" command. Rectangle appears on screen.
+Graphics syscalls restricted to a single display owner (tracked via `AtomicU64`). `TransferDisplay` syscall for ownership handoff. `GetDisplayInfo` unrestricted for dimension queries.
 
 ---
 
-## Phase 5: Visual Demo -- Multiple Cooperating Tasks
+## Phase 4: Display server + compositor
 
-**Status:** Not started
-**Blocked by:** Phase 4 (display server)
+**Status: Done**
 
-**Goal:** Multiple client tasks each drawing to different screen regions, coordinated by the display server.
+A user-space display server (`display_server/`) that:
 
-**What to build:**
-- Extend the display server protocol:
-  - `RegisterWindow { x, y, w, h }` -- reply: `window_id` -- client requests a screen region
-  - All subsequent draw commands from that client are clipped/offset to its window
-  - `UnregisterWindow { window_id }`
-- Spawn 2-3 demo client tasks, each claiming a different window:
-  - Task A: animated color cycling
-  - Task B: bouncing shape
-  - Task C: text counter
-- The display server clips each client's draws to its window bounds
-
-**Files to modify/create:**
-- `display_server/` -- extend protocol with windowing
-- `init_task/` -- demo client tasks (could be separate binaries or one binary with different entry behavior)
-
-**Tests:**
-- Three independent animations running simultaneously in different screen regions, all through the display server.
+- Registers as the `"display"` service.
+- Manages windows via an IPC protocol (`WindowMessageType` enum): `CreateWindow`, `UpdateWindow`, `CloseWindow`, `MoveWindow`, `ResizeWindow`, `RaiseWindow`, `LowerWindow`, `HideWindow`, `ShowWindow`, and `CreatePanel`.
+- Allocates shared buffers for window pixel backing stores — clients write pixels directly, then send `UpdateWindow` with a dirty rect. No pixel data flows through IPC messages.
+- Composites all visible windows onto the framebuffer, with z-ordering, tiling layout, floating windows, and panel anchoring (top/bottom/left/right).
+- Delivers input events to the focused window: key presses, mouse moves, mouse button press/release, focus gained/lost, configure (resize), and frame-presented sync.
+- Supports window flags: `WINDOW_FLAG_FLOATING`, `WINDOW_FLAG_ALPHA` (premultiplied alpha compositing), `WINDOW_FLAG_HIDDEN`.
+- Loads configuration from `/bos_ds.conf` on the FAT32 filesystem (with fallback defaults).
+- Supports drag-to-move and drag-to-resize for floating windows.
+- Parent/child window relationships (child always floats).
 
 ---
 
-## Dependency Graph
+## Phase 5: Shared memory + threads
+
+**Status: Done**
+
+- `CreateSharedBuf` / `MapSharedBuf` / `DestroySharedBuf` syscalls for zero-copy memory sharing.
+- `ThreadCreate` syscall for threads sharing the parent's address space (same CR3).
+- `Mprotect` and `Mremap` syscalls for changing page permissions and resizing mappings.
+- `AllocDma` syscall for physically-contiguous DMA buffer allocation (used by user-space drivers).
+- `MapPciBar` / `PciConfigRead` / `PciConfigWrite` syscalls for user-space PCI device access.
+
+---
+
+## Phase 6: Filesystem
+
+**Status: Done**
+
+A user-space FAT32 filesystem server (`fs_server/`):
+
+- Registers as the `"fatfs"` service.
+- Reads the IDE disk via `BlockReadSectors` / `BlockWriteSectors` syscalls.
+- Serves file read requests over IPC — returns file contents via shared buffers for zero-copy access.
+- Init task loads applications from the filesystem instead of embedding them as boot modules.
+
+---
+
+## Phase 7: Networking
+
+**Status: Done**
+
+A user-space network stack:
+
+- **e1000 driver** (`userspace/drivers/e1000/`): user-space Intel e1000 NIC driver using PCI BAR mapping and DMA buffers. Registers as the `"e1000"` service.
+- **Net server** (`userspace/servers/net_server/`): registers as the `"net"` service. Provides TCP connect, send, recv, close, and DNS resolve operations over IPC.
+- **Client libraries**: `ulib::net` for raw network access, `http_client` for HTTP requests (including TLS), `html_renderer` for HTML parsing.
+
+---
+
+## Phase 8: Applications
+
+**Status: In progress**
+
+User-space applications running on top of the display server:
+
+- **Boser** (`userspace/apps/boser/`): web browser using `http_client` + `html_renderer`.
+- **Launcher** (`userspace/apps/launcher/`): application launcher panel (hidden by default, toggled by Super+Space).
+- **Files** (`userspace/apps/files/`): file manager.
+- **Hello egui** (`userspace/apps/hello_egui/`): egui demo app via the `bos_egui` framework.
+- **utest** (`userspace/apps/utest/`): integration test runner.
+
+### Frameworks
+
+- **ulib** — core userspace library: syscall wrappers, window client, filesystem client, network client.
+- **bos_std** — higher-level standard library (networking abstractions).
+- **bos_egui** — egui integration for Bos (renders via shared-buffer windows).
+- **bos_image** — image decoding for userspace.
+
+---
+
+## Dependency graph
 
 ```
 Phase 1: Spawn
    |
    v
-Phase 2: IPC (message passing)
+Phase 2: IPC
    |
-   +------------------+
-   v                  v
-Phase 3: Restrict    Phase 4: Display
-  graphics            server
-   |                  |
-   +--------+---------+
-            v
-     Phase 5: Visual demo
+   +------------------+------------------+
+   v                  v                  v
+Phase 3: Display   Phase 5: Shared    Phase 6: Filesystem
+  ownership          memory/threads       |
+   |                  |                   |
+   +--------+---------+                   |
+            v                             |
+     Phase 4: Display                     |
+       server                             |
+            |                             |
+            +----------+------ -----------+
+                       v
+                Phase 7: Networking
+                       |
+                       v
+                Phase 8: Applications
 ```
-
-Phases 3 and 4 can be developed in parallel once Phase 2 is complete.
 
 ---
 
-## Future Work (beyond this roadmap)
+## Future work
 
-These are not needed for the visual demo but are natural next steps:
-
-- **Shared memory IPC** -- for large data transfers (e.g. per-window framebuffers). Add `ShmCreate` / `ShmMap` syscalls that map the same physical frames into two tasks at the same virtual address.
-- **Full compositor** -- double-buffered per-window framebuffers, alpha blending, z-ordering, window decorations.
-- **Multiple ELF binaries** -- currently there is only one Limine module. For distinct binaries, either embed child ELFs as data in the init binary, or load multiple Limine modules.
-- **Filesystem** -- loading programs from a filesystem instead of embedding them.
-- **Non-blocking / async IPC** -- `poll`-style multiplexing across multiple channels.
+- **Write support in filesystem** — currently read-only FAT32.
+- **Full compositor** — double-buffered per-window framebuffers, alpha blending improvements, window decorations/title bars.
+- **Process management** — signal delivery, process groups, job control.
+- **Audio** — sound driver and audio mixing server.
+- **More hardware support** — USB, NVMe, AHCI.
+- **Memory-mapped files** — `mmap` backed by filesystem pages.
+- **Async I/O** — `poll`/`epoll`-style multiplexing across file descriptors and IPC channels.
