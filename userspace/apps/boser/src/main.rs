@@ -9,12 +9,16 @@ use html_renderer::{ContentBlock, StyledLine};
 
 /// Line height in pixels (uniform for text lines).
 const LINE_H: i32 = 17;
-/// Header area: title(20) + sep(14) + search bar(28+8) + sep(14) = ~84
-const HEADER_H: u32 = 84;
+/// Header area: tab bar(30) + search bar(36) + separator(14) = 80
+const HEADER_H: u32 = 80;
 /// Maximum image file size to fetch (200 KB).
 const MAX_IMAGE_BYTES: usize = 200 * 1024;
 /// Maximum number of images to fetch per page.
 const MAX_IMAGES: usize = 10;
+/// Cursor blink interval in nanoseconds (500 ms).
+const BLINK_INTERVAL_NS: u64 = 500_000_000;
+/// Maximum characters shown in a tab title.
+const TAB_TITLE_MAX: usize = 16;
 
 // ── Panic / entry ─────────────────────────────────────────────────────────────
 
@@ -56,56 +60,99 @@ enum Page {
     Error { url: String, msg: String },
 }
 
-struct BoserApp {
+struct Tab {
     input: String,
-    input_focused: bool,
     page: Page,
+}
+
+impl Tab {
+    fn new() -> Self {
+        Self { input: String::new(), page: Page::Home }
+    }
+
+    fn title(&self) -> &str {
+        match &self.page {
+            Page::Home => "New Tab",
+            Page::Loading { .. } => "Loading...",
+            Page::Error { .. } => "Error",
+            Page::Ready { url, .. } => url.as_str(),
+        }
+    }
+}
+
+struct BoserApp {
+    tabs: Vec<Tab>,
+    active_tab: usize,
+    input_focused: bool,
     pending_fetch: Option<String>,
+    /// Timestamp (ns) when the cursor blink was last reset (focus gain or keypress).
+    blink_reset_ns: u64,
 }
 
 impl BoserApp {
+    /// NOTE: must not allocate — the heap is not yet initialized when this
+    /// is called (before `bos_egui::run`). The first tab is pushed lazily
+    /// in `update()`.
     fn new() -> Self {
         Self {
-            input: String::new(),
+            tabs: Vec::new(),
+            active_tab: 0,
             input_focused: true,
-            page: Page::Home,
             pending_fetch: None,
+            blink_reset_ns: 0,
         }
     }
 
+    fn tab(&self) -> &Tab { &self.tabs[self.active_tab] }
+    fn tab_mut(&mut self) -> &mut Tab { &mut self.tabs[self.active_tab] }
+
     fn navigate(&mut self, url: String) {
-        self.page = Page::Loading { url: url.clone() };
+        self.tab_mut().page = Page::Loading { url: url.clone() };
         self.pending_fetch = Some(url);
         self.input_focused = false;
         bos_egui::request_redraw();
     }
 
     fn handle_submit(&mut self) {
-        let query = self.input.trim();
+        let query = self.tab().input.trim();
         if query.is_empty() {
             return;
         }
 
-        if query.starts_with("http://") || query.starts_with("https://") {
-            let url = String::from(query);
-            self.navigate(url);
+        let url = if query.starts_with("http://") || query.starts_with("https://") {
+            String::from(query)
         } else {
             let encoded = url_encode(query);
-            let url = format!("https://search.marginalia.nu/search?query={encoded}");
-            self.navigate(url);
-        }
+            format!("https://search.marginalia.nu/search?query={encoded}")
+        };
+        self.navigate(url);
+    }
+
+    fn reset_blink(&mut self) {
+        self.blink_reset_ns = ulib::sys_get_time_ns();
+    }
+
+    fn cursor_visible(&self) -> bool {
+        let elapsed = ulib::sys_get_time_ns().wrapping_sub(self.blink_reset_ns);
+        (elapsed / BLINK_INTERVAL_NS) % 2 == 0
     }
 }
 
 impl App for BoserApp {
     fn update(&mut self, ctx: &egui::Context) {
+        // ── Lazy init (heap is ready by the time update() is called) ────────
+        if self.tabs.is_empty() {
+            self.tabs.push(Tab::new());
+        }
+
         // ── Deferred fetch ───────────────────────────────────────────────────
         if let Some(url) = self.pending_fetch.take() {
-            self.page = do_fetch(&url);
+            let page = do_fetch(&url);
+            self.tab_mut().page = page;
         }
 
         // ── Lazy image loading (one per frame) ──────────────────────────────
-        if let Page::Ready { ref url, ref mut blocks, .. } = self.page {
+        if let Page::Ready { ref url, ref mut blocks, .. } = self.tab_mut().page {
             if let Some(idx) = blocks.iter().position(|b| matches!(b, ResolvedBlock::ImagePending { .. })) {
                 let img_src = match &blocks[idx] {
                     ResolvedBlock::ImagePending { url } => url.clone(),
@@ -128,12 +175,13 @@ impl App for BoserApp {
         if let Some(key) = ctx.key_event() {
             if key.pressed {
                 if self.input_focused {
+                    self.reset_blink();
                     match key.event_type {
                         KeyEventType::Enter => {
                             self.handle_submit();
                         }
                         KeyEventType::Backspace => {
-                            self.input.pop();
+                            self.tab_mut().input.pop();
                         }
                         KeyEventType::Escape => {
                             self.input_focused = false;
@@ -141,7 +189,7 @@ impl App for BoserApp {
                         KeyEventType::Char => {
                             let ch = key.character;
                             if ch >= 0x20 && ch < 0x7f {
-                                self.input.push(ch as char);
+                                self.tab_mut().input.push(ch as char);
                             }
                         }
                         _ => {}
@@ -150,15 +198,17 @@ impl App for BoserApp {
                     match key.event_type {
                         KeyEventType::Tab => {
                             self.input_focused = true;
+                            self.reset_blink();
                         }
                         KeyEventType::Char if key.character == b'/' => {
                             self.input_focused = true;
+                            self.reset_blink();
                         }
                         _ => {}
                     }
 
                     // Pixel-based scrolling
-                    if let Page::Ready { ref blocks, ref mut scroll_y, .. } = self.page {
+                    if let Page::Ready { ref blocks, ref mut scroll_y, .. } = self.tab_mut().page {
                         let (_, h) = ctx.screen_size();
                         let viewport_h = h.saturating_sub(HEADER_H) as i32;
                         let total_h: i32 = blocks.iter().map(|b| b.height()).sum();
@@ -178,13 +228,94 @@ impl App for BoserApp {
             }
         }
 
+        // ── Cursor blink: schedule timed redraw when focused ─────────────────
+        if self.input_focused {
+            bos_egui::request_timed_redraw(500);
+        }
+
         // ── Draw ──────────────────────────────────────────────────────────────
+        let cursor_vis = self.input_focused && self.cursor_visible();
+
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("boser");
-            ui.text_edit_singleline(&mut self.input);
+            // ── Tab bar ─────────────────────────────────────────────────────
+            let mut switch_to: Option<usize> = None;
+            let mut close_tab: Option<usize> = None;
+            let mut new_tab = false;
+
+            ui.horizontal(|ui| {
+                for i in 0..self.tabs.len() {
+                    let title = self.tabs[i].title();
+                    let short: String = if title.len() > TAB_TITLE_MAX {
+                        let mut s = String::from(&title[..TAB_TITLE_MAX]);
+                        s.push_str("..");
+                        s
+                    } else {
+                        String::from(title)
+                    };
+
+                    let label = if i == self.active_tab {
+                        format!("[{short}]")
+                    } else {
+                        format!(" {short} ")
+                    };
+
+                    if ui.button(&label).clicked() {
+                        if i == self.active_tab {
+                            // Already active — focus the input
+                            self.input_focused = true;
+                            self.reset_blink();
+                        } else {
+                            switch_to = Some(i);
+                        }
+                    }
+
+                    // Close button (only if more than one tab)
+                    if self.tabs.len() > 1 {
+                        if ui.button("x").clicked() {
+                            close_tab = Some(i);
+                        }
+                    }
+                }
+
+                if ui.button("+").clicked() {
+                    new_tab = true;
+                }
+            });
+
+            // Process tab actions
+            if let Some(i) = close_tab {
+                self.tabs.remove(i);
+                if self.active_tab >= self.tabs.len() {
+                    self.active_tab = self.tabs.len() - 1;
+                }
+            }
+            if let Some(i) = switch_to {
+                self.active_tab = i;
+                self.input_focused = false;
+            }
+            if new_tab {
+                self.tabs.push(Tab::new());
+                self.active_tab = self.tabs.len() - 1;
+                self.input_focused = true;
+                self.reset_blink();
+            }
+
+            // ── Search bar ──────────────────────────────────────────────────
+            let focused = self.input_focused;
+            let input_clicked = ui.text_edit_singleline(
+                &mut self.tabs[self.active_tab].input,
+                focused,
+                cursor_vis,
+            ).clicked();
+            if input_clicked {
+                self.input_focused = true;
+                self.reset_blink();
+            }
+
             ui.separator();
 
-            match &self.page {
+            // ── Page content ────────────────────────────────────────────────
+            match &self.tab().page {
                 Page::Home => {
                     ui.label("Type a search query or URL and press Enter.");
                 }
@@ -199,7 +330,7 @@ impl App for BoserApp {
                 Page::Ready { blocks, scroll_y, url } => {
                     if let Some(href) = render_blocks(ui, ctx, blocks, *scroll_y) {
                         let nav_url = resolve_url(url, &href);
-                        self.input = nav_url.clone();
+                        self.tab_mut().input = nav_url.clone();
                         self.navigate(nav_url);
                     }
                 }

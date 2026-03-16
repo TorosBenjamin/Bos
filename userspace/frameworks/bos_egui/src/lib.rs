@@ -30,6 +30,16 @@ pub fn request_redraw() { bos::request_redraw_impl(); }
 #[cfg(target_os = "linux")]
 pub fn request_redraw() {}
 
+/// Ask the run loop to render another frame after at most `ms` milliseconds.
+///
+/// The run loop will sleep on the window's event channel with this timeout,
+/// so it wakes on either user input or the timer — whichever comes first.
+/// Use this for cursor blink, animations, or periodic polling.
+#[cfg(not(target_os = "linux"))]
+pub fn request_timed_redraw(ms: u32) { bos::request_timed_redraw_impl(ms); }
+#[cfg(target_os = "linux")]
+pub fn request_timed_redraw(_ms: u32) {}
+
 /// Request a new floating OS window to be opened.
 ///
 /// On Bos the next run-loop iteration will create a compositor-managed floating window

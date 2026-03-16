@@ -5,6 +5,8 @@ use crate::App;
 
 static mut CHILD_REQUEST: Option<(u32, u32)> = None;
 static mut REDRAW_REQUESTED: bool = false;
+/// When non-zero, the run loop sleeps at most this many ms before the next frame.
+static mut TIMED_REDRAW_MS: u32 = 0;
 
 pub(crate) fn request_open_child(w: u32, h: u32) {
     unsafe { core::ptr::addr_of_mut!(CHILD_REQUEST).write(Some((w, h))); }
@@ -12,6 +14,15 @@ pub(crate) fn request_open_child(w: u32, h: u32) {
 
 pub(crate) fn request_redraw_impl() {
     unsafe { core::ptr::addr_of_mut!(REDRAW_REQUESTED).write(true); }
+}
+
+pub(crate) fn request_timed_redraw_impl(ms: u32) {
+    // Only set the timer — do NOT set REDRAW_REQUESTED.  The run loop will
+    // sleep on sys_wait_for_event with this timeout and only force a redraw
+    // when the timeout actually fires, avoiding a render-every-frame spin.
+    unsafe {
+        core::ptr::addr_of_mut!(TIMED_REDRAW_MS).write(ms);
+    }
 }
 
 struct ChildState {
@@ -117,6 +128,9 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
         if frame_presented && needs_redraw {
             frame_presented = false;
             needs_redraw = false;
+            // Clear the timed-redraw timer so the app must re-request it
+            // each frame (allows it to stop the timer by not calling it).
+            unsafe { core::ptr::addr_of_mut!(TIMED_REDRAW_MS).write(0); }
 
             let w = window.width();
             let h = window.height();
@@ -204,6 +218,23 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
             }
         }
 
-        ulib::sys_yield();
+        // Sleep efficiently: wait for window events or a timed-redraw timeout.
+        // Don't clear TIMED_REDRAW_MS here — it persists so we re-enter the
+        // timed wait after processing events (e.g. FramePresented) that don't
+        // trigger a render.  It is cleared at render time above.
+        let timed_ms = unsafe { core::ptr::addr_of!(TIMED_REDRAW_MS).read() };
+        if timed_ms > 0 {
+            let ep = window.event_recv_ep();
+            let channels = [ep];
+            let ret = ulib::sys_wait_for_event(&channels, 0, timed_ms as u64);
+            // ret == 1 means timeout (blink toggle); ret == 0 means a window
+            // event arrived (FramePresented, key, mouse) — the poll loop above
+            // will handle it on the next iteration without forcing a redraw.
+            if ret == 1 {
+                needs_redraw = true;
+            }
+        } else {
+            ulib::sys_yield();
+        }
     }
 }

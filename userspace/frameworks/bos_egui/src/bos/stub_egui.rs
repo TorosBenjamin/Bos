@@ -31,9 +31,11 @@ pub const SEP:     Rgb888 = Rgb888::new(0x36, 0x3a, 0x4f);
 const BTN_BG:  Rgb888 = Rgb888::new(0x36, 0x3a, 0x4f);
 const BTN_HOV: Rgb888 = Rgb888::new(0x49, 0x4d, 0x64);
 const BTN_FG:  Rgb888 = Rgb888::new(0xca, 0xd3, 0xf5);
-const INPUT_BG: Rgb888 = Rgb888::new(0x1e, 0x1e, 0x2e);
-const INPUT_FG: Rgb888 = Rgb888::new(0xca, 0xd3, 0xf5);
-const INPUT_BR: Rgb888 = Rgb888::new(0x49, 0x4d, 0x64);
+const INPUT_BG:      Rgb888 = Rgb888::new(0x1e, 0x1e, 0x2e);
+const INPUT_FG:      Rgb888 = Rgb888::new(0xca, 0xd3, 0xf5);
+const INPUT_BR:      Rgb888 = Rgb888::new(0x49, 0x4d, 0x64);
+const INPUT_BR_HOV:  Rgb888 = Rgb888::new(0x6c, 0x70, 0x86); // hover border
+const INPUT_BR_FOCUS: Rgb888 = Rgb888::new(0x8a, 0xad, 0xf4); // focused border (accent)
 
 // Additional theme colours for styled HTML content.
 pub const LINK:     Rgb888 = Rgb888::new(0x8b, 0xd5, 0xca); // teal
@@ -119,6 +121,12 @@ impl Context {
     pub fn screen_size(&self) -> (u32, u32) {
         let inner = self.inner.borrow();
         (inner.width, inner.height)
+    }
+
+    /// Returns the current mouse position.
+    pub fn mouse_pos(&self) -> (f32, f32) {
+        let inner = self.inner.borrow();
+        (inner.cursor_x, inner.cursor_y)
     }
 
     /// Returns and consumes the click coordinates for this frame, if any.
@@ -257,7 +265,19 @@ impl<'a> Ui<'a> {
         Response { clicked }
     }
 
-    pub fn text_edit_singleline(&mut self, text: &mut String) -> Response {
+    /// Draw a single-line text input with focus and cursor blink support.
+    ///
+    /// - `focused`: whether the input has keyboard focus (affects border color)
+    /// - `cursor_visible`: whether to show the text cursor (for blink animation)
+    ///
+    /// Returns a `Response` whose `clicked` field is `true` if the user clicked
+    /// inside the input box this frame.
+    pub fn text_edit_singleline(
+        &mut self,
+        text: &mut String,
+        focused: bool,
+        cursor_visible: bool,
+    ) -> Response {
         let mut inner = self.ctx.inner.borrow_mut();
 
         let box_h = 28i32;
@@ -266,8 +286,29 @@ impl<'a> Ui<'a> {
         let bx = inner.margin;
         let by = inner.draw_y;
 
+        // Hit-test for hover and click
+        let (mx, my) = (inner.cursor_x as i32, inner.cursor_y as i32);
+        let hovered = mx >= bx && mx < bx + box_w && my >= by && my < by + box_h;
+        let clicked = if let Some((clx, cly)) = inner.click {
+            let (clx, cly) = (clx as i32, cly as i32);
+            clx >= bx && clx < bx + box_w && cly >= by && cly < by + box_h
+        } else {
+            false
+        };
+        if clicked { inner.click = None; }
+
+        // Choose border color based on state
+        let border = if focused {
+            INPUT_BR_FOCUS
+        } else if hovered {
+            INPUT_BR_HOV
+        } else {
+            INPUT_BR
+        };
+
         let mut buf = self.ctx.pixels_mut(&mut inner);
 
+        // Background
         let _ = Rectangle::new(
             embedded_graphics::geometry::Point::new(bx, by),
             embedded_graphics::geometry::Size::new(box_w as u32, box_h as u32),
@@ -275,20 +316,25 @@ impl<'a> Ui<'a> {
         .into_styled(PrimitiveStyle::with_fill(INPUT_BG))
         .draw(&mut buf);
 
+        // Border
         let _ = Rectangle::new(
             embedded_graphics::geometry::Point::new(bx, by),
             embedded_graphics::geometry::Size::new(box_w as u32, box_h as u32),
         )
-        .into_styled(PrimitiveStyle::with_stroke(INPUT_BR, 1))
+        .into_styled(PrimitiveStyle::with_stroke(border, 1))
         .draw(&mut buf);
 
-        // Draw text + cursor
-        let mut display_text = text.clone();
-        display_text.push('|');
-        draw_text(&mut buf, &display_text, bx + padding, by + padding, INPUT_FG, &FONT_8X13);
+        // Text
+        draw_text(&mut buf, text, bx + padding, by + padding, INPUT_FG, &FONT_8X13);
+
+        // Cursor (only when focused and visible for blink)
+        if focused && cursor_visible {
+            let cursor_x = bx + padding + (text.len() as i32) * 8;
+            draw_text(&mut buf, "|", cursor_x, by + padding, INPUT_FG, &FONT_8X13);
+        }
 
         inner.draw_y += box_h + 8;
-        Response { clicked: false }
+        Response { clicked }
     }
 
     pub fn selectable_label(&mut self, selected: bool, text: impl ToString) -> Response {
