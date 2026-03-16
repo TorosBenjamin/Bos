@@ -42,12 +42,13 @@ impl KeyBuffer {
     }
 
     fn push(&mut self, event: KeyEvent) {
-        if self.count < KEY_BUFFER_SIZE {
-            self.buffer[self.tail] = event;
-            self.tail = (self.tail + 1) % KEY_BUFFER_SIZE;
+        self.buffer[self.tail] = event;
+        self.tail = (self.tail + 1) % KEY_BUFFER_SIZE;
+        if self.count == KEY_BUFFER_SIZE {
+            self.head = (self.head + 1) % KEY_BUFFER_SIZE;
+        } else {
             self.count += 1;
         }
-        // Drop oldest events if full (could also overwrite head instead)
     }
 
     fn pop(&mut self) -> Option<KeyEvent> {
