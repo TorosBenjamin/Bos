@@ -4,6 +4,7 @@ use crate::memory::hhdm_offset::hhdm_offset;
 use crate::memory::physical_memory::{MemoryType, OffsetMappedPhysAddr, PhysicalMemory};
 use crate::memory::user_vaddr;
 use crate::task::task::{TaskKind, VmaBacking, VmaEntry};
+use super::validate_user_ptr;
 use kernel_api_types::{MMAP_EXEC, MMAP_WRITE, MREMAP_MAYMOVE};
 use nodit::interval::ii;
 use x86_64::structures::paging::mapper::{MappedFrame, MapToError, Translate, TranslateResult};
@@ -370,6 +371,88 @@ pub fn sys_mremap(old_addr: u64, old_size: u64, new_size: u64, flags: u64, _: u6
     let _ = user_vaddr::free_user_vma(&mut inner.user_vmas, old_addr, old_total);
 
     new_addr
+}
+
+/// Syscall: allocate one physically-backed 4 KiB page and expose both its
+/// virtual address and physical address to the caller.
+///
+/// Intended for DMA-capable userspace drivers that need to program hardware
+/// with physical addresses (e.g., NIC descriptor rings and packet buffers).
+///
+/// Arguments: size (must be ≤ 4096), phys_out_ptr (u64* where phys addr is written)
+/// Returns: virtual address on success, 0 on failure.
+pub fn sys_alloc_dma(size: u64, phys_out_ptr: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    if size == 0 || size > Size4KiB::SIZE || !validate_user_ptr(phys_out_ptr, 8) {
+        return 0;
+    }
+
+    let cpu = get_local();
+    let task = {
+        let rq = cpu.run_queue.get().unwrap().lock();
+        match &rq.current_task {
+            Some(t) if t.kind == TaskKind::User => t.clone(),
+            _ => return 0,
+        }
+    };
+
+    let flags = PageTableFlags::PRESENT
+        | PageTableFlags::WRITABLE
+        | PageTableFlags::USER_ACCESSIBLE
+        | PageTableFlags::NO_EXECUTE;
+
+    let mut inner = task.inner.lock();
+
+    let vaddr = match user_vaddr::allocate_user_vma(
+        &mut inner.user_vmas,
+        1,
+        VmaEntry { flags, backing: VmaBacking::EagerlyMapped },
+    ) {
+        Some(a) => a,
+        None => return 0,
+    };
+
+    let hhdm_off = hhdm_offset();
+    let user_l4_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3));
+    let l4_virt = VirtAddr::new(hhdm_off.as_u64() + user_l4_frame.start_address().as_u64());
+    let l4_table = unsafe { &mut *l4_virt.as_mut_ptr::<PageTable>() };
+    let mut mapper = unsafe { OffsetPageTable::new(l4_table, VirtAddr::new(hhdm_off.as_u64())) };
+
+    let memory = MEMORY.get().unwrap();
+    let mut phys_mem = memory.physical_memory.lock();
+
+    let frame = match phys_mem.allocate_frame_with_type(MemoryType::UsedByUserMode) {
+        Some(f) => f,
+        None => {
+            let _ = user_vaddr::free_user_vma(&mut inner.user_vmas, vaddr, Size4KiB::SIZE);
+            return 0;
+        }
+    };
+
+    // Zero before exposing to userspace (security + clean DMA state).
+    unsafe {
+        core::ptr::write_bytes(
+            frame.start_address().offset_mapped().as_mut_ptr::<u8>(),
+            0,
+            Size4KiB::SIZE as usize,
+        );
+    }
+
+    let page = Page::<Size4KiB>::containing_address(VirtAddr::new(vaddr));
+    let mut frame_allocator = phys_mem.get_user_mode_frame_allocator();
+    let result = unsafe { mapper.map_to(page, frame, flags, &mut frame_allocator) };
+    drop(frame_allocator);
+
+    match result {
+        Ok(flush) => flush.flush(),
+        Err(_) => {
+            let _ = phys_mem.free_frame(frame, MemoryType::UsedByUserMode);
+            let _ = user_vaddr::free_user_vma(&mut inner.user_vmas, vaddr, Size4KiB::SIZE);
+            return 0;
+        }
+    }
+
+    unsafe { core::ptr::write(phys_out_ptr as *mut u64, frame.start_address().as_u64()) };
+    vaddr
 }
 
 fn rollback_mmap(

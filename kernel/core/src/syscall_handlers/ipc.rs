@@ -88,6 +88,10 @@ pub fn sys_channel_send(endpoint_id: u64, msg_ptr: u64, msg_len: u64, _: u64, _:
                     }
                     task.state.store(TaskState::Sleeping, Ordering::Release);
                 }
+                // Clear in_syscall so the timer handler saves kernel state (normal
+                // path) instead of returning directly to user-mode (syscall-yield
+                // path). This lets the retry loop resume after re-scheduling.
+                get_local().in_syscall_handler.store(0, Ordering::Relaxed);
                 x86_64::instructions::interrupts::enable();
                 x86_64::instructions::hlt();
                 x86_64::instructions::interrupts::disable();
@@ -143,6 +147,10 @@ pub fn sys_channel_recv(endpoint_id: u64, buf_ptr: u64, buf_cap: u64, bytes_read
                     }
                     task.state.store(TaskState::Sleeping, Ordering::Release);
                 }
+                // Clear in_syscall so the timer handler saves kernel state (normal
+                // path) instead of returning directly to user-mode (syscall-yield
+                // path). This lets the retry loop resume after re-scheduling.
+                get_local().in_syscall_handler.store(0, Ordering::Relaxed);
                 x86_64::instructions::interrupts::enable();
                 x86_64::instructions::hlt();
                 x86_64::instructions::interrupts::disable();

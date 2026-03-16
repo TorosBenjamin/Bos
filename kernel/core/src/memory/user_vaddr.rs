@@ -13,14 +13,14 @@ pub fn allocate_user_vma(
     n_pages: u64,
     entry: VmaEntry,
 ) -> Option<u64> {
-    let total_bytes = n_pages * PAGE_SIZE;
+    let total_bytes = n_pages.checked_mul(PAGE_SIZE)?;
     let range = ii(USER_MIN, USER_MAX);
 
     let interval = vmas
         .gaps_trimmed(&range)
         .find_map(|gap| {
             let aligned_start = gap.start().next_multiple_of(PAGE_SIZE);
-            let end = aligned_start + total_bytes - 1;
+            let end = aligned_start.checked_add(total_bytes)?.checked_sub(1)?;
             let interval = ii(aligned_start, end);
             gap.contains_interval(&interval).then_some(interval)
         })?;

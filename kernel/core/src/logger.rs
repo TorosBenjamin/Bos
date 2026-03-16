@@ -1,10 +1,14 @@
 use core::fmt::Display;
 use core::fmt::Write;
+use core::sync::atomic::{AtomicU64, Ordering};
 use log::{Level, LevelFilter, Log};
 use owo_colors::OwoColorize;
 use uart_16550::SerialPort;
 use unicode_segmentation::UnicodeSegmentation;
 use crate::memory;
+
+/// TSC value captured at logger init — used as t=0 for log timestamps.
+static LOG_START_TSC: AtomicU64 = AtomicU64::new(0);
 
 struct Inner {
     serial_port: SerialPort,
@@ -62,6 +66,17 @@ impl Log for KernelLogger {
             n => (n - 1).ilog(16) as usize + 1,
         };
         inner.write_with_color(Color::Gray, format_args!("[{cpu_id:0width$X}] "));
+
+        // Timestamp: ms since logger init. One rdtsc + two atomic loads — non-blocking.
+        // Skipped until TSC_TICKS_PER_MS is calibrated (stays 0 for the first ~10 messages).
+        let tsc_now    = crate::time::tsc::value();
+        let start_tsc  = LOG_START_TSC.load(Ordering::Relaxed);
+        let ticks_per_ms = crate::time::tsc::TSC_TICKS_PER_MS.load(Ordering::Relaxed);
+        if ticks_per_ms > 0 {
+            let ms = tsc_now.saturating_sub(start_tsc) / ticks_per_ms;
+            inner.write_with_color(Color::Gray, format_args!("[{ms:>6}ms] "));
+        }
+
         inner.write_with_color(Color::Default, record.args());
         inner.write_with_color(Color::Default, "\n");
     }
@@ -70,6 +85,7 @@ impl Log for KernelLogger {
 }
 
 pub fn init() -> Result<(), log::SetLoggerError> {
+    LOG_START_TSC.store(crate::time::tsc::value(), Ordering::Relaxed);
     let mut inner = LOGGER.inner.try_lock().unwrap();
     inner.serial_port.init();
     log::set_max_level(LevelFilter::max());

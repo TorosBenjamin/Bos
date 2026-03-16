@@ -1,0 +1,13 @@
+[package]
+name = "http_client"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+bos_std          = { path = "../../frameworks/bos_std" }
+httparse         = { version = "1", default-features = false }
+embedded-tls     = { version = "0.18", default-features = false }
+embedded-io      = "0.7"
+rand_core        = { version = "0.6", default-features = false }
+sha2             = { version = "0.10", default-features = false, features = ["force-soft"] }
