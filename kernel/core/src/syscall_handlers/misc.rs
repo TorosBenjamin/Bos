@@ -52,10 +52,22 @@ pub fn sys_read_key(key_event_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u
             unsafe { (*ctx_ptr).rax = 1; }
         }
 
-        // Register waiter and sleep
+        // Register waiter and sleep.
+        // Set Sleeping BEFORE storing the waiter so that a concurrent
+        // keyboard ISR wake sees Sleeping when it takes the slot.
         if let Some((task, cpu_id)) = current_task_and_cpu() {
-            *crate::drivers::keyboard::KEYBOARD_WAITER.lock() = Some((task.clone(), cpu_id));
-            task.state.store(TaskState::Sleeping, Ordering::Release);
+            {
+                let mut slot = crate::drivers::keyboard::KEYBOARD_WAITER.lock();
+                task.state.store(TaskState::Sleeping, Ordering::Release);
+                *slot = Some((task.clone(), cpu_id));
+            }
+            // Re-check: a key event may have arrived between try_read_key
+            // and waiter registration.
+            if crate::drivers::keyboard::has_key() {
+                task.state.store(TaskState::Ready, Ordering::Release);
+                *crate::drivers::keyboard::KEYBOARD_WAITER.lock() = None;
+                continue;
+            }
         }
 
         // Clear in_syscall so the timer handler saves kernel state (normal

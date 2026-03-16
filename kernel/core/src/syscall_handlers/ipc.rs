@@ -77,16 +77,26 @@ pub fn sys_channel_send(endpoint_id: u64, msg_ptr: u64, msg_len: u64, _: u64, _:
                     unsafe { (*ctx_ptr).rax = kernel_api_types::IPC_ERR_CHANNEL_FULL; }
                 }
                 // Register as send waiter and sleep.
-                // Drain any stale entry for this task left by a prior timer-interrupted send
-                // (the timer's syscall-yield path returns the task to user-space via iretq,
-                // bypassing the post-hlt cleanup, so old entries accumulate otherwise).
+                // Set Sleeping BEFORE pushing the waiter (under the same lock)
+                // so that a concurrent wake_waiter sees Sleeping when it pops.
                 if let Some((task, cpu_id)) = current_task_and_cpu() {
                     {
                         let mut waiters = channel_arc.send_waiters.lock();
                         waiters.retain(|(t, _)| !alloc::sync::Arc::ptr_eq(t, &task));
+                        task.state.store(TaskState::Sleeping, Ordering::Release);
                         waiters.push_back((task.clone(), cpu_id));
                     }
-                    task.state.store(TaskState::Sleeping, Ordering::Release);
+                    // Re-check: space may have freed between try_send and registration.
+                    let has_space = {
+                        let inner = channel_arc.inner.lock();
+                        inner.queue.len() < inner.capacity
+                    };
+                    if has_space || channel_arc.recv_closed.load(Ordering::Acquire) {
+                        task.state.store(TaskState::Ready, Ordering::Release);
+                        channel_arc.send_waiters.lock()
+                            .retain(|(t, _)| !alloc::sync::Arc::ptr_eq(t, &task));
+                        continue;
+                    }
                 }
                 // Clear in_syscall so the timer handler saves kernel state (normal
                 // path) instead of returning directly to user-mode (syscall-yield
@@ -136,16 +146,25 @@ pub fn sys_channel_recv(endpoint_id: u64, buf_ptr: u64, buf_cap: u64, bytes_read
                     unsafe { (*ctx_ptr).rax = kernel_api_types::IPC_ERR_CHANNEL_FULL; }
                 }
                 // Register as recv waiter and sleep.
-                // Drain any stale entry for this task left by a prior timer-interrupted recv
-                // (the timer's syscall-yield path returns the task to user-space via iretq,
-                // bypassing the post-hlt cleanup, so old entries accumulate otherwise).
+                // Set Sleeping BEFORE pushing the waiter (under the same lock)
+                // so that a concurrent wake_waiter sees Sleeping when it pops.
                 if let Some((task, cpu_id)) = current_task_and_cpu() {
                     {
                         let mut waiters = channel_arc.recv_waiters.lock();
                         waiters.retain(|(t, _)| !alloc::sync::Arc::ptr_eq(t, &task));
+                        task.state.store(TaskState::Sleeping, Ordering::Release);
                         waiters.push_back((task.clone(), cpu_id));
                     }
-                    task.state.store(TaskState::Sleeping, Ordering::Release);
+                    // Re-check: a message (or peer-close) may have arrived
+                    // between try_recv and waiter registration.
+                    if crate::ipc::channel_has_message(endpoint_id)
+                        || channel_arc.send_closed.load(Ordering::Acquire)
+                    {
+                        task.state.store(TaskState::Ready, Ordering::Release);
+                        channel_arc.recv_waiters.lock()
+                            .retain(|(t, _)| !alloc::sync::Arc::ptr_eq(t, &task));
+                        continue;
+                    }
                 }
                 // Clear in_syscall so the timer handler saves kernel state (normal
                 // path) instead of returning directly to user-mode (syscall-yield

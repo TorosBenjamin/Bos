@@ -4,6 +4,7 @@ use crate::memory::hhdm_offset::hhdm_offset;
 use crate::memory::physical_memory::{MemoryType, OffsetMappedPhysAddr, PhysicalMemory};
 use crate::memory::user_vaddr;
 use crate::task::task::{TaskKind, VmaBacking, VmaEntry};
+use core::sync::atomic::Ordering;
 use super::validate_user_ptr;
 use kernel_api_types::{MMAP_EXEC, MMAP_WRITE, MREMAP_MAYMOVE};
 use nodit::interval::ii;
@@ -79,7 +80,7 @@ pub fn sys_munmap(addr: u64, size: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
     }
 
     let hhdm_offset = hhdm_offset();
-    let user_l4_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3));
+    let user_l4_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3.load(Ordering::Relaxed)));
     let l4_virt_addr = VirtAddr::new(hhdm_offset.as_u64() + user_l4_frame.start_address().as_u64());
     let l4_table = unsafe { &mut *l4_virt_addr.as_mut_ptr::<PageTable>() };
     let mut mapper = unsafe { OffsetPageTable::new(l4_table, VirtAddr::new(hhdm_offset.as_u64())) };
@@ -204,7 +205,7 @@ pub fn sys_mprotect(addr: u64, size: u64, flags: u64, _: u64, _: u64, _: u64) ->
     }
 
     let hhdm_offset = hhdm_offset();
-    let user_l4_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3));
+    let user_l4_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3.load(Ordering::Relaxed)));
     let l4_virt_addr = VirtAddr::new(hhdm_offset.as_u64() + user_l4_frame.start_address().as_u64());
     let l4_table = unsafe { &mut *l4_virt_addr.as_mut_ptr::<PageTable>() };
     let mut mapper = unsafe { OffsetPageTable::new(l4_table, VirtAddr::new(hhdm_offset.as_u64())) };
@@ -265,7 +266,7 @@ pub fn sys_mremap(old_addr: u64, old_size: u64, new_size: u64, flags: u64, _: u6
     }
 
     let hhdm_offset = hhdm_offset();
-    let user_l4_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3));
+    let user_l4_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3.load(Ordering::Relaxed)));
     let l4_virt_addr = VirtAddr::new(hhdm_offset.as_u64() + user_l4_frame.start_address().as_u64());
     let l4_table = unsafe { &mut *l4_virt_addr.as_mut_ptr::<PageTable>() };
     let mut mapper = unsafe { OffsetPageTable::new(l4_table, VirtAddr::new(hhdm_offset.as_u64())) };
@@ -412,7 +413,7 @@ pub fn sys_alloc_dma(size: u64, phys_out_ptr: u64, _: u64, _: u64, _: u64, _: u6
     };
 
     let hhdm_off = hhdm_offset();
-    let user_l4_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3));
+    let user_l4_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3.load(Ordering::Relaxed)));
     let l4_virt = VirtAddr::new(hhdm_off.as_u64() + user_l4_frame.start_address().as_u64());
     let l4_table = unsafe { &mut *l4_virt.as_mut_ptr::<PageTable>() };
     let mut mapper = unsafe { OffsetPageTable::new(l4_table, VirtAddr::new(hhdm_off.as_u64())) };

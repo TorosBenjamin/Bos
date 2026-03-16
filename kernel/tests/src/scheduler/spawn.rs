@@ -27,7 +27,7 @@ pub fn test_spawn_creates_task() -> TestResult {
 
             let (current_cr3_frame, _) = x86_64::registers::control::Cr3::read();
             let current_cr3 = current_cr3_frame.start_address().as_u64();
-            if task.cr3 == current_cr3 {
+            if task.cr3.load(core::sync::atomic::Ordering::Relaxed) == current_cr3 {
                 return TestResult::Failed("Task CR3 matches kernel CR3".into());
             }
 

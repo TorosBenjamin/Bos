@@ -36,10 +36,12 @@ pub fn sys_get_bounding_box(rect_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _
 /// Returns: GraphicsResult code.
 pub fn sys_get_display_info(info_out_ptr: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
     if !validate_user_ptr(info_out_ptr, core::mem::size_of::<DisplayInfo>() as u64) {
+        log::warn!("sys_get_display_info: invalid ptr {:#x}", info_out_ptr);
         return GraphicsResult::InvalidInput as u64;
     }
 
     let info = DISPLAY.get_display_info();
+    log::info!("sys_get_display_info: {}x{}", info.width, info.height);
     unsafe { core::ptr::write(info_out_ptr as *mut DisplayInfo, info) };
 
     GraphicsResult::Ok as u64
@@ -82,7 +84,7 @@ pub fn sys_transfer_display(new_owner_id: u64, _: u64, _: u64, _: u64, _: u64, _
     );
 
     let hhdm = hhdm_offset();
-    let user_l4_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(target_task.cr3));
+    let user_l4_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(target_task.cr3.load(Ordering::Relaxed)));
     let l4_virt_addr = VirtAddr::new(hhdm.as_u64() + user_l4_frame.start_address().as_u64());
     let l4_table = unsafe { &mut *l4_virt_addr.as_mut_ptr::<PageTable>() };
     let mut mapper = unsafe { OffsetPageTable::new(l4_table, VirtAddr::new(hhdm.as_u64())) };
