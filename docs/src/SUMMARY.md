@@ -12,4 +12,6 @@
     - [Schedulers](tasks/schedulers.md)
 - [System Calls](system_calls.md)
 - [Userland](userland.md)
+- [Timekeeping](timekeeping.md)
+- [Drivers](drivers.md)
 - [Roadmap](roadmap.md)
