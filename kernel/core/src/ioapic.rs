@@ -274,3 +274,40 @@ pub fn enable_mouse_irq(vector: u8, dest_apic_id: u32) {
         dest_apic_id,
     );
 }
+
+/// Route ISA IRQ14 (primary ATA) to the specified APIC vector.
+pub fn enable_ata_irq(vector: u8, dest_apic_id: u32) {
+    let state = IOAPIC.get().expect("IOAPIC not initialized");
+
+    let (gsi, polarity, trigger_mode) = state
+        .interrupt_source_overrides
+        .iter()
+        .find(|iso| iso.isa_source == 14)
+        .map(|iso| (iso.global_system_interrupt, iso.polarity, iso.trigger_mode))
+        .unwrap_or((14, Polarity::SameAsBus, TriggerMode::SameAsBus));
+
+    let pin = (gsi - state.info.gsi_base) as u8;
+
+    let mut entry_low: u32 = vector as u32;
+    match polarity {
+        Polarity::ActiveLow => entry_low |= 1 << 13,
+        _ => {}
+    }
+    match trigger_mode {
+        TriggerMode::Level => entry_low |= 1 << 15,
+        _ => {}
+    }
+
+    let entry_high: u32 = (dest_apic_id & 0xFF) << 24;
+
+    let reg_low = IOREDTBL_BASE + pin * 2;
+    let reg_high = reg_low + 1;
+
+    write_register(state.info.base, reg_high, entry_high);
+    write_register(state.info.base, reg_low, entry_low);
+
+    log::info!(
+        "IOAPIC: ATA IRQ14 -> GSI {} -> pin {} -> vector {:#x}, dest APIC {}",
+        gsi, pin, vector, dest_apic_id,
+    );
+}

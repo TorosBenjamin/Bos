@@ -326,7 +326,7 @@ pub fn test_spawn_data_integrity() -> TestResult {
         }
     };
 
-    let user_cr3 = task.cr3;
+    let user_cr3 = task.cr3.load(core::sync::atomic::Ordering::Relaxed);
     let (orig_cr3_frame, orig_cr3_flags) = x86_64::registers::control::Cr3::read();
 
     let mut error: Option<alloc::string::String> = None;
@@ -414,7 +414,7 @@ pub fn test_spawn_bss_zeroed() -> TestResult {
         }
     };
 
-    let user_cr3 = task.cr3;
+    let user_cr3 = task.cr3.load(core::sync::atomic::Ordering::Relaxed);
     let (orig_cr3_frame, orig_cr3_flags) = x86_64::registers::control::Cr3::read();
 
     let mut error: Option<alloc::string::String> = None;

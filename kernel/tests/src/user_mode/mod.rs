@@ -147,10 +147,11 @@ pub fn test_user_task_creation() -> TestResult {
     // CR3 should differ from the current (kernel) CR3
     let (current_cr3_frame, _) = x86_64::registers::control::Cr3::read();
     let current_cr3 = current_cr3_frame.start_address().as_u64();
-    if task.cr3 == current_cr3 {
+    let task_cr3 = task.cr3.load(core::sync::atomic::Ordering::Relaxed);
+    if task_cr3 == current_cr3 {
         return TestResult::Failed(format!(
             "User task CR3 = {:#x} matches kernel CR3 (should be separate address space)",
-            task.cr3
+            task_cr3
         ));
     }
 
@@ -179,7 +180,7 @@ pub fn test_user_page_table_kernel_mapped() -> TestResult {
     let ctx_ptr = &inner.context as *const kernel::task::task::CpuContext;
 
     // Switch CR3 to the user page table and verify kernel memory is accessible.
-    let user_cr3 = task.cr3;
+    let user_cr3 = task.cr3.load(core::sync::atomic::Ordering::Relaxed);
     let (current_cr3_frame, current_cr3_flags) = x86_64::registers::control::Cr3::read();
     let _current_cr3 = current_cr3_frame.start_address().as_u64();
 
@@ -239,17 +240,17 @@ pub fn test_user_task_runs_no_elf() -> TestResult {
     KERNEL_TASK_COUNTER.store(0, Ordering::SeqCst);
 
     kernel::task::global_scheduler::spawn_task(
-        kernel::task::task::Task::new(kernel_increment_task, Priority::Normal, None),
+        kernel::task::task::Task::new(kernel_increment_task, 0, Priority::Normal, None),
     );
     kernel::task::global_scheduler::spawn_task(
-        kernel::task::task::Task::new(kernel_increment_task, Priority::Normal, None),
+        kernel::task::task::Task::new(kernel_increment_task, 0, Priority::Normal, None),
     );
     // Third kernel task — replaces the user ELF task for isolation
     kernel::task::global_scheduler::spawn_task(
-        kernel::task::task::Task::new(kernel_increment_task, Priority::Normal, None),
+        kernel::task::task::Task::new(kernel_increment_task, 0, Priority::Normal, None),
     );
     kernel::task::global_scheduler::spawn_task(
-        kernel::task::task::Task::new(checker_task, Priority::Normal, None),
+        kernel::task::task::Task::new(checker_task, 0, Priority::Normal, None),
     );
 
     kernel::time::lapic_timer::set_deadline(1_000_000);
@@ -276,10 +277,10 @@ pub fn test_user_task_runs() -> TestResult {
 
     // Spawn two kernel tasks
     kernel::task::global_scheduler::spawn_task(
-        kernel::task::task::Task::new(kernel_increment_task, Priority::Normal, None),
+        kernel::task::task::Task::new(kernel_increment_task, 0, Priority::Normal, None),
     );
     kernel::task::global_scheduler::spawn_task(
-        kernel::task::task::Task::new(kernel_increment_task, Priority::Normal, None),
+        kernel::task::task::Task::new(kernel_increment_task, 0, Priority::Normal, None),
     );
 
     // Create and spawn the user task
@@ -288,7 +289,7 @@ pub fn test_user_task_runs() -> TestResult {
 
     // Spawn a checker task that verifies everything ran.
     kernel::task::global_scheduler::spawn_task(
-        kernel::task::task::Task::new(checker_task, Priority::Normal, None),
+        kernel::task::task::Task::new(checker_task, 0, Priority::Normal, None),
     );
 
     // Explicitly arm the LAPIC timer so the scheduler fires even if no previous

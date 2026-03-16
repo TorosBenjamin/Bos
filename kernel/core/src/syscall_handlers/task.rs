@@ -1,7 +1,9 @@
 use crate::memory::cpu_local_data::get_local;
 use crate::memory::MEMORY;
-use crate::task::global_scheduler::TASK_TABLE;
+use crate::task::global_scheduler::{TASK_TABLE, preregister_task, spawn_task, spawn_task_activate};
 use crate::task::task::{Task, TaskId, TaskKind, TaskState};
+use crate::user_task_from_elf::{ElfLoaderArgs, fill_loading_task};
+use alloc::boxed::Box;
 use core::sync::atomic::Ordering;
 use kernel_api_types::Priority;
 use x86_64::registers::control::Cr3;
@@ -56,10 +58,15 @@ pub fn sys_exit(exit_code: u64) -> ! {
 
         if let Some((waiter, w_cpu)) = task.exit_waiter.lock().take() {
             wake_task(waiter, w_cpu);
-        } else {
-            // No waiter: detached task — remove immediately
+        } else if task.kind == TaskKind::User {
+            // User task, detached: remove from TASK_TABLE immediately.
+            // Safe: user tasks run in user mode when preempted, so the kernel
+            // allocator isn't held — GuardedStack::drop in the ISR is fine.
             TASK_TABLE.lock().remove(&task.id);
         }
+        // Kernel task, detached: leave in TASK_TABLE as Zombie.
+        // The idle task's reap_zombie_kernel_tasks() will remove it in task
+        // context, where GuardedStack::drop can safely call the allocator.
 
         // Switch to kernel CR3 so we do not leave the CPU pointing at the freed L4
         // frame. The scheduler will set it correctly when it picks the next task.
@@ -91,6 +98,14 @@ pub(crate) fn kill_from_exception(fault_type: u64, faulting_addr: u64, ip: u64) 
     let (task_arc, endpoints) = {
         let rq = cpu.run_queue.get().unwrap().lock();
         let t = rq.current_task.clone();
+        if let Some(task) = &t {
+            let name = core::str::from_utf8(&task.name[..task.name_len as usize]).unwrap_or("?");
+            log::warn!("kill_from_exception: task {} ({}) fault_type={} addr={:#x} ip={:#x}",
+                task.id.to_u64(), name, fault_type, faulting_addr, ip);
+        } else {
+            log::warn!("kill_from_exception: no current task fault_type={} addr={:#x} ip={:#x}",
+                fault_type, faulting_addr, ip);
+        }
         let eps = t.as_ref()
             .map(|t| t.inner.lock().owned_endpoints.clone())
             .unwrap_or_default();
@@ -198,6 +213,10 @@ pub fn sys_yield(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
 
 /// Syscall: spawn a new user task from ELF bytes in the caller's memory.
 ///
+/// Returns a valid child `TaskId` immediately. The child is registered in
+/// `TASK_TABLE` as a `Loading` stub while a dedicated kernel loader task
+/// performs the ELF parse and address-space setup asynchronously.
+///
 /// Arguments: elf_ptr, elf_len, child_arg, name_ptr, name_len, requested_priority
 /// Returns: task ID on success, 0 on failure.
 pub fn sys_spawn(elf_ptr: u64, elf_len: u64, child_arg: u64, name_ptr: u64, name_len: u64, requested_priority: u64) -> u64 {
@@ -224,36 +243,152 @@ pub fn sys_spawn(elf_ptr: u64, elf_len: u64, child_arg: u64, name_ptr: u64, name
     let parent_prio = Priority::from_u8(parent_task.priority.load(Ordering::Relaxed));
     let prio = Priority::from_u8(requested_priority as u8).min(parent_prio);
 
-    let elf_bytes = unsafe {
-        core::slice::from_raw_parts(elf_ptr as *const u8, elf_len as usize)
-    };
+    // Capture the parent's CR3 so the loader can read ELF pages directly
+    let parent_cr3 = parent_task.cr3.load(Ordering::Relaxed);
 
-    let mut name_buf = [0u8; 32];
-    let name: &[u8] = if name_ptr != 0 && name_len != 0 {
+    // Extract name
+    let mut name_arr = [0u8; 32];
+    let name_len_capped: u8 = if name_ptr != 0 && name_len != 0 {
         let capped = name_len.min(32) as usize;
         if super::validate_user_ptr(name_ptr, capped as u64) {
-            unsafe { core::ptr::copy_nonoverlapping(name_ptr as *const u8, name_buf.as_mut_ptr(), capped); }
-            &name_buf[..capped]
+            unsafe { core::ptr::copy_nonoverlapping(name_ptr as *const u8, name_arr.as_mut_ptr(), capped); }
+            capped as u8
         } else {
-            b""
-        }
-    } else {
-        b""
-    };
-
-    match crate::user_task_from_elf::create_user_task_from_elf_bytes(elf_bytes, child_arg, name, prio, Some(parent_id)) {
-        Ok(task) => {
-            let id = task.id.to_u64();
-            let name_str = core::str::from_utf8(name).unwrap_or("?");
-            log::info!("sys_spawn: ok task={} name={:?} entry={:#x}", id, name_str, elf_bytes.as_ptr() as u64);
-            crate::task::global_scheduler::spawn_task(task);
-            id
-        }
-        Err(e) => {
-            let name_str = core::str::from_utf8(name).unwrap_or("?");
-            log::warn!("sys_spawn: FAILED name={:?} err={:?} elf_len={}", name_str, e, elf_len);
             0
         }
+    } else {
+        0
+    };
+
+    // Create Loading stub and register in TASK_TABLE immediately
+    let child_id = TaskId::alloc();
+    let stub = Task::new_loading(child_id, name_arr, name_len_capped, prio, Some(parent_id));
+    preregister_task(stub.clone());
+
+    // Spawn a kernel loader task that fills the stub asynchronously
+    let args = Box::new(ElfLoaderArgs {
+        stub_task: stub,
+        parent_cr3,
+        elf_user_ptr: elf_ptr,
+        elf_len,
+        child_arg,
+        name: name_arr,
+        name_len: name_len_capped,
+        priority: prio as u8,
+        parent_id,
+    });
+    let args_ptr = Box::into_raw(args) as u64;
+    let loader = Task::new(elf_loader_entry, args_ptr, Priority::Normal, None);
+    spawn_task(loader);
+
+    child_id.to_u64()
+}
+
+/// Naked trampoline for the kernel ELF loader task.
+///
+/// `Task::new` stores the args pointer in `CpuContext.rdi` and the entry address
+/// in `r15`. The task trampoline does `call r15`, preserving `rdi`. This naked
+/// function has no compiler-generated prologue, so `rdi` is guaranteed untouched
+/// when we jump to the inner function which receives it as its first SysV argument.
+#[unsafe(naked)]
+fn elf_loader_entry() -> ! {
+    core::arch::naked_asm!(
+        "jmp {inner}",
+        inner = sym elf_loader_entry_inner,
+    )
+}
+
+/// Inner function: parses an ELF and fills a Loading stub asynchronously.
+///
+/// Receives `args_ptr` (a `Box<ElfLoaderArgs>` as u64) via the first SysV
+/// argument register (`rdi`). On success, transitions the stub to Ready.
+/// On failure, marks it Zombie and wakes any waitpid waiter.
+extern "sysv64" fn elf_loader_entry_inner(args_ptr: u64) -> ! {
+    let args = unsafe { *Box::from_raw(args_ptr as *mut ElfLoaderArgs) };
+    let stub = args.stub_task.clone();
+
+    let result = fill_loading_task(
+        &stub,
+        args.parent_cr3,
+        args.elf_user_ptr,
+        args.elf_len,
+        args.child_arg,
+        args.name,
+        args.name_len,
+        args.priority,
+        args.parent_id,
+    );
+
+    // Free args heap allocations NOW, before sys_exit.
+    // sys_exit() is `-> !` and never returns, so Rust drop glue does not run for
+    // any local variable that is still live at the call site.
+    drop(args);
+
+    match result {
+        Ok(()) => {
+            log::info!("async ELF load complete for task {}", stub.id.to_u64());
+            spawn_task_activate(stub); // consumes the Arc
+        }
+        Err(e) => {
+            log::warn!("async ELF load failed: {:?} — marking child zombie", e);
+            stub.exit_code.store(u64::MAX, Ordering::Relaxed);
+            stub.state.store(TaskState::Zombie, Ordering::Release);
+            // Wake ready_waiter first (sys_wait_task_ready caller learns load failed)
+            if let Some((waiter, cpu_id)) = stub.ready_waiter.lock().take() {
+                wake_task(waiter, cpu_id);
+            }
+            if let Some((waiter, cpu_id)) = stub.exit_waiter.lock().take() {
+                wake_task(waiter, cpu_id);
+            } else {
+                TASK_TABLE.lock().remove(&stub.id);
+            }
+            drop(stub);
+        }
+    }
+
+    sys_exit(0)
+}
+
+/// Syscall: block until the target task is no longer in Loading state.
+///
+/// Returns 0 if the task is now Ready/Running (load succeeded),
+/// 1 if the task was not found, 2 if the load failed (task is Zombie).
+/// Returns immediately if the task is already past Loading.
+pub fn sys_wait_task_ready(task_id: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    loop {
+        let target = match TASK_TABLE.lock().get(&TaskId::from_u64(task_id)).cloned() {
+            Some(t) => t,
+            None => return 1,
+        };
+
+        let state = target.state.load(Ordering::Acquire);
+        if state != TaskState::Loading {
+            return if state == TaskState::Zombie { 2 } else { 0 };
+        }
+
+        // Still Loading: sleep on ready_waiter until the loader wakes us.
+        if let Some((self_task, cpu_id)) = current_task_and_cpu() {
+            {
+                let mut slot = target.ready_waiter.lock();
+                // Set Sleeping BEFORE storing the waiter so that a concurrent
+                // spawn_task_activate sees Sleeping when it takes the slot.
+                self_task.state.store(TaskState::Sleeping, Ordering::Release);
+                *slot = Some((self_task.clone(), cpu_id));
+            }
+            // Re-check: the loader may have finished between the first state
+            // check and waiter registration. spawn_task_activate acquires the
+            // same lock, so if it ran while we held it, it couldn't take the
+            // waiter yet. If it ran after we released, it already woke us.
+            if target.state.load(Ordering::Acquire) != TaskState::Loading {
+                self_task.state.store(TaskState::Ready, Ordering::Release);
+                *target.ready_waiter.lock() = None;
+                continue;
+            }
+        }
+
+        x86_64::instructions::interrupts::enable();
+        x86_64::instructions::hlt();
+        x86_64::instructions::interrupts::disable();
     }
 }
 
@@ -280,7 +415,7 @@ pub fn sys_thread_create(entry: u64, stack_top: u64, arg: u64, name_ptr: u64, na
         let inner = task.inner.lock();
         let prio = Priority::from_u8(task.priority.load(Ordering::Relaxed));
         let id = task.id;
-        (task.cr3, inner.user_vmas.clone(), prio, id)
+        (task.cr3.load(Ordering::Relaxed), inner.user_vmas.clone(), prio, id)
     };
 
     let mut name_buf = [0u8; 32];
@@ -372,10 +507,22 @@ pub fn sys_waitpid(target_id: u64, exit_code_out_ptr: u64, _: u64, _: u64, _: u6
             return 0;
         }
 
-        // Target still alive: register as exit waiter and sleep
+        // Target still alive: register as exit waiter and sleep.
+        // Set Sleeping BEFORE storing the waiter so that a concurrent
+        // sys_exit wake sees Sleeping when it takes the slot.
         if let Some((self_task, cpu_id)) = current_task_and_cpu() {
-            *target.exit_waiter.lock() = Some((self_task.clone(), cpu_id));
-            self_task.state.store(TaskState::Sleeping, Ordering::Release);
+            {
+                let mut slot = target.exit_waiter.lock();
+                self_task.state.store(TaskState::Sleeping, Ordering::Release);
+                *slot = Some((self_task.clone(), cpu_id));
+            }
+            // Re-check: target may have exited between the state check
+            // and waiter registration.
+            if target.state.load(Ordering::Acquire) == TaskState::Zombie {
+                self_task.state.store(TaskState::Ready, Ordering::Release);
+                *target.exit_waiter.lock() = None;
+                continue;
+            }
         }
 
         // Clear in_syscall so the timer handler saves kernel state (normal

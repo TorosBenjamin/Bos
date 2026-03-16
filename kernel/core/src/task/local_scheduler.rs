@@ -190,7 +190,7 @@ pub fn schedule_from_interrupt(cpu: &CpuLocalData) -> *mut CpuContext {
     drop(next_inner);
 
     // Switch address space if needed
-    let next_cr3 = next_task.cr3;
+    let next_cr3 = next_task.cr3.load(Ordering::Relaxed);
     let (current_cr3_frame, _) = Cr3::read();
     let current_cr3 = current_cr3_frame.start_address().as_u64();
     if next_cr3 != current_cr3 {

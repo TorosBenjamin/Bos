@@ -14,7 +14,7 @@ use alloc::format;
 /// This replaces the previous spawn-and-wait approach, which abandoned the test
 /// harness once the timer bootstrapped into the spawned task.
 pub fn test_stack_alignment() -> TestResult {
-    let task = Task::new(|| loop {}, Priority::Normal, None);
+    let task = Task::new(|| loop {}, 0, Priority::Normal, None);
     let stack_top = task.inner.lock().kernel_stack_top;
     if stack_top % 16 == 0 {
         TestResult::Ok

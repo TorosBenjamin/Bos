@@ -60,7 +60,7 @@ fn with_user_context(f: impl FnOnce() -> TestResult) -> TestResult {
 
         let (kernel_frame, cr3_flags) = Cr3::read();
         let user_frame =
-            PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3));
+            PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3.load(core::sync::atomic::Ordering::Relaxed)));
         unsafe { Cr3::write(user_frame, cr3_flags) };
 
         let result = f();
@@ -439,7 +439,7 @@ pub fn test_sys_set_exit_channel_valid() -> TestResult {
     use kernel::task::global_scheduler::spawn_task;
     use kernel_api_types::Priority;
 
-    let task = Task::new(|| loop {}, Priority::Normal, None);
+    let task = Task::new(|| loop {}, 0, Priority::Normal, None);
     let task_id = task.id.to_u64();
     spawn_task(task);
 

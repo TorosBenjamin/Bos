@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use core::sync::atomic::Ordering;
 use x86_64::structures::paging::mapper::MapToError;
 use x86_64::structures::paging::{
     Mapper, OffsetPageTable, Page, PageSize, PageTable, PhysFrame, Size4KiB, Translate,
@@ -45,7 +46,7 @@ pub fn try_demand_fill(faulting_addr: u64) -> bool {
 
     // Set up the mapper for this task's address space.
     let hhdm_off = hhdm_offset();
-    let user_l4_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3));
+    let user_l4_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3.load(Ordering::Relaxed)));
     let l4_virt = VirtAddr::new(hhdm_off.as_u64() + user_l4_frame.start_address().as_u64());
     let l4_table = unsafe { &mut *l4_virt.as_mut_ptr::<PageTable>() };
     let mut mapper = unsafe { OffsetPageTable::new(l4_table, VirtAddr::new(hhdm_off.as_u64())) };
@@ -104,7 +105,7 @@ pub fn prefault_user_range(task: &Arc<Task>, start: u64, end: u64) -> bool {
     }
 
     let hhdm_off = hhdm_offset();
-    let user_l4_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3));
+    let user_l4_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3.load(Ordering::Relaxed)));
     let l4_virt = VirtAddr::new(hhdm_off.as_u64() + user_l4_frame.start_address().as_u64());
     let l4_table = unsafe { &mut *l4_virt.as_mut_ptr::<PageTable>() };
     let mut mapper = unsafe { OffsetPageTable::new(l4_table, VirtAddr::new(hhdm_off.as_u64())) };

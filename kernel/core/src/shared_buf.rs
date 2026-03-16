@@ -40,7 +40,7 @@ pub fn create_shared_buf(task: &Task, n_pages: u64) -> Option<(SharedBufId, u64)
 
     let hhdm = hhdm_offset();
     let user_l4_frame =
-        PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3));
+        PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3.load(Ordering::Relaxed)));
     let l4_virt =
         VirtAddr::new(hhdm.as_u64() + user_l4_frame.start_address().as_u64());
     let l4_table = unsafe { &mut *l4_virt.as_mut_ptr::<PageTable>() };
@@ -125,7 +125,7 @@ pub fn map_shared_buf(id: SharedBufId, task: &Task) -> Option<u64> {
 
     let hhdm = hhdm_offset();
     let user_l4_frame =
-        PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3));
+        PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3.load(Ordering::Relaxed)));
     let l4_virt =
         VirtAddr::new(hhdm.as_u64() + user_l4_frame.start_address().as_u64());
     let l4_table = unsafe { &mut *l4_virt.as_mut_ptr::<PageTable>() };

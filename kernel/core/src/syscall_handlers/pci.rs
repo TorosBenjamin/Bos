@@ -1,3 +1,4 @@
+use core::sync::atomic::Ordering;
 use crate::drivers::pci;
 use crate::memory::MEMORY;
 use crate::memory::cpu_local_data::get_local;
@@ -83,7 +84,7 @@ pub fn sys_map_pci_bar(bus: u64, device: u64, function: u64, bar_index: u64, _: 
     };
 
     let hhdm_off = hhdm_offset();
-    let user_l4_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3));
+    let user_l4_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(task.cr3.load(Ordering::Relaxed)));
     let l4_virt = VirtAddr::new(hhdm_off.as_u64() + user_l4_frame.start_address().as_u64());
     let l4_table = unsafe { &mut *l4_virt.as_mut_ptr::<PageTable>() };
     let mut mapper = unsafe { OffsetPageTable::new(l4_table, VirtAddr::new(hhdm_off.as_u64())) };
