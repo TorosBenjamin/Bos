@@ -23,15 +23,14 @@ pub enum StackType {
 #[derive(Debug, Clone, Copy)]
 pub struct StackId {
     pub _type: StackType,
-    #[allow(unused)]
     pub cpu_id: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Debug-printed in the stack overflow panic message.
+#[allow(dead_code)]
 pub struct StackInfo {
-    #[allow(unused)]
     id: StackId,
-    #[allow(unused)]
     size: u64,
 }
 

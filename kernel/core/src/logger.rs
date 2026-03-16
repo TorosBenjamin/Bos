@@ -24,7 +24,6 @@ impl Inner {
             Color::BrightBlue => &string.bright_blue(),
             Color::BrightCyan => &string.bright_cyan(),
             Color::BrightMagenta => &string.bright_magenta(),
-            Color::BrightGreen => &string.bright_green(),
         };
         let mut writer = WriterWithCr::new(&mut self.serial_port);
         write!(writer, "{string}").unwrap();
@@ -128,6 +127,4 @@ enum Color {
     BrightBlue,
     BrightCyan,
     BrightMagenta,
-    #[allow(dead_code)]
-    BrightGreen,
 }
