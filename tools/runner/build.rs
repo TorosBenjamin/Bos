@@ -109,6 +109,7 @@ fn main() {
     // Re-run if configs change
     println!("cargo:rerun-if-changed=bos_ds.conf");
     println!("cargo:rerun-if-changed=launcher.conf");
+    println!("cargo:rerun-if-changed=net.conf");
 
     // Stable symlink to out_dir for convenient inspection
     ensure_symlink(&out_dir, runner_dir.join("out_dir")).unwrap();
@@ -212,6 +213,11 @@ fn create_fat32_disk_image(path: &Path, runner_dir: &Path) {
         let launcher_conf = std::fs::read(runner_dir.join("launcher.conf")).unwrap_or_default();
         root.create_file("LAUNCH.CFG").expect("fatfs: create LAUNCH.CFG")
             .write_all(&launcher_conf).unwrap();
+
+        // Network config
+        let net_conf = std::fs::read(runner_dir.join("net.conf")).unwrap_or_default();
+        root.create_file("net.conf").expect("fatfs: create net.conf")
+            .write_all(&net_conf).unwrap();
     }
 
     std::fs::write(path, disk.into_inner()).expect("build.rs: failed to write disk.img");

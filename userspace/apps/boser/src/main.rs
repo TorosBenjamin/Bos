@@ -8,7 +8,7 @@ use bos_egui::{egui, egui::KeyEventType, App};
 
 // 10.0.2.2 = QEMU SLIRP gateway; the runner spawns an HTTP stub server on
 // the host at 127.0.0.1:8000, reachable from the guest at 10.0.2.2:8000.
-const URL: &str = "http://10.0.2.2:8000/";
+const URL: &str = "https://vms.gesztenye.eu/";
 
 // ── Panic / entry ─────────────────────────────────────────────────────────────
 
@@ -124,6 +124,7 @@ fn do_fetch() -> State {
                 http_client::HttpError::ConnectError => 2,
                 http_client::HttpError::TooLarge     => 3,
                 http_client::HttpError::ParseError   => 4,
+                http_client::HttpError::TlsError     => 5,
             };
             ulib::sys_debug_log(code, 0xB05E_0001);
             let msg = match e {
@@ -131,6 +132,7 @@ fn do_fetch() -> State {
                 http_client::HttpError::ConnectError => "TCP connection failed",
                 http_client::HttpError::TooLarge     => "Response too large (>1 MiB)",
                 http_client::HttpError::ParseError   => "Invalid HTTP response",
+                http_client::HttpError::TlsError     => "TLS handshake failed",
             };
             State::Error(String::from(msg))
         }

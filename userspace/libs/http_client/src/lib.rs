@@ -1,12 +1,13 @@
-//! HTTP/1.0 client for Bos OS.
+//! HTTP/1.0 client for Bos OS with HTTPS (TLS 1.3) support.
 //!
 //! Uses the net_server IPC API (via `ulib::net`) to open TCP connections.
-//! HTTPS is not supported. Follows up to 3 redirects automatically.
+//! HTTPS is handled via `embedded-tls` (TLS 1.3, no certificate verification).
+//! Follows up to 3 redirects automatically.
 //!
 //! # Example
 //! ```no_run
 //! let net = ulib::net::net_lookup();
-//! match http_client::http_get(net, "http://example.com/") {
+//! match http_client::http_get(net, "https://example.com/") {
 //!     Ok(resp) => { /* resp.status, resp.body */ }
 //!     Err(e)   => { /* handle error */ }
 //! }
@@ -34,6 +35,8 @@ pub enum HttpError {
     TooLarge,
     /// The server's response could not be parsed as HTTP.
     ParseError,
+    /// TLS handshake or encrypted I/O failed.
+    TlsError,
 }
 
 pub struct HttpResponse {
@@ -41,16 +44,146 @@ pub struct HttpResponse {
     pub body: Vec<u8>,
 }
 
+// ── embedded-io adapter over IPC TCP sockets ────────────────────────────────
+//
+// IPC channels are message-based: each sys_channel_recv returns one complete
+// message and discards bytes that don't fit in the caller's buffer.  TLS needs
+// a byte-stream, so we buffer the IPC messages internally.
+
+struct TcpStream {
+    net_ep: u64,
+    sock_id: u32,
+    rx_ep: u64,
+    /// Internal read buffer holding the last IPC message.
+    rxbuf: [u8; 4096],
+    /// Start offset of unconsumed data in `rxbuf`.
+    rx_pos: usize,
+    /// End offset (exclusive) of valid data in `rxbuf`.
+    rx_len: usize,
+    eof: bool,
+}
+
+impl TcpStream {
+    fn new(net_ep: u64, sock_id: u32, rx_ep: u64) -> Self {
+        Self {
+            net_ep,
+            sock_id,
+            rx_ep,
+            rxbuf: [0u8; 4096],
+            rx_pos: 0,
+            rx_len: 0,
+            eof: false,
+        }
+    }
+}
+
+impl embedded_io::ErrorType for TcpStream {
+    type Error = embedded_io::ErrorKind;
+}
+
+impl embedded_io::Read for TcpStream {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        // Return buffered data first.
+        if self.rx_pos < self.rx_len {
+            let avail = self.rx_len - self.rx_pos;
+            let n = avail.min(buf.len());
+            buf[..n].copy_from_slice(&self.rxbuf[self.rx_pos..self.rx_pos + n]);
+            self.rx_pos += n;
+            ulib::sys_debug_log(n as u64, 0xAA00_0001); // buffered read
+            return Ok(n);
+        }
+
+        if self.eof {
+            return Ok(0);
+        }
+
+        // Buffer empty — receive a new IPC message into our internal buffer.
+        ulib::sys_debug_log(buf.len() as u64, 0xAA00_0002); // waiting for IPC
+        let (ret, n) = ulib::sys_channel_recv(self.rx_ep, &mut self.rxbuf);
+        let n = n as usize;
+        ulib::sys_debug_log(((ret as u64) << 32) | n as u64, 0xAA00_0003); // IPC result
+        if ret != IPC_OK || n == 0 {
+            self.eof = true;
+            return Ok(0);
+        }
+
+        // Copy as much as the caller wants.
+        let copy = n.min(buf.len());
+        buf[..copy].copy_from_slice(&self.rxbuf[..copy]);
+        // Buffer the rest for next read.
+        self.rx_pos = copy;
+        self.rx_len = n;
+        Ok(copy)
+    }
+}
+
+impl embedded_io::Write for TcpStream {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        ulib::sys_debug_log(buf.len() as u64, 0xAA00_0010); // TLS write
+        net_send(self.net_ep, self.sock_id, buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+// ── Hardware RNG via RDRAND ─────────────────────────────────────────────────
+
+struct RdRandRng;
+
+impl rand_core::CryptoRng for RdRandRng {}
+
+impl rand_core::RngCore for RdRandRng {
+    fn next_u32(&mut self) -> u32 {
+        self.next_u64() as u32
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let val: u64;
+        unsafe {
+            core::arch::asm!(
+                "2: rdrand {val}",
+                "jnc 2b",
+                val = out(reg) val,
+            );
+        }
+        val
+    }
+
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        let mut i = 0;
+        while i + 8 <= dest.len() {
+            let val = self.next_u64();
+            dest[i..i + 8].copy_from_slice(&val.to_le_bytes());
+            i += 8;
+        }
+        if i < dest.len() {
+            let val = self.next_u64();
+            let bytes = val.to_le_bytes();
+            for j in 0..dest.len() - i {
+                dest[i + j] = bytes[j];
+            }
+        }
+    }
+
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
+        self.fill_bytes(dest);
+        Ok(())
+    }
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Fetch `url` via HTTP/1.0 GET.
 ///
-/// `url` must be an `http://` URL (e.g. `"http://example.com/page"`).
-/// Bare `"host/path"` (without scheme) is also accepted.
+/// Supports both `http://` and `https://` URLs.
+/// Bare `"host/path"` (without scheme) defaults to HTTP.
 /// Follows up to 3 redirects. Returns the final response.
 pub fn http_get(net_ep: u64, url: &str) -> Result<HttpResponse, HttpError> {
-    let (host, path) = parse_url(url);
-    http_get_host(net_ep, host, path, 3)
+    let (host, path, use_tls) = parse_url(url);
+    http_get_host(net_ep, host, path, use_tls, 3)
 }
 
 // ── Internal implementation ───────────────────────────────────────────────────
@@ -59,15 +192,14 @@ fn http_get_host(
     net_ep: u64,
     host: &str,
     path: &str,
+    use_tls: bool,
     hops_left: usize,
 ) -> Result<HttpResponse, HttpError> {
     // ── 1. DNS resolve ───────────────────────────────────────────────────────
-    // Strip port from host for DNS (e.g. "example.com:8080" → "example.com").
     let dns_host = match host.rfind(':') {
         Some(i) => &host[..i],
         None    => host,
     };
-    // If the host is already a dotted-decimal IPv4 literal, skip DNS.
     let ip = if let Some(ip) = parse_ipv4_literal(dns_host) {
         ip
     } else {
@@ -75,44 +207,49 @@ fn http_get_host(
     };
 
     // ── 2. TCP connect ───────────────────────────────────────────────────────
+    let default_port: u16 = if use_tls { 443 } else { 80 };
     let port: u16 = match host.rfind(':') {
-        Some(i) => host[i + 1..].parse().unwrap_or(80),
-        None    => 80,
+        Some(i) => host[i + 1..].parse().unwrap_or(default_port),
+        None    => default_port,
     };
     let sock = net_connect(net_ep, ip, port).ok_or(HttpError::ConnectError)?;
     let rx_ep = net_recv_subscribe(net_ep, sock);
 
-    // ── 3. Send HTTP/1.0 GET request ─────────────────────────────────────────
+    // ── 3. Send request + read response ──────────────────────────────────────
     let mut req_buf = [0u8; 2048];
     let req_len = write_get_request(&mut req_buf, host, path);
-    net_send(net_ep, sock, &req_buf[..req_len]);
 
-    // ── 4. Read response until EOF ───────────────────────────────────────────
     let mut raw: Vec<u8> = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        let (ret, n) = ulib::sys_channel_recv(rx_ep, &mut chunk);
-        let n = n as usize;
-        // DEBUG: log each recv result — ret in high 32, n in low 32
-        ulib::sys_debug_log(((ret as u64) << 32) | n as u64, 0xBEEF_3002);
-        if ret != IPC_OK || n == 0 {
-            break; // IPC error or zero-length EOF signal from net_server
-        }
-        if raw.len() + n > MAX_RESPONSE_BYTES {
+
+    if use_tls {
+        let result = do_tls_request(net_ep, sock, rx_ep, dns_host, &req_buf[..req_len], &mut raw);
+        if let Err(e) = result {
             ulib::sys_channel_close(rx_ep);
             net_close(net_ep, sock);
-            return Err(HttpError::TooLarge);
+            return Err(e);
         }
-        raw.extend_from_slice(&chunk[..n]);
+    } else {
+        net_send(net_ep, sock, &req_buf[..req_len]);
+
+        let mut chunk = [0u8; 4096];
+        loop {
+            let (ret, n) = ulib::sys_channel_recv(rx_ep, &mut chunk);
+            let n = n as usize;
+            if ret != IPC_OK || n == 0 {
+                break;
+            }
+            if raw.len() + n > MAX_RESPONSE_BYTES {
+                ulib::sys_channel_close(rx_ep);
+                net_close(net_ep, sock);
+                return Err(HttpError::TooLarge);
+            }
+            raw.extend_from_slice(&chunk[..n]);
+        }
     }
     ulib::sys_channel_close(rx_ep);
     net_close(net_ep, sock);
-    // DEBUG: log total received bytes
-    ulib::sys_debug_log(raw.len() as u64, 0xBEEF_3001);
 
-    // ── 5. Parse HTTP response headers ───────────────────────────────────────
-    // Use a scoped block so httparse borrows on `raw` are released before we
-    // potentially call http_get_host again for a redirect.
+    // ── 4. Parse HTTP response headers ───────────────────────────────────────
     let (status, body_offset, redirect) = {
         let mut hdr_storage = [httparse::EMPTY_HEADER; 64];
         let mut resp = httparse::Response::new(&mut hdr_storage);
@@ -123,8 +260,6 @@ fn http_get_host(
         };
         let status = resp.code.unwrap_or(0);
 
-        // For redirects: copy Location into a fixed stack buffer so we can
-        // drop the httparse borrow on `raw` before recursing.
         let redirect: Option<([u8; 512], usize)> =
             if matches!(status, 301 | 302 | 303 | 307 | 308) && hops_left > 0 {
                 find_header(resp.headers, b"location").map(|loc| {
@@ -138,39 +273,129 @@ fn http_get_host(
             };
 
         (status, body_offset, redirect)
-        // resp and hdr_storage drop here — httparse borrows on `raw` released
     };
 
-    // ── 6. Follow redirect if present ────────────────────────────────────────
+    // ── 5. Follow redirect if present ────────────────────────────────────────
     if let Some((loc_buf, loc_len)) = redirect {
         if let Ok(loc) = core::str::from_utf8(&loc_buf[..loc_len]) {
-            if loc.starts_with("http://") {
-                // Absolute URL redirect
-                let (new_host, new_path) = parse_url(loc);
-                return http_get_host(net_ep, new_host, new_path, hops_left - 1);
+            if loc.starts_with("https://") || loc.starts_with("http://") {
+                let (new_host, new_path, new_tls) = parse_url(loc);
+                return http_get_host(net_ep, new_host, new_path, new_tls, hops_left - 1);
             } else if loc.starts_with('/') {
-                // Root-relative redirect — reuse same host
-                return http_get_host(net_ep, host, loc, hops_left - 1);
+                return http_get_host(net_ep, host, loc, use_tls, hops_left - 1);
             }
-            // Other schemes (https://, //) or relative paths: fall through and
-            // return the redirect response as-is.
         }
     }
 
-    // ── 7. Return response ───────────────────────────────────────────────────
+    // ── 6. Return response ───────────────────────────────────────────────────
     let body = raw[body_offset..].to_vec();
     Ok(HttpResponse { status, body })
 }
 
+/// Perform a TLS handshake, send the HTTP request, and read the response.
+/// On success, the response bytes are appended to `raw`.
+fn do_tls_request(
+    net_ep: u64,
+    sock_id: u32,
+    rx_ep: u64,
+    server_name: &str,
+    request: &[u8],
+    raw: &mut Vec<u8>,
+) -> Result<(), HttpError> {
+    let stream = TcpStream::new(net_ep, sock_id, rx_ep);
+
+    // Heap-allocate TLS record buffers (16 KiB each) to avoid stack overflow.
+    let mut read_buf = alloc::vec![0u8; 16384];
+    let mut write_buf = alloc::vec![0u8; 16384];
+
+    let config = embedded_tls::TlsConfig::new()
+        .with_server_name(server_name);
+
+    let mut tls: embedded_tls::blocking::TlsConnection<_, embedded_tls::Aes128GcmSha256> =
+        embedded_tls::blocking::TlsConnection::new(stream, &mut read_buf, &mut write_buf);
+
+    let context = embedded_tls::TlsContext::new(
+        &config,
+        embedded_tls::UnsecureProvider::new::<embedded_tls::Aes128GcmSha256>(RdRandRng),
+    );
+    match tls.open(context) {
+        Ok(()) => {}
+        Err(e) => {
+            // Log TLS error discriminant for debugging
+            let code = match e {
+                embedded_tls::TlsError::IoError => 1,
+                embedded_tls::TlsError::InvalidRecord => 2,
+                embedded_tls::TlsError::UnknownContentType => 3,
+                embedded_tls::TlsError::InvalidHandshake => 4,
+                embedded_tls::TlsError::InvalidCertificate => 5,
+                embedded_tls::TlsError::InvalidSignature => 6,
+                embedded_tls::TlsError::DecodeError => 7,
+                embedded_tls::TlsError::InternalError => 8,
+                embedded_tls::TlsError::InvalidApplicationData => 9,
+                embedded_tls::TlsError::MissingHandshake => 10,
+                _ => 99,
+            };
+            ulib::sys_debug_log(code, 0x1F5E_0001);
+            return Err(HttpError::TlsError);
+        }
+    }
+
+    // Send the HTTP request through TLS.
+    write_all_tls(&mut tls, request)?;
+    tls.flush().map_err(|_| HttpError::TlsError)?;
+
+    // Read response until EOF.
+    let mut chunk = [0u8; 4096];
+    loop {
+        match tls.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                if raw.len() + n > MAX_RESPONSE_BYTES {
+                    return Err(HttpError::TooLarge);
+                }
+                raw.extend_from_slice(&chunk[..n]);
+            }
+            Err(_) => break, // TLS close_notify or error → treat as EOF
+        }
+    }
+
+    let _ = tls.close();
+    Ok(())
+}
+
+fn write_all_tls(
+    tls: &mut embedded_tls::blocking::TlsConnection<TcpStream, embedded_tls::Aes128GcmSha256>,
+    mut data: &[u8],
+) -> Result<(), HttpError> {
+    while !data.is_empty() {
+        let n = tls.write(data).map_err(|_| HttpError::TlsError)?;
+        if n == 0 {
+            return Err(HttpError::TlsError);
+        }
+        data = &data[n..];
+    }
+    Ok(())
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Split `http://host/path` (or bare `host/path`) into `(host, path)`.
+/// Split a URL into `(host, path, use_tls)`.
 /// Host may include a port: `"example.com:8080"`.
-fn parse_url(url: &str) -> (&str, &str) {
-    let without_scheme = url.strip_prefix("http://").unwrap_or(url);
-    match without_scheme.find('/') {
-        Some(i) => (&without_scheme[..i], &without_scheme[i..]),
-        None    => (without_scheme, "/"),
+fn parse_url(url: &str) -> (&str, &str, bool) {
+    if let Some(rest) = url.strip_prefix("https://") {
+        let (host, path) = split_host_path(rest);
+        (host, path, true)
+    } else {
+        let rest = url.strip_prefix("http://").unwrap_or(url);
+        let (host, path) = split_host_path(rest);
+        (host, path, false)
+    }
+}
+
+fn split_host_path(s: &str) -> (&str, &str) {
+    match s.find('/') {
+        Some(i) => (&s[..i], &s[i..]),
+        None    => (s, "/"),
     }
 }
 

@@ -3,6 +3,7 @@
 
 extern crate alloc;
 
+mod config;
 mod device;
 
 use alloc::vec;
@@ -13,11 +14,10 @@ use kernel_api_types::{IPC_OK, IPC_ERR_PEER_CLOSED, SVC_ERR_NOT_FOUND};
 use linked_list_allocator::LockedHeap;
 use smoltcp::iface::{Config, Interface, SocketSet};
 use smoltcp::phy::ChecksumCapabilities;
-use smoltcp::socket::{dns, icmp, tcp};
+use smoltcp::socket::{dhcpv4, dns, icmp, tcp};
 use smoltcp::time::Instant;
 use smoltcp::wire::{
     DnsQueryType, EthernetAddress, HardwareAddress, IpAddress, IpCidr, Icmpv4Packet, Icmpv4Repr,
-    Ipv4Address,
 };
 use ulib::{
     sys_channel_close, sys_channel_create, sys_channel_recv, sys_get_time_ns, sys_lookup_service,
@@ -67,6 +67,43 @@ fn alloc_local_port(next: &mut u16) -> u16 {
     p
 }
 
+// ── Config loading ────────────────────────────────────────────────────────────
+
+fn load_config() -> config::NetConfig {
+    // Wait up to 200 yields for the fatfs service.
+    let fs_ep = {
+        let mut ep = SVC_ERR_NOT_FOUND;
+        for _ in 0..200u32 {
+            ep = sys_lookup_service(b"fatfs");
+            if ep != SVC_ERR_NOT_FOUND { break; }
+            ulib::sys_yield();
+        }
+        ep
+    };
+    if fs_ep == SVC_ERR_NOT_FOUND {
+        return config::NetConfig::default();
+    }
+
+    let (buf_id, file_size) = match ulib::fs::fs_map_file(fs_ep, "/net.conf") {
+        Some(v) => v,
+        None => return config::NetConfig::default(),
+    };
+
+    let ptr = ulib::sys_map_shared_buf(buf_id);
+    if ptr.is_null() {
+        ulib::sys_destroy_shared_buf(buf_id);
+        return config::NetConfig::default();
+    }
+
+    let bytes = unsafe { core::slice::from_raw_parts(ptr, file_size as usize) };
+    let cfg = config::NetConfig::parse(bytes);
+
+    ulib::sys_munmap(ptr, file_size);
+    ulib::sys_destroy_shared_buf(buf_id);
+
+    cfg
+}
+
 // ── Entry point ────────────────────────────────────────────────────────────────
 
 #[unsafe(no_mangle)]
@@ -110,21 +147,30 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
         EthernetAddress(buf)
     };
 
-    let mut config = Config::new(HardwareAddress::Ethernet(mac));
-    config.random_seed = sys_get_time_ns();
+    // ── Load network config from disk ────────────────────────────────────────
+    let net_cfg = load_config();
+    let use_dhcp = net_cfg.mode == config::NetMode::Dhcp;
 
-    let mut iface = Interface::new(config, &mut device, now());
+    let mut iface_config = Config::new(HardwareAddress::Ethernet(mac));
+    iface_config.random_seed = sys_get_time_ns();
 
-    // QEMU user-mode networking: guest is 10.0.2.15/24, gateway 10.0.2.2.
-    iface.update_ip_addrs(|addrs| {
-        let _ = addrs.push(IpCidr::new(IpAddress::v4(10, 0, 2, 15), 24));
-    });
-    iface
-        .routes_mut()
-        .add_default_ipv4_route(Ipv4Address::new(10, 0, 2, 2))
-        .unwrap();
+    let mut iface = Interface::new(iface_config, &mut device, now());
 
     let mut sockets: SocketSet<'static> = SocketSet::new(Vec::new());
+
+    // ── DHCP socket (only when mode = dhcp) ─────────────────────────────────
+    let dhcp_handle = if use_dhcp {
+        Some(sockets.add(dhcpv4::Socket::new()))
+    } else {
+        // Static mode: apply address, gateway, DNS from config immediately.
+        if let Some(cidr) = net_cfg.address {
+            iface.update_ip_addrs(|addrs| { let _ = addrs.push(cidr); });
+        }
+        if let Some(gw) = net_cfg.gateway {
+            let _ = iface.routes_mut().add_default_ipv4_route(gw);
+        }
+        None
+    };
 
     // ── Test-ping ICMP socket ──────────────────────────────────────────────────
     let icmp_handle = {
@@ -143,7 +189,12 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
 
     // ── DNS socket (one shared, queries tracked in dns_table) ─────────────────
     let dns_handle = {
-        let s = dns::Socket::new(&[IpAddress::v4(10, 0, 2, 3)], Vec::new());
+        let initial_dns: Vec<IpAddress> = if use_dhcp {
+            Vec::new() // populated by DHCP Configured event
+        } else {
+            net_cfg.dns.iter().map(|a| IpAddress::Ipv4(*a)).collect()
+        };
+        let s = dns::Socket::new(&initial_dns, Vec::new());
         sockets.add(s)
     };
 
@@ -152,10 +203,15 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
     sys_register_service(b"net", net_send_ep);
 
     // ── State ─────────────────────────────────────────────────────────────────
-    let ping_target = IpAddress::v4(10, 0, 2, 2);
+    // In static mode the gateway is known upfront; in DHCP mode it's set later.
+    let mut ping_target = if use_dhcp {
+        None
+    } else {
+        net_cfg.gateway.map(IpAddress::Ipv4)
+    };
     let mut ping_sent    = false;
     let mut ping_sent_at = 0u64;
-    let mut ping_done    = false;
+    let mut ping_done    = !net_cfg.ping_enabled;
 
     let mut tcp_table: [Option<TcpEntry>; MAX_TCP] = [const { None }; MAX_TCP];
     let mut dns_table: [Option<DnsEntry>; MAX_DNS] = [const { None }; MAX_DNS];
@@ -167,18 +223,66 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
     loop {
         iface.poll(now(), &mut device, &mut sockets);
 
-        // ── 1. Test-ping ──────────────────────────────────────────────────────
+        // ── 0. DHCP state (skipped in static mode) ─────────────────────────
+        // Extract config data before re-borrowing sockets (borrow checker).
+        enum DhcpAction {
+            None,
+            Configured { address: smoltcp::wire::Ipv4Cidr, router: Option<smoltcp::wire::Ipv4Address>, dns: Vec<IpAddress> },
+            Deconfigured,
+        }
+        let dhcp_action = if let Some(dh) = dhcp_handle {
+            match sockets.get_mut::<dhcpv4::Socket>(dh).poll() {
+                core::prelude::rust_2024::None => DhcpAction::None,
+                Some(dhcpv4::Event::Configured(config)) => {
+                    let dns: Vec<IpAddress> = config.dns_servers.iter()
+                        .map(|a| IpAddress::Ipv4(*a))
+                        .collect();
+                    DhcpAction::Configured { address: config.address, router: config.router, dns }
+                }
+                Some(dhcpv4::Event::Deconfigured) => DhcpAction::Deconfigured,
+            }
+        } else {
+            DhcpAction::None
+        };
+        match dhcp_action {
+            DhcpAction::None => {}
+            DhcpAction::Configured { address, router, dns } => {
+                ulib::sys_debug_log(u32::from_be_bytes(address.address().0) as u64, 0x00DC_0001);
+
+                iface.update_ip_addrs(|addrs| {
+                    addrs.clear();
+                    addrs.push(IpCidr::Ipv4(address)).unwrap();
+                });
+
+                if let Some(gw) = router {
+                    iface.routes_mut().add_default_ipv4_route(gw).unwrap();
+                } else {
+                    iface.routes_mut().remove_default_ipv4_route();
+                }
+
+                sockets.get_mut::<dns::Socket>(dns_handle).update_servers(&dns);
+
+                // Set ping target to gateway once DHCP is configured.
+                ping_target = router.map(IpAddress::Ipv4);
+            }
+            DhcpAction::Deconfigured => {
+                ulib::sys_debug_log(0, 0x00DC_0002);
+                iface.update_ip_addrs(|addrs| addrs.clear());
+                iface.routes_mut().remove_default_ipv4_route();
+                ping_target = None;
+            }
+        }
         if !ping_done {
             let socket = sockets.get_mut::<icmp::Socket>(icmp_handle);
 
-            if !ping_sent && socket.can_send() {
+            if !ping_sent && socket.can_send() && ping_target.is_some() {
                 const PAYLOAD: &[u8] = b"bos-ping";
                 let repr = Icmpv4Repr::EchoRequest {
                     ident:  PING_IDENT,
                     seq_no: PING_SEQ,
                     data:   PAYLOAD,
                 };
-                if let Ok(buf) = socket.send(repr.buffer_len(), ping_target) {
+                if let Ok(buf) = socket.send(repr.buffer_len(), ping_target.unwrap()) {
                     let mut pkt = Icmpv4Packet::new_unchecked(buf);
                     repr.emit(&mut pkt, &ChecksumCapabilities::default());
                     ping_sent    = true;
