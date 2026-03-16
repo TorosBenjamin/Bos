@@ -41,8 +41,8 @@ pub static MEMORY: Once<Memory> = Once::new();
 /// # Safety
 /// This function must be called exactly once, and no page tables should be modified before calling this function.
 pub unsafe fn init_bsp(memory_map: &'static MemoryMapResponse) {
-    let global_allocator_start = unsafe { global_allocator::init(memory_map) };
-    let mut physical_memory = PhysicalMemory::new(memory_map, global_allocator_start);
+    let claimed_regions = unsafe { global_allocator::init(memory_map) };
+    let mut physical_memory = PhysicalMemory::new(memory_map, &claimed_regions);
     let (new_kernel_cr3, new_kernel_cr3_flags, virtual_memory) =
         create_page_tables(memory_map, &mut physical_memory);
 

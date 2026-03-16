@@ -1,248 +1,68 @@
+===============================================================================
+                            BOS RELEASE PLANS
+===============================================================================
 
-  2. Focus change triggers a full redraw even when only borders need repainting
+===== Display Server =====
 
-  compositor/mod.rs set_focus()
+  1. Focus change: damage only borders, not full redraw
+     compositor/mod.rs set_focus() calls mark_full_redraw() unconditionally.
+     Should compute 4 border-strip rects for old + new focused window and
+     call mark_damage instead.
 
-  The only visual change from a focus switch is the border colour of two windows. The current code calls mark_full_redraw()
-  unconditionally. Instead, compute 4 border-strip rects for the old focused window and 4 for the new one, union them, and
-  call mark_damage. Clicking between windows would stop rebuilding the entire back-buffer.
+  2. Two-channel blend optimization
+     compositor/render.rs blit_to_back_uniform — inactive-dimming does 3
+     separate multiplies per pixel. Can fold R+B into one multiply via
+     (px & 0x00FF00FF) * alpha trick.
 
-  3. blit_to_back_uniform per-pixel blend can do two channels per multiply
+  3. Floating drag minimum on-screen margin
+     compositor/mod.rs update_drag() MoveFloating — window can be dragged
+     almost entirely off-screen. Clamp to -(w - 64) .. screen_w - 64.
 
-  compositor/render.rs:150–160
+  4. Fullscreen toggle (Super+F)
+     Add ShortcutAction::Fullscreen. Set fullscreen_window: Option<WindowId>;
+     when set, recalculate_toplevel_layout gives it the full area.
 
-  The inactive-dimming path blends three channels with three separate multiplies + shifts per pixel. A standard trick
-  processes two channels in one multiply: (px & 0x00FF00FF) * alpha folds R and B together since they don't occupy adjacent
-  bytes. Worth doing if dimming is used heavily. Requires the pixel format to have at most one channel in bits 16–23 and 0–7,
-  which is true for the common 0xXXRRGGBB layout.
+  5. Cursor capture / hiding for games
+     Add SetCursorMode { hidden, locked } message. Compositor suppresses
+     cursor rendering and accumulates raw deltas for locked window.
 
-  ---
-  Correctness / Bugs
+===== Kernel: Bugs to Fix =====
 
-  ---
-  Small Polishes
+  3. [MED] User pointer TOCTOU race
+     syscall_handlers/mod.rs validate_user_ptr() — vaddr_set can be modified
+     concurrently by another thread. Low probability but possible.
 
-  6. Floating drag doesn't enforce a minimum on-screen margin
+  4. [MED] GPF handler raw pointer dereference
+     interrupt/handlers.rs — reads iretq frame via raw pointer. If RSP is
+     corrupted, causes recursive #GPF -> double fault with unhelpful message.
 
-  compositor/mod.rs update_drag() → MoveFloating
+  5. [LOW] Mouse/keyboard buffers silently drop on overflow
+     No notification when input events are dropped.
 
-  The x/y clamp only prevents the window origin from leaving the screen (clamp(0, width-1)). A window can be dragged so its
-  body is entirely off-screen with only its top-left pixel visible. Clamping to (-(w - MIN_VISIBLE), screen_w - MIN_VISIBLE)
-  where MIN_VISIBLE = 64 would keep it reachable.
+  6. [LOW] Delete unused legacy context switch code
+     task/context.rs — entire file is dead code (#[allow(dead_code)]).
 
-  ---
-  New Features
+===== Kernel: Future Features =====
 
-  10. Fullscreen toggle
+  (Not for this release — tracked for reference)
 
-  A ShortcutAction::Fullscreen that temporarily gives the focused tiled window the full available area (saving and restoring
-  its ratio). One keybind (e.g. Super+F) would remove the need to adjust panels manually and is the most-requested tiling
-  feature. Implementation: set a fullscreen_window: Option<WindowId> field; when set, recalculate_toplevel_layout skips all
-  other tiled windows.
+  - Process groups / job control
+  - File descriptor abstraction (unify IPC channels, pipes, sockets)
+  - Signal delivery (SIGSEGV, SIGTERM, etc.)
+  - Virtual memory swapping
+  - Capability-based security
+  - Preemption of blocking syscalls
 
+===== Already Done (remove after PR) =====
 
-  11. Cursor capture / hiding for games
-
-  No API to hide the cursor or lock it to a window (needed for FPS-style mouse look). A window event or message like
-  SetCursorMode { hidden: bool, locked: bool } would cover the common cases; the compositor would suppress rendering and
-  instead accumulate raw deltas for the locked window.
-
-  --- Kernel analysis
-
-  2. BUGS, EDGE CASES, AND MISSING ERROR HANDLING
-
-       CRITICAL ISSUES
-
-       2. Global Allocator No Bounds Checking (kernel/core/src/memory/global_allocator.rs:25-53)
-         - Issue: init() calls .unwrap() if no USABLE entry has ≥4 MiB, no fallback
-         - Line: 33-34: finds first entry with entry.length >= GLOBAL_ALLOCATOR_SIZE then unwraps
-         - Risk: Panic if Limine memory map has no suitable range (should fail gracefully)
-         - Impact: Unbootable kernel on exotic memory maps
-       3. User Pointer Validation Incomplete (kernel/core/src/syscall_handlers/mod.rs:27-50)
-         - Issue: validate_user_ptr() checks bounds but doesn't verify allocation in user_vaddr_set
-         - Line: 48-50: calls is_user_vaddr_valid_range() only after acquiring run_queue lock, but vaddr_set can be
-       modified concurrently
-         - Risk: TOCTOU race if user task modifies its own page table while syscall validates
-         - Impact: Potential out-of-bounds memory access via syscall
-       4. Context Switch CR3 Switch Not Atomic w.r.t. Interrupts (kernel/core/src/task/local_scheduler.rs:127-131)
-         - Issue: Cr3::write() in schedule_from_interrupt() isn't wrapped in atomic context
-         - Line: 127-131: CR3 switch happens during interrupt handling with no special synchronization
-         - Risk: If a nested interrupt fires between CR3 write and TLB flush on KVM, stale TLB entries could cause #PF or
-        worse
-         - Impact: Rare race on very high-latency systems (real hardware likely OK due to microcode)
-       5. No Free Page Table Frames After User Task Cleanup (kernel/core/src/task/task.rs:138-193)
-         - Issue: free_user_address_space() walks page tables and calls free_frame() for data frames but some test
-       configs never free the task
-         - Line: 173-192: frees L1/L2/L3 frames but only if they're already in the map
-         - Risk: In tests that create user tasks but never exit them (e.g., test_user_task_runs), frames accumulate → OOM
-         - Impact: Tests with many task spawns fail with allocator exhaustion
-       6. sys_exit Never Enables Interrupts Post-Unlock (kernel/core/src/syscall_handlers/task.rs:11-60)
-         - Issue: sys_exit() calls interrupts::enable() then hlt(), but if it re-enters the scheduler, no safety
-         - Line: 56-58: enables interrupts then loops in hlt forever
-         - Risk: Low; hlt in a loop is safe but non-standard (other CPUs won't reschedule this one)
-         - Impact: Exiting task never scheduled again (expected behavior)
-
-       HIGH-PRIORITY ISSUES
-
-       7. KVM SS.RPL Stripping Workaround May Fail on Real Hardware (kernel/core/src/interrupt/handlers.rs:205-214)
-         - Issue: Code patches SS RPL to 3 if returning to ring 3, assuming KVM bug
-         - Line: 212-214: or rax, 3 to force RPL=3
-         - Risk: Real hardware may reject SS=0x1B (RPL in segment limit check)
-         - Impact: GPF on non-KVM x86_64 systems is possible but unlikely (most allow flexible SS)
-       8. IDE Disk Driver Infinite Loop on Error (kernel/core/src/drivers/disk.rs:79-92)
-         - Issue: init() loops waiting for DRQ but has no timeout
-         - Line: 87-92: loop with no maximum iterations
-         - Risk: Broken/slow IDE controllers cause hang during init
-         - Impact: Kernel hangs at boot (no timeout, no async abort)
-       9. Mouse/Keyboard Buffers Silently Drop on Overflow (kernel/core/src/drivers/keyboard.rs:44-51, mouse.rs:24-30)
-         - Issue: Both buffers only push if count < BUFFER_SIZE, otherwise drop
-         - Line: 44-50 (kbd), 25-29 (mouse): if self.count < BUFFER_SIZE
-         - Risk: Rapid key/mouse input can lose events without notification
-         - Impact: Dropped input; user won't know what happened
-       10. No Validation of ELF Load Address Against User Space (kernel/core/src/user_task_from_elf.rs:76-X)
-         - Issue: ELF segments are mapped without checking if they fit in user space or overlap
-         - Risk: Malformed ELF with segments at 0xffffffffffffff could cause load failure silently
-         - Impact: Failed task spawn returns 0, user sees no error
-
-       MEDIUM-PRIORITY ISSUES
-
-       12. Raw Pointer Dereference Without Alignment Checks (kernel/core/src/interrupt/handlers.rs:57-68)
-         - Issue: General protection fault handler reads iretq frame via raw pointer
-         - Line: 57-68: unsafe { let ptr = rsp as *const u64; let iretq_rip = *ptr; ... }
-         - Risk: If RSP is corrupted, dereference causes recursive #GPF → double fault
-         - Impact: Unhelpful panic message if GPF was due to stack corruption
-       13. No Maximum ELF Size Validation (kernel/core/src/syscall_handlers/task.rs:83-85)
-         - Issue: sys_spawn() checks elf_len > 64 MiB but doesn't validate against available memory
-         - Line: 84: if elf_len == 0 || elf_len > 64 * 1024 * 1024
-         - Risk: Accepting an ELF doesn't guarantee parse/load won't fail later
-         - Impact: Spawn fails partway through → partial task state left
-       15. No Deadlock Detection in IPC Blocking (kernel/core/src/ipc/mod.rs)
-         - Issue: Channels can deadlock if two tasks try to send on full channels to each other
-         - Risk: No cycle detection in waiter graph
-         - Impact: Tasks hang forever (expected behavior in OS, but no detection)
-
-       LOWER-PRIORITY ISSUES
-
-       16. Unused Legacy Context Switch Code (kernel/core/src/task/context.rs:5-147)
-         - Issue: ContextRegular and context_switch_regular() are defined but never used
-         - Line: Entire file is legacy (modern kernel uses iretq-based context switching)
-         - Impact: Dead code; no functional issue but clutters codebase
-       17. No Bounds Check on name_len in Syscalls (kernel/core/src/syscall_handlers/task.rs:105-109)
-         - Issue: sys_spawn() caps name_len at 32 but doesn't validate pointer if name_len > 32
-         - Line: 106: let capped = name_len.min(32) as usize; but name_ptr not checked for that size
-         - Risk: If user passes name_len=1000, capped=32, but pointer validated for 32 → OOB read
-         - Impact: Potential info leak (reads stack/kernel memory)
-       18. IPC Endpoint IDs Never Recycled (kernel/core/src/ipc/mod.rs:16-17)
-         - Issue: NEXT_ENDPOINT_ID increments forever, never wraps or resets
-         - Risk: After ~2^64 channels, ID wraps to 1 and collides with existing
-         - Impact: 64-bit counter, so takes eons, but technically a bug
-
-       ---
-       3. PERFORMANCE BOTTLENECKS & INEFFICIENCIES
-
-       2. Full Frame Walk on User Task Cleanup (kernel/core/src/task/task.rs:138-193)
-         - Issue: free_user_address_space() walks all 4-level page tables sequentially
-         - Impact: Scales O(N) with page table entries; could be slow for large tasks
-         - Fix: Batch frame frees or use hardware TLB shootdown
-
-       ---
-       4. MISSING FEATURES & NATURAL NEXT STEPS
-
-       1. No Process Groups or Job Control
-         - Currently no parent-child task relationships beyond exit notification
-         - No SIGTERM/SIGKILL equivalent
-         - Missing: foreground/background groups, session leaders
-       4. No File Descriptor Abstraction
-         - Everything is IPC channels or syscalls
-         - Would benefit from unified fd table (pipes, sockets, etc.)
-       5. No Memory Protection Domains
-         - All user tasks share shared framebuffer/kernel APIs
-         - No capability-based security (could restrict which tasks access what)
-       6. No Virtual Memory Swapping
-         - All allocated pages stay resident (OK for small OS but limits scalability)
-       7. No Preemption of Blocking Syscalls
-         - sys_sleep_ms and sys_wait_for_event block via hlt indefinitely
-         - No SIGALRM or SA_RESTART semantics
-       8. No Signal Delivery
-         - Only IPC channels for async notifications
-         - Could benefit from UNIX signal semantics (SIGSEGV, etc.)
-
-       ---
-       5. STABILITY & RELIABILITY CONCERNS
-
-       CRASH VECTORS
-
-       1. Panic in Interrupt Handler - timer_interrupt_handler_inner can panic (line 143-147 debug assertion) if context
-       is corrupt
-       2. Stack Overflow Not Always Caught - While guard pages exist, some nested interrupt scenarios might bypass them
-       3. User Memory Corruption - syscall handlers read from user ptrs without retry-on-fault logic
-       4. Disk I/O Deadlock - IDE driver polls forever on hardware error
-
-       RACE CONDITIONS
-
-       1. TOCTOU in Syscall Validation - User task can modify page table while syscall checks it (low probability but
-       possible)
-       2. Nested Interrupt CR3 Switch - KVM migration between CR3 write and TLB flush (very low probability)
-       3. Task State Machine Transitions - State changes are atomic but watchers might miss transitions (e.g.,
-       Zombie→removed from table)
-
-       RELIABILITY NOTES
-
-       - Strengths: Excellent use of atomic types, spin::Mutex for critical sections, clear ownership via Arc
-       - Weaknesses: No fault recovery, aggressive unwrap()s in init paths, silent failures in I/O drivers
-       - Testing: Good test coverage in kernel/tests/ but doesn't cover fault injection scenarios
-
-       ---
-       6. UNSAFE CODE CONCERNS
-
-       Total unsafe blocks: ~80 across codebase (acceptable for OS kernel)
-
-       Key unsafe patterns:
-       - ✓ Page table manipulation (well-commented, correctly guarded)
-       - ✓ Raw pointer dereference in handlers (acceptable for ISR context)
-       - ✓ Physical frame allocation/freeing (proper type tracking)
-       - ⚠ Naked asm functions (critical but carefully written)
-       - ⚠ MSR writes (should validate MSR number ranges)
-
-       Specific unsafe notes:
-       - Line 144-145 in task.rs: Free user address space reads page tables from raw phys addr via HHDM (safe but assumes
-        HHDM is valid)
-       - Line 73-78 in shared_buf.rs: Zeros shared buffer before handing to user (good security practice)
-       - Line 101-102 in task.rs: Constructs slice from user ELF pointer (validate done before)
-
-       ---
-       7. RECOMMENDATIONS (PRIORITY ORDER)
-
-       IMMEDIATE (Stop-the-World):
-       2. Fix global allocator init to retry with smaller allocation or fail cleanly
-
-       SHORT TERM (1-2 weeks):
-       1. Refactor GuardedStack::drop() to handle unmap/free errors (log + continue)
-       2. Add user pointer TOCTOU detection (atomic snapshot of vaddr_set during validation)
-       3. Replace mouse/keyboard circular buffers with VecDeque or ring-buffer crate (proper overflow handling)
-       4. Add ELF load address overlap checking before mapping segments
-
-       MEDIUM TERM (1 month):
-       2. Implement signal-like interrupt delivery for better POSIX compliance
-       3. Add process group/session hierarchy for job control
-       4. Create unified file descriptor table (even if mapped to IPC channels)
-
-       LONG TERM (Architectural):
-       1. Implement capability-based security model
-       2. Add memory swapping/paging subsystem
-       3. Implement priority scheduling with CFS-like fairness
-       4. Add preemption recovery for long-running syscalls
-
-  ---
-  Stability / Correctness
-
-  3. Global allocator panics on exotic memory maps
-
-  kernel/core/src/memory/global_allocator.rs — init() does .unwrap() on finding a 4 MiB USABLE Limine entry. If the map is
-  fragmented (no single 4 MiB chunk) it panics. Should try smaller sizes or collect pages.
-
-  4. ELF segments never validated against user address space
-
-  kernel/core/src/user_task_from_elf.rs — a crafted ELF could specify p_vaddr in the kernel half (0xffff...), or overlapping
-  segments. The current code calls mapper.map_to() and .unwrap()s — this panics the kernel rather than returning
-  SpawnError::InvalidElf. The check should be: p_vaddr + p_memsz < LOWER_HALF_END and no overlap between LOAD segments.
+  [DONE] ATA Bus Master DMA — replaced PIO with hardware DMA reads
+  [DONE] IDE polling timeouts — all loops have POLL_TIMEOUT
+  [DONE] Parallel ELF loading — async spawn, direct parent page read
+  [DONE] Deadlock fixes — fine-grained locking, interrupt-safe logger
+  [DONE] Priority scheduler — 3-band priority with starvation protection
+  [DONE] sys_spawn name validation — properly bounds-checked
+  [DONE] IPC endpoint ID overflow — 64-bit counter, not a real concern
+  [DONE] IPC deadlock detection — expected OS behavior, not a bug
+  [DONE] ELF size cap — 64 MiB limit in sys_spawn
+  [DONE] KVM SS.RPL workaround — works on real hardware too
+  [DONE] sys_exit hlt loop — correct behavior, not a bug

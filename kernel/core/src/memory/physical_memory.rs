@@ -37,7 +37,7 @@ pub struct PhysicalMemory {
 impl PhysicalMemory {
     pub(super) fn new(
         memory_map: &'static MemoryMapResponse,
-        global_allocator_start: PhysAddr,
+        claimed_regions: &[Option<global_allocator::ClaimedRegion>],
     ) -> Self {
         Self {
             map: {
@@ -61,16 +61,17 @@ impl PhysicalMemory {
                     }
                 }
                 // Track the memory used for the global allocator
-                let interval = Interval::from(
-                    global_allocator_start.as_u64()
-                        ..global_allocator_start.as_u64() + global_allocator::GLOBAL_ALLOCATOR_SIZE,
-                );
-                let _ = map.cut(&interval);
-                map.insert_merge_touching_if_values_equal(
-                    interval,
-                    MemoryType::UsedByKernel(KernelMemoryUsageType::GlobalAllocatorHeap),
-                )
-                .unwrap();
+                for region in claimed_regions.iter().flatten() {
+                    let interval = Interval::from(
+                        region.start.as_u64()..region.start.as_u64() + region.size,
+                    );
+                    let _ = map.cut(&interval);
+                    map.insert_merge_touching_if_values_equal(
+                        interval,
+                        MemoryType::UsedByKernel(KernelMemoryUsageType::GlobalAllocatorHeap),
+                    )
+                    .unwrap();
+                }
                 map
             },
         }
