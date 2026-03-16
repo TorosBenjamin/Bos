@@ -24,6 +24,55 @@ use x86_64::{PhysAddr, VirtAddr};
 use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageSize, PageTable, PageTableFlags, PhysFrame, Size4KiB};
 use crate::consts::LOWER_HALF_END;
 
+/// Validate that all LOAD segments fall within user address space and don't overlap.
+///
+/// Each segment's page-aligned range must be entirely below `LOWER_HALF_END` and
+/// must not overlap with any other LOAD segment's page-aligned range.
+fn validate_load_segments(
+    segments: impl Iterator<Item = (u64, u64)>,  // (p_vaddr, p_memsz)
+    page_size: u64,
+) -> Result<(), SpawnError> {
+    let mut ranges: Vec<(u64, u64)> = Vec::new();  // (start, end) page-aligned
+
+    for (p_vaddr, p_memsz) in segments {
+        if p_memsz == 0 {
+            continue;
+        }
+
+        let start = p_vaddr & !(page_size - 1);  // page-align down
+        let end = (p_vaddr + p_memsz).div_ceil(page_size) * page_size;
+
+        // Must be in the lower half (user space)
+        if end > LOWER_HALF_END + 1 {
+            log::warn!(
+                "ELF segment at {:#x}..{:#x} exceeds user space limit {:#x}",
+                p_vaddr, p_vaddr + p_memsz, LOWER_HALF_END
+            );
+            return Err(SpawnError::InvalidElf);
+        }
+
+        // Check for overflow
+        if p_vaddr.checked_add(p_memsz).is_none() {
+            return Err(SpawnError::InvalidElf);
+        }
+
+        // Check overlap with all previously validated segments
+        for &(prev_start, prev_end) in &ranges {
+            if start < prev_end && end > prev_start {
+                log::warn!(
+                    "ELF segments overlap: {:#x}..{:#x} vs {:#x}..{:#x}",
+                    start, end, prev_start, prev_end
+                );
+                return Err(SpawnError::InvalidElf);
+            }
+        }
+
+        ranges.push((start, end));
+    }
+
+    Ok(())
+}
+
 /// Build a `PageTableFlags` from ELF segment flags, always setting PRESENT and USER_ACCESSIBLE.
 fn elf_flags_to_page_table_flags(elf_flags: ElfSegmentFlags) -> PageTableFlags {
     let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
@@ -117,6 +166,18 @@ pub fn create_user_task_from_elf(priority: Priority, parent_id: Option<TaskId>) 
         )
     };
     let _ = physical_memory.map_mut().cut(&module_physical_interval);
+
+    // Validate all LOAD segments before mapping anything
+    validate_load_segments(
+        elf.segments().unwrap().iter().filter_map(|seg| {
+            if ElfSegmentType::try_from(seg.p_type) == Ok(ElfSegmentType::Load) {
+                Some((seg.p_vaddr, seg.p_memsz))
+            } else {
+                None
+            }
+        }),
+        page_size,
+    ).expect("ELF contains invalid LOAD segments");
 
     // Map ELF segments
     let mut range_to_zero: Option<Range<PhysAddr>> = None;
@@ -239,8 +300,9 @@ pub fn create_user_task_from_elf(priority: Priority, parent_id: Option<TaskId>) 
         }
     }
 
-    // Parse entry point before dropping 'elf'
+    // Parse and validate entry point before dropping 'elf'
     let entry_point = NonZero::new(elf.ehdr.e_entry).expect("ELF does not define an entry point");
+    assert!(entry_point.get() <= LOWER_HALF_END, "ELF entry point {:#x} outside user space", entry_point.get());
 
     // Zero the range we need to zero, if needed
     if let Some(range_to_zero) = range_to_zero {
@@ -319,6 +381,18 @@ pub fn create_user_task_from_elf_bytes(elf_bytes: &[u8], child_arg: u64, name: &
     let cr3 = l4_frame.start_address().as_u64();
 
     let page_size = Size4KiB::SIZE;
+
+    // Validate all LOAD segments before mapping anything
+    validate_load_segments(
+        elf.segments().ok_or(SpawnError::InvalidElf)?.iter().filter_map(|seg| {
+            if ElfSegmentType::try_from(seg.p_type) == Ok(ElfSegmentType::Load) {
+                Some((seg.p_vaddr, seg.p_memsz))
+            } else {
+                None
+            }
+        }),
+        page_size,
+    )?;
 
     // Map ELF LOAD segments
     for segment in elf.segments().ok_or(SpawnError::InvalidElf)? {
@@ -424,8 +498,12 @@ pub fn create_user_task_from_elf_bytes(elf_bytes: &[u8], child_arg: u64, name: &
         }
     }
 
-    // Parse entry point
+    // Parse and validate entry point
     let entry_point = NonZero::new(elf.ehdr.e_entry).ok_or(SpawnError::InvalidElf)?;
+    if entry_point.get() > LOWER_HALF_END {
+        log::warn!("ELF entry point {:#x} outside user space", entry_point.get());
+        return Err(SpawnError::InvalidElf);
+    }
 
     // Register a lazy (demand-filled) user stack at the top of the canonical lower half
     let rsp = (LOWER_HALF_END + 1) - 0x1000;
@@ -580,6 +658,18 @@ pub(crate) fn fill_loading_task(
     }
 
     let entry_point = core::num::NonZero::new(e_entry).ok_or(SpawnError::InvalidElf)?;
+    if entry_point.get() > LOWER_HALF_END {
+        log::warn!("ELF entry point {:#x} outside user space", entry_point.get());
+        return Err(SpawnError::InvalidElf);
+    }
+
+    // Validate all LOAD segments before allocating anything
+    validate_load_segments(
+        phdrs.iter().filter_map(|ph| {
+            if ph.p_type == 1 { Some((ph.p_vaddr, ph.p_memsz)) } else { None }
+        }),
+        Size4KiB::SIZE,
+    )?;
 
     // ── Helper: lock physical_memory with interrupts disabled ────────────
     // The loader runs as a kernel task with interrupts ENABLED. physical_memory
