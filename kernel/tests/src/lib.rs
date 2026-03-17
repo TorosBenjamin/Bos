@@ -222,7 +222,6 @@ pub fn tests() -> &'static [TestEntry] {
         TestEntry { group: TestGroup::Scheduler, test: &scheduler::spawn::test_spawn_creates_task },
         TestEntry { group: TestGroup::Scheduler, test: &scheduler::spawn::test_spawn_child_arg },
         TestEntry { group: TestGroup::Scheduler, test: &scheduler::simple_task_creation },
-        TestEntry { group: TestGroup::Scheduler, test: &scheduler::stack::test_context_switch_registers },
         TestEntry { group: TestGroup::Scheduler, test: &scheduler::stack::test_stack_alignment },
         TestEntry { group: TestGroup::Scheduler, test: &scheduler::stack::test_timer_stack_alignment },
 

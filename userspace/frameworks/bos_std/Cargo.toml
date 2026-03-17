@@ -13,4 +13,4 @@ embedded-io = "0.7"
 # On Bos (x86_64-unknown-none): IPC-based networking via ulib + net_server.
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 ulib             = { path = "../ulib" }
-kernel_api_types = { path = "../../../shared/kernel_api_types" }
+kernel_api_types = { path = "../../../../kernel-api" }
