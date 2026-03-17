@@ -16,6 +16,7 @@ files = {path = "../../userspace/apps/files", artifact = "bin", target = "x86_64
 launcher = {path = "../../userspace/apps/launcher", artifact = "bin", target = "x86_64-unknown-none"}
 boser    = {path = "../../userspace/apps/boser",   artifact = "bin", target = "x86_64-unknown-none"}
 e1000      = {path = "../../userspace/drivers/e1000",       artifact = "bin", target = "x86_64-unknown-none"}
+ide        = {path = "../../userspace/drivers/ide",         artifact = "bin", target = "x86_64-unknown-none"}
 net_server = {path = "../../userspace/servers/net_server", artifact = "bin", target = "x86_64-unknown-none"}
 utest = { path = "../../userspace/apps/utest", artifact = "bin", target = "x86_64-unknown-none", optional = true }
 fatfs = "0.3"

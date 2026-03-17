@@ -9,6 +9,7 @@ pub const DISPLAY_SERVER_PATH: &CStr = c"/display_server";
 pub const FS_SERVER_PATH: &CStr = c"/fs_server";
 pub const E1000_PATH: &CStr = c"/e1000";
 pub const NET_SERVER_PATH: &CStr = c"/net_server";
+pub const IDE_DRIVER_PATH: &CStr = c"/ide";
 
 #[used]
 #[unsafe(link_section = ".requests")]
@@ -43,6 +44,7 @@ pub static MODULE_REQUEST: ModuleRequest =
         &InternalModule::new().with_path(FS_SERVER_PATH),
         &InternalModule::new().with_path(E1000_PATH),
         &InternalModule::new().with_path(NET_SERVER_PATH),
+        &InternalModule::new().with_path(IDE_DRIVER_PATH),
     ]);
 
 #[used]

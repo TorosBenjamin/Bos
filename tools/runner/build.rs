@@ -16,6 +16,7 @@ const ISO_BINARIES: &[(&str, &str, &str)] = &[
     ("fs_server",      "fs_server",      "fs_server"),
     ("e1000",          "e1000",          "e1000"),
     ("net_server",     "net_server",     "net_server"),
+    ("ide",            "ide",            "ide"),
 ];
 
 /// Binaries written into the FAT32 disk image for fs_server to load at runtime.

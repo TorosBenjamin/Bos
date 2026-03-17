@@ -1,0 +1,15 @@
+[package]
+name = "ide"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "ide"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+ulib             = { path = "../../frameworks/ulib" }
+kernel_api_types = { path = "../../../../kernel-api" }

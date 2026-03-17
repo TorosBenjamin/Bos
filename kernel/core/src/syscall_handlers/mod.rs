@@ -4,8 +4,8 @@ mod ipc;
 mod graphics;
 mod misc;
 mod service;
-mod disk;
 mod pci;
+mod ioport;
 mod event;
 
 pub use task::{sys_exit, sys_yield, sys_spawn, sys_waitpid, sys_thread_create, sys_set_exit_channel, sys_sleep_ms, sys_set_priority, sys_set_fault_ep, sys_wait_task_ready};
@@ -15,8 +15,8 @@ pub use ipc::{sys_channel_create, sys_channel_send, sys_channel_recv, sys_channe
 pub use graphics::{sys_get_bounding_box, sys_get_display_info, sys_transfer_display};
 pub use misc::{sys_debug_log, sys_read_key, sys_try_read_key, sys_read_mouse, sys_get_module, sys_shutdown, sys_get_time_ns};
 pub use service::{sys_register_service, sys_lookup_service};
-pub use disk::{sys_block_read_sectors, sys_block_write_sectors};
 pub use pci::{sys_pci_config_read, sys_pci_config_write, sys_map_pci_bar};
+pub use ioport::{sys_ioport_read, sys_ioport_write};
 pub use event::{sys_wait_for_event, check_timeout_waiters};
 
 use alloc::sync::Arc;

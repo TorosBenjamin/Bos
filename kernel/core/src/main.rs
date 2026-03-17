@@ -81,11 +81,7 @@ extern "sysv64" fn init_bsp() -> ! {
         get_local().local_apic_id,
     );
     kernel::drivers::mouse::init();
-    ioapic::enable_ata_irq(
-        u8::from(interrupt::InterruptVector::PrimaryAta),
-        get_local().local_apic_id,
-    );
-    kernel::drivers::disk::init();
+    // ATA IRQ 14 is left unrouted — the userspace IDE driver uses polling.
 
     time::tsc::calibrate();
     time::init_wall_clock();
