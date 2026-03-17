@@ -18,7 +18,7 @@ bench = false
 
 [dependencies]
 ulib = { path = "../../frameworks/ulib" }
-kernel_api_types = { path = "../../../shared/kernel_api_types" }
+kernel_api_types = { path = "../../../../kernel-api" }
 
 [dev-dependencies]
 # fatfs with std feature (default) is used only in test helpers (make_disk, disk_with_file, read_via_fatfs).

@@ -12,4 +12,4 @@ bench = false
 
 [dependencies]
 ulib             = { path = "../../frameworks/ulib" }
-kernel_api_types = { path = "../../../shared/kernel_api_types" }
+kernel_api_types = { path = "../../../../kernel-api" }
