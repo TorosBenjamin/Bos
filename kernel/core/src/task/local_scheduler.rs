@@ -16,12 +16,124 @@ use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::{PhysFrame, Size4KiB};
 use x86_64::PhysAddr;
 
-pub struct RunQueue {
-    pub current_task: Option<Arc<Task>>,
+/// Trait for pluggable scheduling policies.
+///
+/// The scheduling *mechanism* (CR3 switch, TSS update, context save/restore,
+/// deferred drop) lives in `schedule_from_interrupt` and is policy-agnostic.
+/// Implementations of this trait control only which task runs next.
+pub trait SchedulingPolicy {
+    /// Create a new instance (called once per CPU during `init_run_queue`).
+    fn new() -> Self where Self: Sized;
+
+    /// Enqueue a task that is ready to run.
+    fn enqueue(&mut self, task: Arc<Task>);
+
+    /// Pick the next task to run. Returns `None` if no tasks are queued.
+    fn pick_next(&mut self) -> Option<Arc<Task>>;
+
+    /// Number of tasks currently queued.
+    fn len(&self) -> usize;
+
+    fn is_empty(&self) -> bool { self.len() == 0 }
+}
+
+// ── PriorityPolicy (default) ────────────────────────────────────────────────
+
+/// Starvation threshold per band: ticks skipped before a forced boost.
+/// Background=50ms, Normal=200ms, High=never.
+const STARVATION: [u32; 3] = [50, 200, u32::MAX];
+
+/// Priority-based scheduling with starvation protection.
+///
+/// Three bands (Background / Normal / High). Lower bands get a forced boost
+/// after being skipped for `STARVATION[band]` ticks.
+pub struct PriorityPolicy {
     /// Index 0 = Background, 1 = Normal, 2 = High
-    pub ready: [VecDeque<Arc<Task>>; 3],
+    ready: [VecDeque<Arc<Task>>; 3],
     /// How many ticks each band has been skipped without running.
-    pub skip_counts: [u32; 3],
+    skip_counts: [u32; 3],
+}
+
+impl SchedulingPolicy for PriorityPolicy {
+    fn new() -> Self {
+        PriorityPolicy {
+            ready: [VecDeque::new(), VecDeque::new(), VecDeque::new()],
+            skip_counts: [0u32; 3],
+        }
+    }
+
+    fn enqueue(&mut self, task: Arc<Task>) {
+        let prio = Priority::from_u8(task.priority.load(Ordering::Relaxed)) as usize;
+        self.ready[prio].push_back(task);
+    }
+
+    fn pick_next(&mut self) -> Option<Arc<Task>> {
+        // Starvation boost: lowest-priority bands first
+        for i in [0usize, 1] {
+            if self.skip_counts[i] >= STARVATION[i] && !self.ready[i].is_empty() {
+                self.skip_counts[i] = 0;
+                return self.ready[i].pop_front();
+            }
+        }
+
+        // Normal path: High → Normal → Background
+        for winner in [2usize, 1, 0] {
+            if !self.ready[winner].is_empty() {
+                // Increment skip counts for all lower non-empty bands
+                for lower in 0..winner {
+                    if !self.ready[lower].is_empty() {
+                        self.skip_counts[lower] = self.skip_counts[lower].saturating_add(1);
+                    }
+                }
+                self.skip_counts[winner] = 0;
+                return self.ready[winner].pop_front();
+            }
+        }
+
+        None
+    }
+
+    fn len(&self) -> usize {
+        self.ready[0].len() + self.ready[1].len() + self.ready[2].len()
+    }
+}
+
+// ── RoundRobinPolicy ────────────────────────────────────────────────────────
+
+/// Simple FIFO round-robin scheduling. Ignores task priority entirely.
+pub struct RoundRobinPolicy {
+    ready: VecDeque<Arc<Task>>,
+}
+
+impl SchedulingPolicy for RoundRobinPolicy {
+    fn new() -> Self {
+        RoundRobinPolicy { ready: VecDeque::new() }
+    }
+
+    fn enqueue(&mut self, task: Arc<Task>) {
+        self.ready.push_back(task);
+    }
+
+    fn pick_next(&mut self) -> Option<Arc<Task>> {
+        self.ready.pop_front()
+    }
+
+    fn len(&self) -> usize {
+        self.ready.len()
+    }
+}
+
+// ── Active policy selection ─────────────────────────────────────────────────
+
+/// The scheduling policy used at compile time. Change this type alias to swap
+/// policies (e.g. `RoundRobinPolicy`).
+pub type ActivePolicy = PriorityPolicy;
+
+// ── RunQueue (generic over policy) ──────────────────────────────────────────
+
+pub struct RunQueue<P: SchedulingPolicy> {
+    pub current_task: Option<Arc<Task>>,
+    policy: P,
     /// Holds the Arc of a zombie/sleeping task for exactly one scheduler tick.
     ///
     /// When a Zombie/Sleeping task is dequeued from `current_task`, dropping its
@@ -32,37 +144,6 @@ pub struct RunQueue {
     deferred_drop: Option<Arc<Task>>,
 }
 
-/// Starvation threshold per band: ticks skipped before a forced boost.
-/// Background=50ms, Normal=200ms, High=never.
-const STARVATION: [u32; 3] = [50, 200, u32::MAX];
-
-/// Pick the next task to run using priority with starvation protection.
-fn pick_next(rq: &mut RunQueue) -> Option<Arc<Task>> {
-    // Starvation boost: lowest-priority bands first
-    for i in [0usize, 1] {
-        if rq.skip_counts[i] >= STARVATION[i] && !rq.ready[i].is_empty() {
-            rq.skip_counts[i] = 0;
-            return rq.ready[i].pop_front();
-        }
-    }
-
-    // Normal path: High → Normal → Background
-    for winner in [2usize, 1, 0] {
-        if !rq.ready[winner].is_empty() {
-            // Increment skip counts for all lower non-empty bands
-            for lower in 0..winner {
-                if !rq.ready[lower].is_empty() {
-                    rq.skip_counts[lower] = rq.skip_counts[lower].saturating_add(1);
-                }
-            }
-            rq.skip_counts[winner] = 0;
-            return rq.ready[winner].pop_front();
-        }
-    }
-
-    None
-}
-
 /// Safety: cpu_init must be called before
 pub fn init_run_queue() {
     let cpu = get_local();
@@ -70,8 +151,7 @@ pub fn init_run_queue() {
     cpu.run_queue.call_once(|| {
         spin::Mutex::new(RunQueue {
             current_task: None,
-            ready: [VecDeque::new(), VecDeque::new(), VecDeque::new()],
-            skip_counts: [0u32; 3],
+            policy: ActivePolicy::new(),
             deferred_drop: None,
         })
     });
@@ -81,8 +161,7 @@ pub fn init_run_queue() {
 pub fn add(cpu: &CpuLocalData, task: Arc<Task>) {
     interrupts::without_interrupts(|| {
         let mut rq = cpu.run_queue.get().unwrap().lock();
-        let prio = Priority::from_u8(task.priority.load(Ordering::Relaxed)) as usize;
-        rq.ready[prio].push_back(task);
+        rq.policy.enqueue(task);
         cpu.ready_count.fetch_add(1, Ordering::Relaxed);
     });
 }
@@ -133,7 +212,7 @@ pub fn schedule_from_interrupt(cpu: &CpuLocalData) -> *mut CpuContext {
     // Get pointer to current context (saved by timer handler)
     let current_ctx_ptr = cpu.current_context_ptr.load(Ordering::Relaxed);
 
-    let next_task = match pick_next(&mut rq) {
+    let next_task = match rq.policy.pick_next() {
         Some(task) => {
             cpu.ready_count.fetch_sub(1, Ordering::Relaxed);
             task
@@ -172,9 +251,8 @@ pub fn schedule_from_interrupt(cpu: &CpuLocalData) -> *mut CpuContext {
                 rq.deferred_drop = Some(prev_task);
             }
             _ => {
-                let prev_prio = Priority::from_u8(prev_task.priority.load(Ordering::Relaxed)) as usize;
                 prev_task.state.store(TaskState::Ready, Ordering::Relaxed);
-                rq.ready[prev_prio].push_back(prev_task);
+                rq.policy.enqueue(prev_task);
                 cpu.ready_count.fetch_add(1, Ordering::Relaxed);
             }
         }
