@@ -12,6 +12,21 @@ unsafe extern "sysv64" fn entry_point() -> ! {
     let utest_size = ulib::sys_get_module("utest", core::ptr::null_mut(), 0);
     let is_test_mode = utest_size > 0;
 
+    // Load and spawn IDE driver (registers "ide" service) with High priority.
+    // Must be spawned before fs_server since fs_server depends on the "ide" service.
+    let ide_id = {
+        let ide_size = ulib::sys_get_module("ide", core::ptr::null_mut(), 0);
+        if ide_size > 0 {
+            let ide_buf = ulib::sys_mmap(ide_size, kernel_api_types::MMAP_WRITE);
+            let _ = ulib::sys_get_module("ide", ide_buf, ide_size);
+            let ide_elf = unsafe { core::slice::from_raw_parts(ide_buf, ide_size as usize) };
+            let id = ulib::sys_spawn_with_priority(ide_elf, 0, b"ide", kernel_api_types::Priority::High as u8);
+            Some((id, ide_buf, ide_size))
+        } else {
+            None
+        }
+    };
+
     // Load and spawn fs_server (registers "fatfs" service) with High priority.
     // IMPORTANT: sys_munmap is deferred until after sys_wait_task_ready because
     // the kernel loader reads ELF data directly from our pages via HHDM.
@@ -64,6 +79,10 @@ unsafe extern "sysv64" fn entry_point() -> ! {
     let ds_id = ulib::sys_spawn_with_priority(ds_elf_bytes, 0, b"display_server", kernel_api_types::Priority::High as u8);
 
     // Wait for all spawned tasks to finish loading, then free their ELF buffers
+    if let Some((id, buf, size)) = ide_id {
+        ulib::sys_wait_task_ready(id);
+        ulib::sys_munmap(buf, size);
+    }
     if let Some((id, buf, size)) = fss_id {
         ulib::sys_wait_task_ready(id);
         ulib::sys_munmap(buf, size);

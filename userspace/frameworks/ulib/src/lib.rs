@@ -356,17 +356,32 @@ pub fn sys_shutdown(exit_code: u64) -> ! {
     }
 }
 
-/// Read `count` sectors (each 512 bytes) from the IDE disk at `lba` into `buf`.
-/// Returns 1 on success, 0 on failure.
-pub fn sys_block_read_sectors(lba: u64, count: u32, buf: &mut [u8]) -> u64 {
+/// Read from an x86 I/O port. `width`: 1=byte, 2=word, 4=dword.
+pub fn sys_ioport_read(port: u16, width: u8) -> u64 {
     let mut args = [0u64; 7];
-    args[0] = SysCallNumber::BlockReadSectors as u64;
-    args[1] = lba;
-    args[2] = count as u64;
-    args[3] = buf.as_mut_ptr() as u64;
+    args[0] = SysCallNumber::IoPortRead as u64;
+    args[1] = port as u64;
+    args[2] = width as u64;
     syscall(&mut args);
     args[6]
 }
+
+/// Write to an x86 I/O port. `width`: 1=byte, 2=word, 4=dword.
+pub fn sys_ioport_write(port: u16, value: u32, width: u8) {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::IoPortWrite as u64;
+    args[1] = port as u64;
+    args[2] = value as u64;
+    args[3] = width as u64;
+    syscall(&mut args);
+}
+
+#[inline] pub fn inb(port: u16) -> u8 { sys_ioport_read(port, 1) as u8 }
+#[inline] pub fn inw(port: u16) -> u16 { sys_ioport_read(port, 2) as u16 }
+#[inline] pub fn ind(port: u16) -> u32 { sys_ioport_read(port, 4) as u32 }
+#[inline] pub fn outb(port: u16, val: u8) { sys_ioport_write(port, val as u32, 1); }
+#[inline] pub fn outw(port: u16, val: u16) { sys_ioport_write(port, val as u32, 2); }
+#[inline] pub fn outd(port: u16, val: u32) { sys_ioport_write(port, val, 4); }
 
 /// Create a new thread sharing the caller's address space.
 /// `entry` is the function pointer, `stack_top` is the top of an already-allocated stack,
@@ -405,17 +420,6 @@ pub fn sys_set_exit_channel(task_id: u64, send_ep: u64) -> u64 {
     args[6]
 }
 
-/// Write `count` sectors (each 512 bytes) from `buf` to the IDE disk at `lba`.
-/// Returns 1 on success, 0 on failure.
-pub fn sys_block_write_sectors(lba: u64, count: u32, buf: &[u8]) -> u64 {
-    let mut args = [0u64; 7];
-    args[0] = SysCallNumber::BlockWriteSectors as u64;
-    args[1] = lba;
-    args[2] = count as u64;
-    args[3] = buf.as_ptr() as u64;
-    syscall(&mut args);
-    args[6]
-}
 
 /// Read from PCI configuration space.
 /// Returns the value (zero-extended to u32), or `None` on invalid arguments.

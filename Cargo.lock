@@ -2201,6 +2201,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 
 [[package]]
+name = "ide"
+version = "0.1.0"
+dependencies = [
+ "kernel_api_types",
+ "ulib",
+]
+
+[[package]]
 name = "idna"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3434,6 +3442,7 @@ dependencies = [
  "files",
  "fs_server",
  "hello_egui",
+ "ide",
  "init_task",
  "kernel",
  "launcher",

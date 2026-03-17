@@ -774,7 +774,9 @@ pub extern "C" fn mouse_interrupt_handler() {
 }
 
 extern "C" fn ata_dma_interrupt_inner() {
-    crate::drivers::disk::on_ata_interrupt();
+    // ATA IRQ 14 is handled by the userspace IDE driver via polling.
+    // Read ATA status to deassert the IRQ at the drive level.
+    unsafe { let _ = x86_64::instructions::port::PortReadOnly::<u8>::new(0x1F7).read(); }
     let cpu = get_local();
     unsafe {
         let local_apic = &mut *cpu.local_apic.get().unwrap().get();

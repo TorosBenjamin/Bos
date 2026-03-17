@@ -1,22 +1,151 @@
 use core::mem;
 use kernel_api_types::fs::*;
-use kernel_api_types::{IPC_OK, MMAP_WRITE};
+use kernel_api_types::{IPC_OK, MMAP_WRITE, SVC_ERR_NOT_FOUND};
 
 use crate::fat32::{BlockDev, Entry, Fat32};
 
-// ─── Production disk backend ───────────────────────────────────────────────────
+// ─── IDE IPC message types ──────────────────────────────────────────────────
 
-struct SysDisk;
+const IDE_MSG_READ: u8 = 1;
+const IDE_MSG_WRITE: u8 = 2;
+const IDE_MSG_READ_RESP: u8 = 3;
+const IDE_MSG_WRITE_RESP: u8 = 4;
 
-impl BlockDev for SysDisk {
+// ─── IPC disk backend ───────────────────────────────────────────────────────
+
+struct IpcDisk {
+    ide_send_ep: u64,
+}
+
+impl IpcDisk {
+    fn wait_for_ide() -> Self {
+        loop {
+            let ep = ulib::sys_lookup_service(b"ide");
+            if ep != SVC_ERR_NOT_FOUND {
+                return IpcDisk { ide_send_ep: ep };
+            }
+            ulib::sys_sleep_ms(1);
+        }
+    }
+}
+
+impl BlockDev for IpcDisk {
     fn read(&mut self, lba: u64, buf: &mut [u8; 512]) -> bool {
-        ulib::sys_block_read_sectors(lba, 1, buf) != 0
+        // Create one-shot reply channel
+        let (reply_send, reply_recv) = ulib::sys_channel_create(1);
+
+        // Build request: [1:type][8:lba LE][4:count LE][8:reply_ep LE] = 21 bytes
+        let mut req = [0u8; 21];
+        req[0] = IDE_MSG_READ;
+        req[1..9].copy_from_slice(&lba.to_le_bytes());
+        req[9..13].copy_from_slice(&1u32.to_le_bytes());
+        req[13..21].copy_from_slice(&reply_send.to_le_bytes());
+
+        let ret = ulib::sys_channel_send(self.ide_send_ep, &req);
+        if ret != IPC_OK {
+            ulib::sys_channel_close(reply_send);
+            ulib::sys_channel_close(reply_recv);
+            return false;
+        }
+
+        // Wait for response: [1:type][1:result][512:data] = 514 bytes
+        let mut resp = [0u8; 514];
+        let (result, n) = ulib::sys_channel_recv(reply_recv, &mut resp);
+        ulib::sys_channel_close(reply_recv);
+
+        if result != IPC_OK || n < 514 || resp[0] != IDE_MSG_READ_RESP || resp[1] != 0 {
+            return false;
+        }
+
+        buf.copy_from_slice(&resp[2..514]);
+        true
     }
+
     fn write(&mut self, lba: u64, buf: &[u8; 512]) -> bool {
-        ulib::sys_block_write_sectors(lba, 1, buf) != 0
+        let (reply_send, reply_recv) = ulib::sys_channel_create(1);
+
+        // Create shared buffer with the sector data
+        let (buf_id, ptr) = ulib::sys_create_shared_buf(512);
+        if ptr.is_null() || buf_id == u64::MAX {
+            ulib::sys_channel_close(reply_send);
+            ulib::sys_channel_close(reply_recv);
+            return false;
+        }
+        unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), ptr, 512); }
+
+        // Build request: [1:type][8:lba LE][4:count LE][8:shared_buf_id LE][8:reply_ep LE] = 29 bytes
+        let mut req = [0u8; 29];
+        req[0] = IDE_MSG_WRITE;
+        req[1..9].copy_from_slice(&lba.to_le_bytes());
+        req[9..13].copy_from_slice(&1u32.to_le_bytes());
+        req[13..21].copy_from_slice(&buf_id.to_le_bytes());
+        req[21..29].copy_from_slice(&reply_send.to_le_bytes());
+
+        let ret = ulib::sys_channel_send(self.ide_send_ep, &req);
+        if ret != IPC_OK {
+            ulib::sys_destroy_shared_buf(buf_id);
+            ulib::sys_channel_close(reply_send);
+            ulib::sys_channel_close(reply_recv);
+            return false;
+        }
+
+        // Wait for response: [1:type][1:result] = 2 bytes
+        let mut resp = [0u8; 2];
+        let (result, n) = ulib::sys_channel_recv(reply_recv, &mut resp);
+        ulib::sys_channel_close(reply_recv);
+        ulib::sys_destroy_shared_buf(buf_id);
+
+        result == IPC_OK && n >= 2 && resp[0] == IDE_MSG_WRITE_RESP && resp[1] == 0
     }
+
     fn read_sectors(&mut self, lba: u64, count: u32, buf: &mut [u8]) -> bool {
-        ulib::sys_block_read_sectors(lba, count, buf) != 0
+        if count == 1 {
+            let sec: &mut [u8; 512] = match buf.get_mut(..512) {
+                Some(s) => s.try_into().unwrap(),
+                None => return false,
+            };
+            return self.read(lba, sec);
+        }
+
+        let (reply_send, reply_recv) = ulib::sys_channel_create(1);
+
+        let mut req = [0u8; 21];
+        req[0] = IDE_MSG_READ;
+        req[1..9].copy_from_slice(&lba.to_le_bytes());
+        req[9..13].copy_from_slice(&count.to_le_bytes());
+        req[13..21].copy_from_slice(&reply_send.to_le_bytes());
+
+        let ret = ulib::sys_channel_send(self.ide_send_ep, &req);
+        if ret != IPC_OK {
+            ulib::sys_channel_close(reply_send);
+            ulib::sys_channel_close(reply_recv);
+            return false;
+        }
+
+        // Multi-sector response: [1:type][1:result][8:shared_buf_id LE][4:byte_count LE] = 14 bytes
+        let mut resp = [0u8; 14];
+        let (result, n) = ulib::sys_channel_recv(reply_recv, &mut resp);
+        ulib::sys_channel_close(reply_recv);
+
+        if result != IPC_OK || n < 14 || resp[0] != IDE_MSG_READ_RESP || resp[1] != 0 {
+            return false;
+        }
+
+        let shared_buf_id = u64::from_le_bytes(resp[2..10].try_into().unwrap());
+        let byte_count = u32::from_le_bytes(resp[10..14].try_into().unwrap()) as usize;
+
+        let ptr = ulib::sys_map_shared_buf(shared_buf_id);
+        if ptr.is_null() {
+            ulib::sys_destroy_shared_buf(shared_buf_id);
+            return false;
+        }
+
+        let copy_len = byte_count.min(buf.len());
+        unsafe { core::ptr::copy_nonoverlapping(ptr as *const u8, buf.as_mut_ptr(), copy_len); }
+        ulib::sys_munmap(ptr, byte_count as u64);
+        ulib::sys_destroy_shared_buf(shared_buf_id);
+
+        true
     }
 }
 
@@ -25,7 +154,7 @@ impl BlockDev for SysDisk {
 const MAX_MSG_SIZE: usize = 4096;
 
 pub fn run(recv_ep: u64) -> ! {
-    let mut fs = match Fat32::mount(SysDisk) {
+    let mut fs = match Fat32::mount(IpcDisk::wait_for_ide()) {
         Some(f) => {
             ulib::sys_debug_log(1, 0xFA32_0000); // "fatfs: mounted"
             f
@@ -90,7 +219,7 @@ fn send_response<T: Sized>(reply_ep: u64, response: &T) {
 
 // ─── Handlers ──────────────────────────────────────────────────────────────────
 
-fn handle_map_file(fs: &mut Fat32<SysDisk>, msg: &[u8]) {
+fn handle_map_file(fs: &mut Fat32<IpcDisk>, msg: &[u8]) {
     const REQ: usize = mem::size_of::<MapFileRequest>();
     let reply_ep = match extract_reply_ep(msg, 1 + REQ) {
         Some(ep) => ep,
@@ -142,7 +271,7 @@ fn handle_map_file(fs: &mut Fat32<SysDisk>, msg: &[u8]) {
     });
 }
 
-fn handle_stat_file(fs: &mut Fat32<SysDisk>, msg: &[u8]) {
+fn handle_stat_file(fs: &mut Fat32<IpcDisk>, msg: &[u8]) {
     const REQ: usize = mem::size_of::<StatFileRequest>();
     let reply_ep = match extract_reply_ep(msg, 1 + REQ) {
         Some(ep) => ep,
@@ -176,7 +305,7 @@ fn handle_stat_file(fs: &mut Fat32<SysDisk>, msg: &[u8]) {
     }
 }
 
-fn handle_read_dir(fs: &mut Fat32<SysDisk>, msg: &[u8]) {
+fn handle_read_dir(fs: &mut Fat32<IpcDisk>, msg: &[u8]) {
     const REQ: usize = mem::size_of::<ReadDirRequest>();
     let reply_ep = match extract_reply_ep(msg, 1 + REQ) {
         Some(ep) => ep,
@@ -233,7 +362,7 @@ fn handle_read_dir(fs: &mut Fat32<SysDisk>, msg: &[u8]) {
     send_response(reply_ep, &resp);
 }
 
-fn handle_write_file(fs: &mut Fat32<SysDisk>, msg: &[u8]) {
+fn handle_write_file(fs: &mut Fat32<IpcDisk>, msg: &[u8]) {
     const REQ: usize = mem::size_of::<WriteFileRequest>();
     let reply_ep = match extract_reply_ep(msg, 1 + REQ) {
         Some(ep) => ep,
