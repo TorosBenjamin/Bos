@@ -1,6 +1,6 @@
 use crate::gdt::Gdt;
 use crate::limine_requests::MP_REQUEST;
-use crate::task::local_scheduler::RunQueue;
+use crate::task::local_scheduler::{ActivePolicy, RunQueue};
 use crate::task::task::CpuContext;
 use alloc::boxed::Box;
 use core::cell::UnsafeCell;
@@ -40,7 +40,7 @@ pub struct CpuLocalData {
     pub idt: Once<InterruptDescriptorTable>,
 
     pub local_apic: Once<UnsafeCell<SendSync<LocalApic>>>,
-    pub run_queue: Once<Mutex<RunQueue>>,
+    pub run_queue: Once<Mutex<RunQueue<ActivePolicy>>>,
 
     pub syscall_handler_scratch: AtomicU64,
     /// Top of the current task's kernel stack. Updated on every context switch (mirrors TSS.RSP0).
