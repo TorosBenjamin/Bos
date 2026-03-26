@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["kernel/*", "userspace/*/*", "tools/*"]
+exclude = ["tools/bench_py"]
 default-members = ["tools/runner"]
 
 [profile.dev]

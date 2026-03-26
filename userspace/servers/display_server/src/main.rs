@@ -1,3 +1,10 @@
+//! # Display Server
+//!
+//! Tiling window compositor for Bos OS. Manages windows, composites their
+//! pixel buffers onto the framebuffer, and routes input events.
+//!
+//! See `docs/display_server.md` for the full architecture documentation.
+
 #![no_std]
 #![no_main]
 

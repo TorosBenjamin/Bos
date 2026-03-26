@@ -1,3 +1,41 @@
+//! # ulib — Bos OS Userspace Library
+//!
+//! The standard library for Bos userspace programs. Provides syscall wrappers,
+//! windowing, filesystem access, networking, and utility modules.
+//!
+//! All code is `#![no_std]` and targets `x86_64-unknown-none`.
+//!
+//! ## Modules
+//!
+//! - **Syscall wrappers** (this file) — thin wrappers around the `syscall` instruction
+//!   for IPC, memory management, task control, services, timing, and I/O.
+//! - [`window`] — high-level windowing API built on the display server IPC protocol.
+//!   `Window::new()` creates a tiled toplevel; `Window::new_panel()` creates an
+//!   edge-anchored panel. Implements `embedded_graphics::DrawTarget`.
+//! - [`display`] — low-level framebuffer management with double-buffering and
+//!   per-rect dirty tracking. Used by the display server internally.
+//! - [`fs`] — filesystem client for the FAT32 server (`fs_map_file`, `fs_stat`,
+//!   `fs_readdir`, `fs_write_file`). Uses shared buffers for zero-copy file reads.
+//! - [`net`] — TCP/DNS client for the network server (`net_connect`, `net_send`,
+//!   `net_recv_subscribe`, `net_resolve`).
+//! - [`bench_harness`] — reusable benchmark framework with warmup, measurement,
+//!   and per-task CPU tick reporting.
+//! - [`test_framework`] — integration test runner with pass/fail reporting over serial.
+//!
+//! ## Syscall Calling Convention
+//!
+//! All syscalls use the x86-64 `syscall` instruction with this register layout:
+//!
+//! | Register | Role |
+//! |----------|------|
+//! | RDI | Syscall number ([`kernel_api_types::SysCallNumber`]) |
+//! | RSI | Arg 1 |
+//! | RDX | Arg 2 |
+//! | R10 | Arg 3 (mapped from RCX, which `syscall` clobbers) |
+//! | R8 | Arg 4 |
+//! | R9 | Arg 5 |
+//! | RAX | Return value (0 on entry) |
+
 #![no_std]
 
 pub mod bench_harness;

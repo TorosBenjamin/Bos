@@ -1,3 +1,10 @@
+//! # Filesystem Server
+//!
+//! FAT32 filesystem server for Bos OS. Reads and writes files on an IDE disk
+//! via IPC to the IDE driver, and serves file requests to userspace clients.
+//!
+//! See `docs/fs_server.md` for the full architecture documentation.
+
 #![no_std]
 #![no_main]
 
