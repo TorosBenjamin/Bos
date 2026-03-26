@@ -503,6 +503,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4c7f02d4ea65f2c1853089ffd8d2787bdbc63de2f0d29dedbcf8ccdfa0ccd4cf"
 
 [[package]]
+name = "bench_init"
+version = "0.1.0"
+dependencies = [
+ "kernel_api_types",
+ "ulib",
+]
+
+[[package]]
+name = "bench_runner"
+version = "0.1.0"
+dependencies = [
+ "bench_init",
+ "fatfs",
+ "ipc_bench",
+ "kernel",
+]
+
+[[package]]
 name = "bit"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2286,6 +2304,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
 dependencies = [
  "generic-array 0.14.7",
+]
+
+[[package]]
+name = "ipc_bench"
+version = "0.1.0"
+dependencies = [
+ "kernel_api_types",
+ "ulib",
 ]
 
 [[package]]

@@ -96,7 +96,7 @@ pub fn create_channel(capacity: usize) -> (u64, u64) {
 fn wake_waiter(waiters: &WaiterQueue) {
     if let Some((task, cpu_id)) = waiters.lock().pop_front() {
         task.state.store(TaskState::Ready, Ordering::Release);
-        crate::task::local_scheduler::add(crate::memory::cpu_local_data::get_cpu(cpu_id), task);
+        crate::task::local_scheduler::add_front(crate::memory::cpu_local_data::get_cpu(cpu_id), task);
         let local_kernel_id = crate::memory::cpu_local_data::get_local().kernel_id;
         if cpu_id != local_kernel_id {
             let apic_id = crate::memory::cpu_local_data::local_apic_id_of(cpu_id);

@@ -2,13 +2,12 @@ use crate::memory::cpu_local_data::{CpuLocalData, get_local, get_cpu, local_apic
 use crate::time::tsc;
 use crate::memory::MEMORY;
 use crate::task::task::{CpuContext, Task, TaskState};
-use kernel_api_types::Priority;
+use crate::task::policy::{SchedulingPolicy, IpcAwarePolicy};
 
 /// A waiter slot used by `sys_wait_for_event` to register a sleeping task
 /// against a single event source. Woken via `try_wake_slot` which uses a CAS
 /// to ensure the task is woken at most once even if multiple sources fire.
 pub type EventWaiterSlot = spin::Mutex<Option<(Arc<Task>, u32)>>;
-use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 use x86_64::instructions::interrupts;
@@ -16,117 +15,10 @@ use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::{PhysFrame, Size4KiB};
 use x86_64::PhysAddr;
 
-/// Trait for pluggable scheduling policies.
-///
-/// The scheduling *mechanism* (CR3 switch, TSS update, context save/restore,
-/// deferred drop) lives in `schedule_from_interrupt` and is policy-agnostic.
-/// Implementations of this trait control only which task runs next.
-pub trait SchedulingPolicy {
-    /// Create a new instance (called once per CPU during `init_run_queue`).
-    fn new() -> Self where Self: Sized;
-
-    /// Enqueue a task that is ready to run.
-    fn enqueue(&mut self, task: Arc<Task>);
-
-    /// Pick the next task to run. Returns `None` if no tasks are queued.
-    fn pick_next(&mut self) -> Option<Arc<Task>>;
-
-    /// Number of tasks currently queued.
-    fn len(&self) -> usize;
-
-    fn is_empty(&self) -> bool { self.len() == 0 }
-}
-
-// ── PriorityPolicy (default) ────────────────────────────────────────────────
-
-/// Starvation threshold per band: ticks skipped before a forced boost.
-/// Background=50ms, Normal=200ms, High=never.
-const STARVATION: [u32; 3] = [50, 200, u32::MAX];
-
-/// Priority-based scheduling with starvation protection.
-///
-/// Three bands (Background / Normal / High). Lower bands get a forced boost
-/// after being skipped for `STARVATION[band]` ticks.
-pub struct PriorityPolicy {
-    /// Index 0 = Background, 1 = Normal, 2 = High
-    ready: [VecDeque<Arc<Task>>; 3],
-    /// How many ticks each band has been skipped without running.
-    skip_counts: [u32; 3],
-}
-
-impl SchedulingPolicy for PriorityPolicy {
-    fn new() -> Self {
-        PriorityPolicy {
-            ready: [VecDeque::new(), VecDeque::new(), VecDeque::new()],
-            skip_counts: [0u32; 3],
-        }
-    }
-
-    fn enqueue(&mut self, task: Arc<Task>) {
-        let prio = Priority::from_u8(task.priority.load(Ordering::Relaxed)) as usize;
-        self.ready[prio].push_back(task);
-    }
-
-    fn pick_next(&mut self) -> Option<Arc<Task>> {
-        // Starvation boost: lowest-priority bands first
-        for i in [0usize, 1] {
-            if self.skip_counts[i] >= STARVATION[i] && !self.ready[i].is_empty() {
-                self.skip_counts[i] = 0;
-                return self.ready[i].pop_front();
-            }
-        }
-
-        // Normal path: High → Normal → Background
-        for winner in [2usize, 1, 0] {
-            if !self.ready[winner].is_empty() {
-                // Increment skip counts for all lower non-empty bands
-                for lower in 0..winner {
-                    if !self.ready[lower].is_empty() {
-                        self.skip_counts[lower] = self.skip_counts[lower].saturating_add(1);
-                    }
-                }
-                self.skip_counts[winner] = 0;
-                return self.ready[winner].pop_front();
-            }
-        }
-
-        None
-    }
-
-    fn len(&self) -> usize {
-        self.ready[0].len() + self.ready[1].len() + self.ready[2].len()
-    }
-}
-
-// ── RoundRobinPolicy ────────────────────────────────────────────────────────
-
-/// Simple FIFO round-robin scheduling. Ignores task priority entirely.
-pub struct RoundRobinPolicy {
-    ready: VecDeque<Arc<Task>>,
-}
-
-impl SchedulingPolicy for RoundRobinPolicy {
-    fn new() -> Self {
-        RoundRobinPolicy { ready: VecDeque::new() }
-    }
-
-    fn enqueue(&mut self, task: Arc<Task>) {
-        self.ready.push_back(task);
-    }
-
-    fn pick_next(&mut self) -> Option<Arc<Task>> {
-        self.ready.pop_front()
-    }
-
-    fn len(&self) -> usize {
-        self.ready.len()
-    }
-}
-
 // ── Active policy selection ─────────────────────────────────────────────────
 
 /// The scheduling policy used at compile time. Change this type alias to swap
-/// policies (e.g. `RoundRobinPolicy`).
+/// policies (e.g. `RoundRobinPolicy`, `PriorityPolicy`, `IpcAwarePolicy`).
 pub type ActivePolicy = PriorityPolicy;
 
 // ── RunQueue (generic over policy) ──────────────────────────────────────────
@@ -166,6 +58,15 @@ pub fn add(cpu: &CpuLocalData, task: Arc<Task>) {
     });
 }
 
+/// Add a task to the **front** of the run queue (IPC-woken fast path).
+pub fn add_front(cpu: &CpuLocalData, task: Arc<Task>) {
+    interrupts::without_interrupts(|| {
+        let mut rq = cpu.run_queue.get().unwrap().lock();
+        rq.policy.enqueue_front(task);
+        cpu.ready_count.fetch_add(1, Ordering::Relaxed);
+    });
+}
+
 /// Wake the task in `slot` (if any) using a CAS to guard against double-wakeup.
 ///
 /// Takes the Arc out of the slot atomically, then tries `compare_exchange(Sleeping, Ready)`.
@@ -174,7 +75,7 @@ pub fn try_wake_slot(slot: &EventWaiterSlot) {
     if let Some((task, cpu_id)) = slot.lock().take() {
         use core::sync::atomic::Ordering::{AcqRel, Relaxed};
         if task.state.compare_exchange(TaskState::Sleeping, TaskState::Ready, AcqRel, Relaxed).is_ok() {
-            add(get_cpu(cpu_id), task);
+            add_front(get_cpu(cpu_id), task);
             let local_id = get_local().kernel_id;
             if cpu_id != local_id {
                 let apic_id = local_apic_id_of(cpu_id);
