@@ -1,3 +1,47 @@
+//! # bos_egui — Egui Platform Abstraction for Bos OS
+//!
+//! Provides a unified GUI framework that works on both Linux (real egui + eframe)
+//! and Bos (a minimal software-rendered stub with the same API surface).
+//!
+//! ## Architecture
+//!
+//! On **Linux**, `bos_egui::egui` re-exports the real `egui` crate, and [`run`]
+//! launches an eframe native window. This allows developing and testing GUI apps
+//! on the host before deploying to Bos.
+//!
+//! On **Bos** (`x86_64-unknown-none`), `bos_egui::egui` is a software stub that
+//! provides `Context`, `CentralPanel`, `Ui`, `Response`, and basic widgets
+//! (buttons, labels, text inputs, selectable labels). Rendering uses
+//! `embedded_graphics` with fixed `FONT_8X13` / `FONT_8X13_BOLD` fonts into the
+//! window's raw pixel buffer.
+//!
+//! ## Usage
+//!
+//! ```ignore
+//! use bos_egui::{egui, App};
+//!
+//! struct MyApp;
+//!
+//! impl App for MyApp {
+//!     fn update(&mut self, ctx: &egui::Context) {
+//!         egui::CentralPanel::default().show(ctx, |ui| {
+//!             ui.heading("Hello");
+//!             if ui.button("Click me").clicked() { /* ... */ }
+//!         });
+//!     }
+//! }
+//! ```
+//!
+//! ## Available Widgets (Bos stub)
+//!
+//! - `ui.heading(text)` / `ui.label(text)` — text with `FONT_8X13_BOLD` / `FONT_8X13`
+//! - `ui.button(text)` — clickable button with hover highlight
+//! - `ui.text_edit_singleline(text, focused, cursor_visible)` — editable text field
+//! - `ui.selectable_label(selected, text)` — row with selection highlight
+//! - `ui.separator()` — horizontal line
+//! - `ui.horizontal(|ui| { ... })` — lay out widgets side by side
+//! - `ui.canvas()` — raw pixel drawing area for custom rendering
+
 #![cfg_attr(not(target_os = "linux"), no_std)]
 #![cfg_attr(not(target_os = "linux"), feature(alloc_error_handler))]
 
