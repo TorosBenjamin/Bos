@@ -7,10 +7,13 @@ use std::{env, io};
 
 /// Binaries in the ISO root.
 /// bench_init replaces init_task (same path: /init_task so the kernel loads it).
-/// ipc_bench is loaded by bench_init via sys_get_module("ipc_bench").
+/// All benchmark binaries are loaded by bench_init via sys_get_module().
 const ISO_BINARIES: &[(&str, &str, &str)] = &[
-    ("bench_init", "bench_init", "init_task"),   // replaces real init_task
-    ("ipc_bench",  "ipc_bench",  "ipc_bench"),
+    ("bench_init",      "bench_init",      "init_task"),   // replaces real init_task
+    ("ipc_bench",       "ipc_bench",       "ipc_bench"),
+    ("syscall_bench",   "syscall_bench",   "syscall_bench"),
+    ("ctx_switch_bench","ctx_switch_bench", "ctx_switch_bench"),
+    ("mem_bench",       "mem_bench",       "mem_bench"),
 ];
 
 fn main() {

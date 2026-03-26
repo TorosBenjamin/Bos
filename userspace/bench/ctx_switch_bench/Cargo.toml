@@ -1,0 +1,14 @@
+[package]
+name = "ctx_switch_bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ulib = { path = "../../frameworks/ulib" }
+kernel_api_types = { path = "../../../../kernel-api" }
+
+[[bin]]
+name = "ctx_switch_bench"
+test = false
+bench = false

@@ -11,6 +11,9 @@ pub const E1000_PATH: &CStr = c"/e1000";
 pub const NET_SERVER_PATH: &CStr = c"/net_server";
 pub const IDE_DRIVER_PATH: &CStr = c"/ide";
 pub const IPC_BENCH_PATH: &CStr = c"/ipc_bench";
+pub const SYSCALL_BENCH_PATH: &CStr = c"/syscall_bench";
+pub const CTX_SWITCH_BENCH_PATH: &CStr = c"/ctx_switch_bench";
+pub const MEM_BENCH_PATH: &CStr = c"/mem_bench";
 
 #[used]
 #[unsafe(link_section = ".requests")]
@@ -47,6 +50,9 @@ pub static MODULE_REQUEST: ModuleRequest =
         &InternalModule::new().with_path(NET_SERVER_PATH),
         &InternalModule::new().with_path(IDE_DRIVER_PATH),
         &InternalModule::new().with_path(IPC_BENCH_PATH),
+        &InternalModule::new().with_path(SYSCALL_BENCH_PATH),
+        &InternalModule::new().with_path(CTX_SWITCH_BENCH_PATH),
+        &InternalModule::new().with_path(MEM_BENCH_PATH),
     ]);
 
 #[used]
