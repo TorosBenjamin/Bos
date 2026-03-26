@@ -8,6 +8,9 @@ publish = false
 kernel = { path = "../../kernel/core", artifact = "bin", target = "x86_64-unknown-none" }
 bench_init = { path = "../../userspace/bench/bench_init", artifact = "bin", target = "x86_64-unknown-none" }
 ipc_bench = { path = "../../userspace/bench/ipc_bench", artifact = "bin", target = "x86_64-unknown-none" }
+syscall_bench = { path = "../../userspace/bench/syscall_bench", artifact = "bin", target = "x86_64-unknown-none" }
+ctx_switch_bench = { path = "../../userspace/bench/ctx_switch_bench", artifact = "bin", target = "x86_64-unknown-none" }
+mem_bench = { path = "../../userspace/bench/mem_bench", artifact = "bin", target = "x86_64-unknown-none" }
 fatfs = "0.3"
 
 [features]

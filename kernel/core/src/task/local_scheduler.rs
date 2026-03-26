@@ -2,7 +2,7 @@ use crate::memory::cpu_local_data::{CpuLocalData, get_local, get_cpu, local_apic
 use crate::time::tsc;
 use crate::memory::MEMORY;
 use crate::task::task::{CpuContext, Task, TaskState};
-use crate::task::policy::{SchedulingPolicy, IpcAwarePolicy};
+use crate::task::policy::{SchedulingPolicy, RoundRobinPolicy, PriorityPolicy, IpcAwarePolicy};
 
 /// A waiter slot used by `sys_wait_for_event` to register a sleeping task
 /// against a single event source. Woken via `try_wake_slot` which uses a CAS

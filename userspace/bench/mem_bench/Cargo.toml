@@ -1,0 +1,14 @@
+[package]
+name = "mem_bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ulib = { path = "../../frameworks/ulib" }
+kernel_api_types = { path = "../../../../kernel-api" }
+
+[[bin]]
+name = "mem_bench"
+test = false
+bench = false
