@@ -8,6 +8,28 @@ pub fn sys_get_time_ns(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
     crate::time::now_ns()
 }
 
+/// Syscall: return the global timer tick count.
+///
+/// Monotonically increasing counter incremented once per timer interrupt (~1 ms).
+/// Suitable for measuring scheduling latency in tick units.
+pub fn sys_get_ticks(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    crate::interrupt::handlers::TIMER_INTERRUPT_COUNT.load(Ordering::Relaxed)
+}
+
+/// Syscall: return the cpu_ticks counter for a given task.
+///
+/// Arguments: task_id (u64) — the ID of the task to query.
+/// Returns the number of scheduler quanta the task has consumed, or u64::MAX if not found.
+pub fn sys_get_task_cpu_ticks(task_id: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    use crate::task::global_scheduler::TASK_TABLE;
+    use crate::task::task::TaskId;
+
+    match TASK_TABLE.lock().get(&TaskId::from_u64(task_id)) {
+        Some(task) => task.cpu_ticks.load(Ordering::Relaxed),
+        None => u64::MAX,
+    }
+}
+
 /// Syscall: write to the isa-debug-exit port and halt (exits QEMU).
 ///
 /// Arguments: exit_code — written directly to port 0xf4.

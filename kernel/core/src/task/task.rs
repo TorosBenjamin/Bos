@@ -257,6 +257,10 @@ pub struct Task {
     pub name_len: u8,
     /// Scheduling priority (Priority::from_u8(task.priority.load(Relaxed))).
     pub priority: AtomicU8,
+    /// IPC front-of-queue boost budget. Decremented by `IpcAwarePolicy::enqueue_front`;
+    /// reset to `IPC_BOOST_BUDGET` by normal `enqueue`. Prevents indefinite starvation
+    /// when two tasks in a tight IPC loop keep waking each other to the front.
+    pub ipc_boost_remaining: AtomicU8,
     /// Parent task ID; None for kernel tasks and init_task.
     pub parent_id: Option<TaskId>,
 }
@@ -326,6 +330,7 @@ impl Task {
             name,
             name_len: 6,
             priority: AtomicU8::new(priority as u8),
+            ipc_boost_remaining: AtomicU8::new(crate::task::policy::IPC_BOOST_BUDGET),
             parent_id,
         }
     }
@@ -405,6 +410,7 @@ impl Task {
             name,
             name_len,
             priority: AtomicU8::new(priority as u8),
+            ipc_boost_remaining: AtomicU8::new(crate::task::policy::IPC_BOOST_BUDGET),
             parent_id,
         }
     }
@@ -475,6 +481,7 @@ impl Task {
             name,
             name_len,
             priority: AtomicU8::new(priority as u8),
+            ipc_boost_remaining: AtomicU8::new(crate::task::policy::IPC_BOOST_BUDGET),
             parent_id,
         }
     }
@@ -527,6 +534,7 @@ impl Task {
             name,
             name_len,
             priority: AtomicU8::new(priority as u8),
+            ipc_boost_remaining: AtomicU8::new(crate::task::policy::IPC_BOOST_BUDGET),
             parent_id,
         })
     }

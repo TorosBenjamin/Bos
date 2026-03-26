@@ -1,0 +1,20 @@
+[package]
+name = "bench_runner"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[build-dependencies]
+kernel = { path = "../../kernel/core", artifact = "bin", target = "x86_64-unknown-none" }
+bench_init = { path = "../../userspace/bench/bench_init", artifact = "bin", target = "x86_64-unknown-none" }
+ipc_bench = { path = "../../userspace/bench/ipc_bench", artifact = "bin", target = "x86_64-unknown-none" }
+fatfs = "0.3"
+
+[features]
+default = []
+
+[[bin]]
+name = "bench_runner"
+path = "src/main.rs"
+test = false
+bench = false

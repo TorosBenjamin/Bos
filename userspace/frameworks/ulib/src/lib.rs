@@ -508,6 +508,24 @@ pub fn sys_get_time_ns() -> u64 {
     args[6]
 }
 
+/// Return the global timer tick count (monotonic, incremented ~once per ms).
+pub fn sys_get_ticks() -> u64 {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::GetTicks as u64;
+    syscall(&mut args);
+    args[6]
+}
+
+/// Return the cpu_ticks counter for a given task.
+/// Returns u64::MAX if the task is not found.
+pub fn sys_get_task_cpu_ticks(task_id: u64) -> u64 {
+    let mut args = [0u64; 7];
+    args[0] = SysCallNumber::GetTaskCpuTicks as u64;
+    args[1] = task_id;
+    syscall(&mut args);
+    args[6]
+}
+
 /// Terminate the calling task with exit code 1.
 pub fn sys_exit(code: u64) -> ! {
     let mut args = [0u64; 7];
