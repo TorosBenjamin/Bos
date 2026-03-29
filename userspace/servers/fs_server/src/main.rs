@@ -13,9 +13,9 @@ mod server;
 
 #[unsafe(no_mangle)]
 unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
-    let (send_ep, recv_ep) = ulib::sys_channel_create(16);
-    ulib::sys_register_service(b"fatfs", send_ep);
-    server::run(recv_ep)
+    let (send_fd, recv_fd) = ulib::handle::channel(16).unwrap();
+    ulib::handle::register_service(b"fatfs", send_fd);
+    server::run(recv_fd)
 }
 
 #[panic_handler]

@@ -16,19 +16,29 @@ use super::{current_task_and_cpu, wake_task};
 pub fn sys_exit(exit_code: u64) -> ! {
     let cpu = get_local();
 
-    // 1. Collect task Arc and owned endpoints (interrupts still disabled by SFMask)
-    let (task_arc, endpoints) = {
+    // 1. Collect task Arc, owned endpoints, and handles (interrupts still disabled by SFMask)
+    let (task_arc, endpoints, handles) = {
         let rq = cpu.run_queue.get().unwrap().lock();
         let t = rq.current_task.clone();
-        let eps = t.as_ref()
-            .map(|t| t.inner.lock().owned_endpoints.clone())
+        let (eps, hdls) = t.as_ref()
+            .map(|t| {
+                let mut inner = t.inner.lock();
+                let eps = inner.owned_endpoints.clone();
+                let hdls: alloc::vec::Vec<_> = inner.handles.drain_all().collect();
+                (eps, hdls)
+            })
             .unwrap_or_default();
-        (t, eps)
+        (t, eps, hdls)
     };
 
     // 2. Close owned IPC endpoints
     for ep in endpoints {
         let _ = crate::ipc::close_endpoint(ep);
+    }
+
+    // 2a. Close all handles (pipes, wrapped channels, etc.)
+    for h in handles {
+        super::close_handle(h);
     }
 
     // 2b. Unregister any services this task registered
@@ -95,7 +105,7 @@ pub fn sys_exit(exit_code: u64) -> ! {
 pub(crate) fn kill_from_exception(fault_type: u64, faulting_addr: u64, ip: u64) -> ! {
     let cpu = get_local();
 
-    let (task_arc, endpoints) = {
+    let (task_arc, endpoints, handles) = {
         let rq = cpu.run_queue.get().unwrap().lock();
         let t = rq.current_task.clone();
         if let Some(task) = &t {
@@ -106,14 +116,23 @@ pub(crate) fn kill_from_exception(fault_type: u64, faulting_addr: u64, ip: u64) 
             log::warn!("kill_from_exception: no current task fault_type={} addr={:#x} ip={:#x}",
                 fault_type, faulting_addr, ip);
         }
-        let eps = t.as_ref()
-            .map(|t| t.inner.lock().owned_endpoints.clone())
+        let (eps, hdls) = t.as_ref()
+            .map(|t| {
+                let mut inner = t.inner.lock();
+                let eps = inner.owned_endpoints.clone();
+                let hdls: alloc::vec::Vec<_> = inner.handles.drain_all().collect();
+                (eps, hdls)
+            })
             .unwrap_or_default();
-        (t, eps)
+        (t, eps, hdls)
     };
 
     for ep in endpoints {
         let _ = crate::ipc::close_endpoint(ep);
+    }
+
+    for h in handles {
+        super::close_handle(h);
     }
 
     if let Some(task) = &task_arc {
@@ -277,6 +296,7 @@ pub fn sys_spawn(elf_ptr: u64, elf_len: u64, child_arg: u64, name_ptr: u64, name
         name_len: name_len_capped,
         priority: prio as u8,
         parent_id,
+        inherited_handles: alloc::vec::Vec::new(),
     });
     let args_ptr = Box::into_raw(args) as u64;
     let loader = Task::new(elf_loader_entry, args_ptr, Priority::Normal, None);
@@ -305,8 +325,9 @@ fn elf_loader_entry() -> ! {
 /// argument register (`rdi`). On success, transitions the stub to Ready.
 /// On failure, marks it Zombie and wakes any waitpid waiter.
 extern "sysv64" fn elf_loader_entry_inner(args_ptr: u64) -> ! {
-    let args = unsafe { *Box::from_raw(args_ptr as *mut ElfLoaderArgs) };
+    let mut args = unsafe { *Box::from_raw(args_ptr as *mut ElfLoaderArgs) };
     let stub = args.stub_task.clone();
+    let inherited_handles = core::mem::take(&mut args.inherited_handles);
 
     let result = fill_loading_task(
         &stub,
@@ -327,6 +348,13 @@ extern "sysv64" fn elf_loader_entry_inner(args_ptr: u64) -> ! {
 
     match result {
         Ok(()) => {
+            // Install inherited handles into the child's handle table before activation.
+            if !inherited_handles.is_empty() {
+                let mut inner = stub.inner.lock();
+                for (child_fd, handle) in inherited_handles {
+                    inner.handles.alloc_at(child_fd, handle);
+                }
+            }
             log::info!("async ELF load complete for task {}", stub.id.to_u64());
             spawn_task_activate(stub); // consumes the Arc
         }
@@ -348,6 +376,138 @@ extern "sysv64" fn elf_loader_entry_inner(args_ptr: u64) -> ! {
     }
 
     sys_exit(0)
+}
+
+/// Syscall: spawn a new user task with inherited handles.
+///
+/// Like `sys_spawn`, but the 6th argument is a pointer to a `SpawnHandlesDesc`
+/// struct (which also contains the priority). The parent's handles referenced
+/// by the descriptor are cloned and installed in the child's handle table.
+///
+/// Arguments: elf_ptr, elf_len, child_arg, name_ptr, name_len, desc_ptr
+/// Returns: task ID on success, 0 on failure.
+pub fn sys_spawn_with_handles(
+    elf_ptr: u64, elf_len: u64, child_arg: u64,
+    name_ptr: u64, name_len: u64, desc_ptr: u64,
+) -> u64 {
+    use kernel_api_types::{SpawnHandlesDesc, HandleMapping};
+    use alloc::vec::Vec;
+
+    if elf_len == 0 || elf_len > 64 * 1024 * 1024 {
+        return 0;
+    }
+    let _guard_elf = match super::validate_user_ptr(elf_ptr, elf_len) {
+        Some(g) => g,
+        None => return 0,
+    };
+
+    // Read the SpawnHandlesDesc from user memory.
+    let desc_size = core::mem::size_of::<SpawnHandlesDesc>() as u64;
+    let _guard_desc = match super::validate_user_ptr(desc_ptr, desc_size) {
+        Some(g) => g,
+        None => return 0,
+    };
+    let desc: SpawnHandlesDesc = unsafe { core::ptr::read_unaligned(desc_ptr as *const SpawnHandlesDesc) };
+
+    // Validate and read handle mappings.
+    let mapping_count = desc.handle_count as usize;
+    if mapping_count > crate::handle::MAX_HANDLES {
+        return 0;
+    }
+
+    let mut inherited_handles: Vec<(u32, crate::handle::Handle)> = Vec::new();
+
+    if mapping_count > 0 {
+        let mappings_ptr = desc_ptr + desc_size;
+        let mappings_size = (mapping_count * core::mem::size_of::<HandleMapping>()) as u64;
+        let _guard_maps = match super::validate_user_ptr(mappings_ptr, mappings_size) {
+            Some(g) => g,
+            None => return 0,
+        };
+
+        let cpu = get_local();
+        let parent_task = {
+            let rq = cpu.run_queue.get().unwrap().lock();
+            match rq.current_task.clone() {
+                Some(t) if t.kind == TaskKind::User => t,
+                _ => return 0,
+            }
+        };
+
+        let inner = parent_task.inner.lock();
+        for i in 0..mapping_count {
+            let m: HandleMapping = unsafe {
+                core::ptr::read_unaligned(
+                    (mappings_ptr as *const HandleMapping).add(i)
+                )
+            };
+            if m.child_fd as usize >= crate::handle::MAX_HANDLES {
+                return 0;
+            }
+            match inner.handles.get(m.parent_fd) {
+                Some(h) => {
+                    match h.try_clone() {
+                        Some(cloned) => inherited_handles.push((m.child_fd, cloned)),
+                        None => return 0, // clone failed (e.g. IPC endpoint gone)
+                    }
+                }
+                None => return 0, // bad parent fd
+            }
+        }
+        drop(inner);
+    }
+
+    // From here, same flow as sys_spawn but with inherited_handles and priority from desc.
+    let cpu = get_local();
+    let (parent_task, parent_id) = {
+        let rq = cpu.run_queue.get().unwrap().lock();
+        match rq.current_task.clone() {
+            Some(t) if t.kind == TaskKind::User => {
+                let id = t.id;
+                (t, id)
+            }
+            _ => return 0,
+        }
+    };
+
+    let parent_prio = Priority::from_u8(parent_task.priority.load(Ordering::Relaxed));
+    let prio = Priority::from_u8(desc.priority).min(parent_prio);
+    let parent_cr3 = parent_task.cr3.load(Ordering::Relaxed);
+
+    let mut name_arr = [0u8; 32];
+    let name_len_capped: u8 = if name_ptr != 0 && name_len != 0 {
+        let capped = name_len.min(32) as usize;
+        if let Some(_guard_name) = super::validate_user_ptr(name_ptr, capped as u64) {
+            unsafe { core::ptr::copy_nonoverlapping(name_ptr as *const u8, name_arr.as_mut_ptr(), capped); }
+            capped as u8
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    let child_id = TaskId::alloc();
+    let stub = Task::new_loading(child_id, name_arr, name_len_capped, prio, Some(parent_id));
+    preregister_task(stub.clone());
+
+    let args = alloc::boxed::Box::new(ElfLoaderArgs {
+        stub_task: stub,
+        parent_cr3,
+        elf_user_ptr: elf_ptr,
+        elf_len,
+        child_arg,
+        name: name_arr,
+        name_len: name_len_capped,
+        priority: prio as u8,
+        parent_id,
+        inherited_handles,
+    });
+    let args_ptr = alloc::boxed::Box::into_raw(args) as u64;
+    let loader = Task::new(elf_loader_entry, args_ptr, Priority::Normal, None);
+    spawn_task(loader);
+
+    child_id.to_u64()
 }
 
 /// Syscall: block until the target task is no longer in Loading state.

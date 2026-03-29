@@ -173,13 +173,13 @@ impl Compositor {
                     (start_y, (start_h as i32 + dy).max(MIN_SIZE as i32) as u32)
                 };
 
-                let mut configure_info: Option<(u64, u32, u32, u64)> = None;
+                let mut configure_info: Option<(u32, u32, u32, u64)> = None;
                 if let Some(w) = self.windows.iter_mut()
                     .filter_map(|w| w.as_mut())
                     .find(|w| w.id == drag.window_id)
                     && w.reconfigure(new_x, new_y, new_w, new_h)
                 {
-                    configure_info = Some((w.event_send_ep, new_w, new_h, w.shared_buf_id));
+                    configure_info = Some((w.event_send_fd, new_w, new_h, w.shared_buf_id));
                 }
                 if let Some((ep, w, h, buf_id)) = configure_info {
                     send_event(ep, &ConfigureEvent {

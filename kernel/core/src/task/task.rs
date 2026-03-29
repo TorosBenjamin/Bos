@@ -145,6 +145,8 @@ pub struct TaskInner {
     pub owned_endpoints: Vec<u64>,
     /// Service names registered by this task; removed from the registry on exit.
     pub registered_services: Vec<[u8; 64]>,
+    /// Per-task handle table (pipes, channels, etc.). Handles 0/1/2 = stdin/stdout/stderr by convention.
+    pub handles: crate::handle::HandleTable,
 }
 
 /// Walk L4 entries 0..256 (user space) and free all page table frames and data frames.
@@ -313,6 +315,7 @@ impl Task {
                 user_vmas: NoditMap::new(),
                 owned_endpoints: Vec::new(),
                 registered_services: Vec::new(),
+                handles: crate::handle::HandleTable::new(),
             }),
             vma_lock: spin::RwLock::new(()),
             id: TaskId::new(),
@@ -393,6 +396,7 @@ impl Task {
                 user_vmas,
                 owned_endpoints: Vec::new(),
                 registered_services: Vec::new(),
+                handles: crate::handle::HandleTable::new(),
             }),
             vma_lock: spin::RwLock::new(()),
             id: TaskId::new(),
@@ -464,6 +468,7 @@ impl Task {
                 user_vmas,
                 owned_endpoints: Vec::new(),
                 registered_services: Vec::new(),
+                handles: crate::handle::HandleTable::new(),
             }),
             vma_lock: spin::RwLock::new(()),
             id: TaskId::new(),
@@ -517,6 +522,7 @@ impl Task {
                 user_vmas: NoditMap::new(),
                 owned_endpoints: Vec::new(),
                 registered_services: Vec::new(),
+                handles: crate::handle::HandleTable::new(),
             }),
             vma_lock: spin::RwLock::new(()),
             id,

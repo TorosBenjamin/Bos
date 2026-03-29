@@ -29,9 +29,11 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
         }
         sys_yield();
     };
+    let display_fd = ulib::handle::handle_from_channel(display_server_ep, 1)
+        .expect("failed to wrap display endpoint as handle");
 
     // Create a toplevel window — DS assigns size via tiling
-    let mut window = match Window::new(display_server_ep, "bouncing_cube_1") {
+    let mut window = match Window::new(display_fd, "bouncing_cube_1") {
         Some(w) => w,
         None => {
             loop {

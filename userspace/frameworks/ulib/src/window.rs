@@ -56,8 +56,8 @@ pub enum WindowEvent {
 pub struct Window {
     /// Window ID assigned by display_server
     window_id: WindowId,
-    /// IPC send endpoint to display_server
-    send_endpoint: u64,
+    /// Handle (fd) for sending messages to display_server
+    send_fd: u32,
     /// Pointer into the shared buffer (same physical pages as the server's copy)
     buffer: *mut u32,
     /// Shared buffer ID (needed for cleanup / apply_configure)
@@ -68,20 +68,47 @@ pub struct Window {
     height: u32,
     info: DisplayInfo,
     dirty: Option<DirtyRect>,
-    /// Receive endpoint for DS-pushed events (key presses, focus changes, configure).
-    event_recv_ep: u64,
+    /// Handle (fd) for receiving DS-pushed events (key presses, focus changes, configure).
+    event_recv_fd: u32,
 }
 
 impl Window {
     /// Internal IPC round-trip: send CreateWindow request, receive response, map buffer.
-    fn new_inner(display_server_send_ep: u64, req: CreateWindowRequest) -> Option<Self> {
+    fn new_inner(display_server_send_fd: u32, req: CreateWindowRequest) -> Option<Self> {
         // Create the event channel the DS will use to push events to us.
         let (event_send, event_recv) = crate::sys_channel_create(32);
+
+        // Wrap event_recv as a handle for reading events (clones the endpoint).
+        let event_recv_fd = match crate::handle::handle_from_channel(event_recv, 0) {
+            Some(fd) => fd,
+            None => {
+                crate::sys_channel_close(event_send);
+                crate::sys_channel_close(event_recv);
+                return None;
+            }
+        };
+        // Close the original raw recv endpoint — the handle owns its clone.
+        crate::sys_channel_close(event_recv);
 
         // Inject the actual event endpoint into the request
         let req = CreateWindowRequest { event_send_ep: event_send, ..req };
 
-        let (our_send, our_recv) = crate::sys_channel_create(1);
+        // Create reply channel. We wrap recv as a handle (for reading the reply)
+        // but keep send as a raw endpoint — it's embedded in the IPC message for
+        // the server to reply through (the server closes it after replying).
+        let (our_send_ep, our_recv_ep) = crate::sys_channel_create(1);
+        let recv_fd = match crate::handle::handle_from_channel(our_recv_ep, 0) {
+            Some(fd) => fd,
+            None => {
+                crate::sys_channel_close(our_send_ep);
+                crate::sys_channel_close(our_recv_ep);
+                crate::sys_channel_close(event_send);
+                crate::handle::close(event_recv_fd);
+                return None;
+            }
+        };
+        // Close original raw recv — the handle owns its clone.
+        crate::sys_channel_close(our_recv_ep);
 
         const MSG_SIZE: usize = 1 + core::mem::size_of::<CreateWindowRequest>() + 8;
         let mut msg = [0u8; MSG_SIZE];
@@ -93,36 +120,35 @@ impl Window {
                 core::mem::size_of::<CreateWindowRequest>(),
             );
         }
+        // Embed the raw send endpoint so the DS can reply through it.
         let ep_offset = 1 + core::mem::size_of::<CreateWindowRequest>();
-        msg[ep_offset..ep_offset + 8].copy_from_slice(&our_send.to_le_bytes());
+        msg[ep_offset..ep_offset + 8].copy_from_slice(&our_send_ep.to_le_bytes());
 
-        let result = crate::sys_channel_send(display_server_send_ep, &msg);
-        if result != kernel_api_types::IPC_OK {
-            crate::sys_channel_close(our_send);
-            crate::sys_channel_close(our_recv);
+        if crate::handle::write(display_server_send_fd, &msg).is_none() {
+            crate::sys_channel_close(our_send_ep);
+            crate::handle::close(recv_fd);
             crate::sys_channel_close(event_send);
-            crate::sys_channel_close(event_recv);
+            crate::handle::close(event_recv_fd);
             return None;
         }
+        // Message sent — server now owns our_send_ep and will close it after replying.
 
         let mut response_buf = [0u8; core::mem::size_of::<CreateWindowResponse>()];
-        let (recv_result, bytes_read) = loop {
-            let (res, len) = crate::sys_channel_recv(our_recv, &mut response_buf);
-            if res == kernel_api_types::IPC_ERR_CHANNEL_FULL {
-                crate::sys_yield();
-                continue;
+        let bytes_read = match crate::handle::read(recv_fd, &mut response_buf) {
+            Some(n) => n,
+            None => {
+                crate::handle::close(recv_fd);
+                crate::sys_channel_close(event_send);
+                crate::handle::close(event_recv_fd);
+                return None;
             }
-            break (res, len);
         };
 
-        crate::sys_channel_close(our_send);
-        crate::sys_channel_close(our_recv);
+        crate::handle::close(recv_fd);
 
-        if recv_result != kernel_api_types::IPC_OK
-            || bytes_read != core::mem::size_of::<CreateWindowResponse>() as u64
-        {
+        if bytes_read != core::mem::size_of::<CreateWindowResponse>() {
             crate::sys_channel_close(event_send);
-            crate::sys_channel_close(event_recv);
+            crate::handle::close(event_recv_fd);
             return None;
         }
 
@@ -132,7 +158,7 @@ impl Window {
 
         if response.result != WindowResult::Ok {
             crate::sys_channel_close(event_send);
-            crate::sys_channel_close(event_recv);
+            crate::handle::close(event_recv_fd);
             return None;
         }
 
@@ -140,18 +166,17 @@ impl Window {
         let buffer = crate::sys_map_shared_buf(response.shared_buf_id) as *mut u32;
         if buffer.is_null() {
             crate::sys_channel_close(event_send);
-            crate::sys_channel_close(event_recv);
+            crate::handle::close(event_recv_fd);
             return None;
         }
 
-        // event_send stays open; DS holds a reference to it and sends events through it.
-        let _ = event_send;
+        // event_send stays open — DS holds this raw endpoint and sends events through it.
 
         let info = crate::sys_get_display_info();
 
         Some(Window {
             window_id: response.window_id,
-            send_endpoint: display_server_send_ep,
+            send_fd: display_server_send_fd,
             buffer,
             shared_buf_id: response.shared_buf_id,
             buf_size,
@@ -159,7 +184,7 @@ impl Window {
             height: response.height,
             info,
             dirty: None,
-            event_recv_ep: event_recv,
+            event_recv_fd,
         })
     }
 
@@ -167,7 +192,7 @@ impl Window {
     ///
     /// The DS assigns size and position via auto-tiling; the response contains the
     /// actual dimensions. `app_id` is a string identifier used for config-based rules.
-    pub fn new(display_server_send_ep: u64, app_id: &str) -> Option<Self> {
+    pub fn new(display_server_send_fd: u32, app_id: &str) -> Option<Self> {
         let mut id_bytes = [0u8; 32];
         let len = app_id.len().min(32);
         id_bytes[..len].copy_from_slice(app_id.as_bytes()[..len].as_ref());
@@ -182,16 +207,16 @@ impl Window {
             init_w: 0,
             init_h: 0,
         };
-        Self::new_inner(display_server_send_ep, req)
+        Self::new_inner(display_server_send_fd, req)
     }
 
     /// Create a floating window with a specific size, optionally parented to another window.
     ///
     /// `parent_id` should be the `window_id()` of the owning window (0 = no parent).
-    /// `w` / `h` are the desired pixel dimensions (0 = DS default 400×300).
+    /// `w` / `h` are the desired pixel dimensions (0 = DS default 400x300).
     /// `extra_flags` are OR'd with `WINDOW_FLAG_FLOATING` (e.g. `WINDOW_FLAG_HIDDEN`).
     pub fn new_floating(
-        display_server_send_ep: u64,
+        display_server_send_fd: u32,
         app_id: &str,
         parent_id: u64,
         w: u32,
@@ -212,14 +237,14 @@ impl Window {
             init_w: w,
             init_h: h,
         };
-        Self::new_inner(display_server_send_ep, req)
+        Self::new_inner(display_server_send_fd, req)
     }
 
     /// Return the window ID assigned by the display server.
     pub fn window_id(&self) -> u64 { self.window_id }
 
-    /// Return the event receive endpoint (for use with `sys_wait_for_event`).
-    pub fn event_recv_ep(&self) -> u64 { self.event_recv_ep }
+    /// Return the event receive handle fd (for use with `handle::wait`).
+    pub fn event_recv_fd(&self) -> u32 { self.event_recv_fd }
 
     /// Hide this window (remove from compositor z-order without closing).
     pub fn hide(&mut self) {
@@ -234,7 +259,7 @@ impl Window {
                 core::mem::size_of::<HideWindowRequest>(),
             );
         }
-        crate::sys_try_channel_send(self.send_endpoint, &msg);
+        crate::handle::try_write(self.send_fd, &msg);
     }
 
     /// Show a previously hidden window (re-add to compositor z-order).
@@ -250,7 +275,7 @@ impl Window {
                 core::mem::size_of::<ShowWindowRequest>(),
             );
         }
-        crate::sys_try_channel_send(self.send_endpoint, &msg);
+        crate::handle::try_write(self.send_fd, &msg);
     }
 
     /// Close the window, unmapping its buffer and closing the event channel.
@@ -269,8 +294,8 @@ impl Window {
             );
         }
         crate::sys_munmap(self.buffer as *mut u8, self.buf_size);
-        crate::sys_try_channel_send(self.send_endpoint, &msg);
-        crate::sys_channel_close(self.event_recv_ep);
+        crate::handle::try_write(self.send_fd, &msg);
+        crate::handle::close(self.event_recv_fd);
     }
 
     /// Acknowledge a DS-initiated close. Call this when your app wants to keep running
@@ -278,7 +303,7 @@ impl Window {
     /// For single-window apps it is sufficient to let the process exit naturally.
     pub fn acknowledge_close(self) {
         crate::sys_munmap(self.buffer as *mut u8, self.buf_size);
-        crate::sys_channel_close(self.event_recv_ep);
+        crate::handle::close(self.event_recv_fd);
         // Do NOT send CloseWindow — DS already initiated the close.
     }
 
@@ -288,7 +313,7 @@ impl Window {
     /// the area available to Toplevels by `exclusive_zone` pixels.
     /// Pass `flags = WINDOW_FLAG_ALPHA` to opt into premultiplied-alpha compositing.
     pub fn new_panel(
-        display_server_send_ep: u64,
+        display_server_send_fd: u32,
         anchor: u8,
         exclusive_zone: u32,
         width: u32,
@@ -297,7 +322,33 @@ impl Window {
     ) -> Option<Self> {
         let (event_send, event_recv) = crate::sys_channel_create(32);
 
-        let (our_send, our_recv) = crate::sys_channel_create(1);
+        // Wrap event_recv as a handle for reading events (clones the endpoint).
+        let event_recv_fd = match crate::handle::handle_from_channel(event_recv, 0) {
+            Some(fd) => fd,
+            None => {
+                crate::sys_channel_close(event_send);
+                crate::sys_channel_close(event_recv);
+                return None;
+            }
+        };
+        // Close original raw recv — the handle owns its clone.
+        crate::sys_channel_close(event_recv);
+
+        // Create reply channel. Keep send as raw (embedded in message for server),
+        // wrap recv as handle for reading the reply.
+        let (our_send_ep, our_recv_ep) = crate::sys_channel_create(1);
+        let recv_fd = match crate::handle::handle_from_channel(our_recv_ep, 0) {
+            Some(fd) => fd,
+            None => {
+                crate::sys_channel_close(our_send_ep);
+                crate::sys_channel_close(our_recv_ep);
+                crate::sys_channel_close(event_send);
+                crate::handle::close(event_recv_fd);
+                return None;
+            }
+        };
+        // Close original raw recv — the handle owns its clone.
+        crate::sys_channel_close(our_recv_ep);
 
         const MSG_SIZE: usize = 1 + core::mem::size_of::<CreatePanelRequest>() + 8;
         let mut msg = [0u8; MSG_SIZE];
@@ -321,35 +372,33 @@ impl Window {
         }
 
         let ep_offset = 1 + core::mem::size_of::<CreatePanelRequest>();
-        msg[ep_offset..ep_offset + 8].copy_from_slice(&our_send.to_le_bytes());
+        msg[ep_offset..ep_offset + 8].copy_from_slice(&our_send_ep.to_le_bytes());
 
-        let result = crate::sys_channel_send(display_server_send_ep, &msg);
-        if result != kernel_api_types::IPC_OK {
-            crate::sys_channel_close(our_send);
-            crate::sys_channel_close(our_recv);
+        if crate::handle::write(display_server_send_fd, &msg).is_none() {
+            crate::sys_channel_close(our_send_ep);
+            crate::handle::close(recv_fd);
             crate::sys_channel_close(event_send);
-            crate::sys_channel_close(event_recv);
+            crate::handle::close(event_recv_fd);
             return None;
         }
+        // Message sent — server now owns our_send_ep and will close it after replying.
 
         let mut response_buf = [0u8; core::mem::size_of::<CreateWindowResponse>()];
-        let (recv_result, bytes_read) = loop {
-            let (res, len) = crate::sys_channel_recv(our_recv, &mut response_buf);
-            if res == kernel_api_types::IPC_ERR_CHANNEL_FULL {
-                crate::sys_yield();
-                continue;
+        let bytes_read = match crate::handle::read(recv_fd, &mut response_buf) {
+            Some(n) => n,
+            None => {
+                crate::handle::close(recv_fd);
+                crate::sys_channel_close(event_send);
+                crate::handle::close(event_recv_fd);
+                return None;
             }
-            break (res, len);
         };
 
-        crate::sys_channel_close(our_send);
-        crate::sys_channel_close(our_recv);
+        crate::handle::close(recv_fd);
 
-        if recv_result != kernel_api_types::IPC_OK
-            || bytes_read != core::mem::size_of::<CreateWindowResponse>() as u64
-        {
+        if bytes_read != core::mem::size_of::<CreateWindowResponse>() {
             crate::sys_channel_close(event_send);
-            crate::sys_channel_close(event_recv);
+            crate::handle::close(event_recv_fd);
             return None;
         }
 
@@ -359,7 +408,7 @@ impl Window {
 
         if response.result != WindowResult::Ok {
             crate::sys_channel_close(event_send);
-            crate::sys_channel_close(event_recv);
+            crate::handle::close(event_recv_fd);
             return None;
         }
 
@@ -367,16 +416,16 @@ impl Window {
         let buffer = crate::sys_map_shared_buf(response.shared_buf_id) as *mut u32;
         if buffer.is_null() {
             crate::sys_channel_close(event_send);
-            crate::sys_channel_close(event_recv);
+            crate::handle::close(event_recv_fd);
             return None;
         }
 
-        let _ = event_send;
+        // event_send stays open — DS holds this raw endpoint and sends events through it.
         let info = crate::sys_get_display_info();
 
         Some(Window {
             window_id: response.window_id,
-            send_endpoint: display_server_send_ep,
+            send_fd: display_server_send_fd,
             buffer,
             shared_buf_id: response.shared_buf_id,
             buf_size,
@@ -384,7 +433,7 @@ impl Window {
             height: response.height,
             info,
             dirty: None,
-            event_recv_ep: event_recv,
+            event_recv_fd,
         })
     }
 
@@ -394,10 +443,7 @@ impl Window {
     /// For `Configure` events, call `apply_configure()` to activate the new buffer.
     pub fn poll_event(&mut self) -> Option<WindowEvent> {
         let mut buf = [0u8; 32];
-        let (res, bytes_read) = crate::sys_try_channel_recv(self.event_recv_ep, &mut buf);
-        if res != kernel_api_types::IPC_OK || bytes_read == 0 {
-            return None;
-        }
+        let bytes_read = crate::handle::try_read(self.event_recv_fd, &mut buf)?;
 
         if bytes_read == 0 {
             return None;
@@ -405,7 +451,7 @@ impl Window {
 
         let event_type = buf[0];
         if event_type == WindowEventType::KeyPress as u8 {
-            if bytes_read >= core::mem::size_of::<kernel_api_types::window::KeyPressEvent>() as u64 {
+            if bytes_read >= core::mem::size_of::<kernel_api_types::window::KeyPressEvent>() {
                 let ev: kernel_api_types::window::KeyPressEvent = unsafe {
                     core::ptr::read_unaligned(buf.as_ptr() as *const _)
                 };
@@ -416,7 +462,7 @@ impl Window {
         } else if event_type == WindowEventType::FocusLost as u8 {
             return Some(WindowEvent::FocusLost);
         } else if event_type == WindowEventType::Configure as u8 {
-            if bytes_read >= core::mem::size_of::<ConfigureEvent>() as u64 {
+            if bytes_read >= core::mem::size_of::<ConfigureEvent>() {
                 let ev: ConfigureEvent = unsafe {
                     core::ptr::read_unaligned(buf.as_ptr() as *const _)
                 };
@@ -431,7 +477,7 @@ impl Window {
         } else if event_type == WindowEventType::MouseButtonPress as u8
             || event_type == WindowEventType::MouseButtonRelease as u8
         {
-            if bytes_read >= core::mem::size_of::<MouseButtonEvent>() as u64 {
+            if bytes_read >= core::mem::size_of::<MouseButtonEvent>() {
                 let ev: MouseButtonEvent = unsafe {
                     core::ptr::read_unaligned(buf.as_ptr() as *const _)
                 };
@@ -442,7 +488,7 @@ impl Window {
                 });
             }
         } else if event_type == WindowEventType::MouseMove as u8 {
-            if bytes_read >= core::mem::size_of::<MouseMoveEvent>() as u64 {
+            if bytes_read >= core::mem::size_of::<MouseMoveEvent>() {
                 let ev: MouseMoveEvent = unsafe {
                     core::ptr::read_unaligned(buf.as_ptr() as *const _)
                 };
@@ -516,8 +562,8 @@ impl Window {
                     core::mem::size_of::<UpdateWindowRequest>(),
                 );
             }
-            let result = crate::sys_try_channel_send(self.send_endpoint, &msg);
-            if result == kernel_api_types::IPC_OK {
+            let result = crate::handle::try_write_raw(self.send_fd, &msg);
+            if result == msg.len() as u64 {
                 // Message delivered — clear the dirty rect.
                 self.dirty = None;
             }

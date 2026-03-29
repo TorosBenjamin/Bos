@@ -18,7 +18,7 @@ pub(crate) fn request_redraw_impl() {
 
 pub(crate) fn request_timed_redraw_impl(ms: u32) {
     // Only set the timer — do NOT set REDRAW_REQUESTED.  The run loop will
-    // sleep on sys_wait_for_event with this timeout and only force a redraw
+    // sleep on handle::wait with this timeout and only force a redraw
     // when the timeout actually fires, avoiding a render-every-frame spin.
     unsafe {
         core::ptr::addr_of_mut!(TIMED_REDRAW_MS).write(ms);
@@ -58,9 +58,13 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
         ulib::sys_yield();
     };
 
+    // Wrap the raw endpoint as a handle fd for the new handle-based IPC API.
+    let display_fd = ulib::handle::handle_from_channel(display_ep, 1)
+        .expect("failed to wrap display endpoint as handle");
+
     // Create toplevel window
     let mut window = loop {
-        match Window::new(display_ep, name) {
+        match Window::new(display_fd, name) {
             Some(w) => break w,
             None => ulib::sys_yield(),
         }
@@ -154,7 +158,7 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
         #[allow(clippy::collapsible_if)]
         if let Some((cw, ch)) = child_req {
             if child.is_none() {
-                if let Some(cwin) = Window::new_floating(display_ep, name, main_id, cw, ch, 0) {
+                if let Some(cwin) = Window::new_floating(display_fd, name, main_id, cw, ch, 0) {
                     child = Some(ChildState {
                         window: cwin,
                         frame_presented: true,
@@ -225,9 +229,9 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
         // trigger a render.  It is cleared at render time above.
         let timed_ms = unsafe { core::ptr::addr_of!(TIMED_REDRAW_MS).read() };
         if timed_ms > 0 {
-            let ep = window.event_recv_ep();
-            let channels = [ep];
-            let ret = ulib::sys_wait_for_event(&channels, 0, timed_ms as u64);
+            let fd = window.event_recv_fd();
+            let fds = [fd];
+            let ret = ulib::handle::wait(&fds, 0, timed_ms as u64);
             // ret == 1 means timeout (blink toggle); ret == 0 means a window
             // event arrived (FramePresented, key, mouse) — the poll loop above
             // will handle it on the next iteration without forcing a redraw.

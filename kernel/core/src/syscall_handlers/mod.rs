@@ -7,8 +7,9 @@ mod service;
 mod pci;
 mod ioport;
 mod event;
+mod handle;
 
-pub use task::{sys_exit, sys_yield, sys_spawn, sys_waitpid, sys_thread_create, sys_set_exit_channel, sys_sleep_ms, sys_set_priority, sys_set_fault_ep, sys_wait_task_ready};
+pub use task::{sys_exit, sys_yield, sys_spawn, sys_spawn_with_handles, sys_waitpid, sys_thread_create, sys_set_exit_channel, sys_sleep_ms, sys_set_priority, sys_set_fault_ep, sys_wait_task_ready};
 pub(crate) use task::kill_from_exception;
 pub use memory::{sys_mmap, sys_munmap, sys_mprotect, sys_mremap, sys_create_shared_buf, sys_map_shared_buf, sys_destroy_shared_buf, sys_alloc_dma};
 pub use ipc::{sys_channel_create, sys_channel_send, sys_channel_recv, sys_channel_close, sys_try_channel_recv, sys_try_channel_send};
@@ -18,6 +19,8 @@ pub use service::{sys_register_service, sys_lookup_service};
 pub use pci::{sys_pci_config_read, sys_pci_config_write, sys_map_pci_bar};
 pub use ioport::{sys_ioport_read, sys_ioport_write};
 pub use event::{sys_wait_for_event, check_timeout_waiters};
+pub use handle::{sys_pipe, sys_handle_read, sys_handle_write, sys_handle_close, sys_handle_dup, sys_handle_dup2, sys_handle_from_channel, sys_handle_open_keyboard, sys_handle_channel_create, sys_handle_wait, sys_handle_register_service};
+pub(crate) use handle::close_handle;
 
 use alloc::sync::Arc;
 use crate::memory::cpu_local_data::{get_cpu, get_local, local_apic_id_of};

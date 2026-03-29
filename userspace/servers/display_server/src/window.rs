@@ -12,8 +12,8 @@ pub struct Window {
     pub shared_buf_id: u64,
     /// Size in bytes — needed to call sys_munmap before destroying the shared buf.
     pub buf_size: u64,
-    /// DS sends events (key presses, focus, configure) here.
-    pub event_send_ep: u64,
+    /// DS sends events (key presses, focus, configure) here (handle fd).
+    pub event_send_fd: u32,
     /// True for panels anchored to a screen edge.
     pub is_panel: bool,
     /// True for floating windows (not subject to tiling layout).
@@ -57,6 +57,11 @@ impl Window {
         if buffer_ptr.is_null() || shared_buf_id == u64::MAX {
             return None;
         }
+        // Wrap the raw send endpoint as a handle fd (direction=1 for send).
+        let event_send_fd = match ulib::handle::handle_from_channel(event_send_ep, 1) {
+            Some(fd) => fd,
+            None => 0,
+        };
         Some(Window {
             id,
             x,
@@ -66,7 +71,7 @@ impl Window {
             buffer: buffer_ptr as *mut u32,
             shared_buf_id,
             buf_size,
-            event_send_ep,
+            event_send_fd,
             is_panel: false,
             is_floating: false,
             anchor: 0,

@@ -10,7 +10,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use device::{E1000Client, MSG_GET_MAC, MSG_SUBSCRIBE};
 use kernel_api_types::net::*;
-use kernel_api_types::{IPC_OK, IPC_ERR_PEER_CLOSED, SVC_ERR_NOT_FOUND};
+use kernel_api_types::{IPC_ERR_PEER_CLOSED, SVC_ERR_NOT_FOUND};
 use linked_list_allocator::LockedHeap;
 use smoltcp::iface::{Config, Interface, SocketSet};
 use smoltcp::phy::ChecksumCapabilities;
@@ -20,9 +20,9 @@ use smoltcp::wire::{
     DnsQueryType, EthernetAddress, HardwareAddress, IpAddress, IpCidr, Icmpv4Packet, Icmpv4Repr,
 };
 use ulib::{
-    sys_channel_close, sys_channel_create, sys_channel_recv, sys_get_time_ns, sys_lookup_service,
-    sys_register_service, sys_sleep_ms, sys_try_channel_recv, sys_try_channel_send,
-    sys_wait_for_event,
+    sys_channel_close, sys_channel_create, sys_channel_recv, sys_get_time_ns,
+    sys_lookup_service, sys_sleep_ms,
+    sys_try_channel_send,
 };
 
 #[global_allocator]
@@ -50,8 +50,8 @@ const MAX_DNS: usize = 4;
 
 struct TcpEntry {
     handle:        smoltcp::iface::SocketHandle,
-    reply_ep:      Option<u64>, // pending connect; cleared once ESTABLISHED or CLOSED
-    notify_ep:     Option<u64>, // RX data pushed here; client registers via MSG_RECV
+    reply_fd:      Option<u32>, // pending connect; cleared once ESTABLISHED or CLOSED
+    notify_fd:     Option<u32>, // RX data pushed here; client registers via MSG_RECV
     _local_port:   u16,
     created_at_ms: i64,        // for connect timeout
 }
@@ -71,23 +71,31 @@ fn alloc_local_port(next: &mut u16) -> u16 {
 
 fn load_config() -> config::NetConfig {
     // Wait up to 200 yields for the fatfs service.
-    let fs_ep = {
+    let fs_fd = {
         let mut ep = SVC_ERR_NOT_FOUND;
         for _ in 0..200u32 {
             ep = sys_lookup_service(b"fatfs");
             if ep != SVC_ERR_NOT_FOUND { break; }
             ulib::sys_yield();
         }
-        ep
+        if ep == SVC_ERR_NOT_FOUND {
+            return config::NetConfig::default();
+        }
+        match ulib::handle::handle_from_channel(ep, 1) {
+            Some(fd) => fd,
+            None => return config::NetConfig::default(),
+        }
     };
-    if fs_ep == SVC_ERR_NOT_FOUND {
-        return config::NetConfig::default();
-    }
 
-    let (buf_id, file_size) = match ulib::fs::fs_map_file(fs_ep, "/net.conf") {
+    let (buf_id, file_size) = match ulib::fs::fs_map_file(fs_fd, "/net.conf") {
         Some(v) => v,
-        None => return config::NetConfig::default(),
+        None => {
+            ulib::handle::close(fs_fd);
+            return config::NetConfig::default();
+        }
     };
+
+    ulib::handle::close(fs_fd);
 
     let ptr = ulib::sys_map_shared_buf(buf_id);
     if ptr.is_null() {
@@ -124,6 +132,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
 
     // Create a channel so e1000 can push received frames to us.
     let (rx_notify_send_ep, rx_notify_recv_ep) = sys_channel_create(64);
+    let rx_notify_recv_fd = ulib::handle::handle_from_channel(rx_notify_recv_ep, 0).unwrap();
 
     // Subscribe to e1000 for RX notifications.
     let mut sub = [0u8; 9];
@@ -199,8 +208,8 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
     };
 
     // ── Service registration ───────────────────────────────────────────────────
-    let (net_send_ep, net_recv_ep) = sys_channel_create(64);
-    sys_register_service(b"net", net_send_ep);
+    let (net_send_fd, net_recv_fd) = ulib::handle::channel(64).unwrap();
+    ulib::handle::register_service(b"net", net_send_fd);
 
     // ── State ─────────────────────────────────────────────────────────────────
     // In static mode the gateway is known upfront; in DHCP mode it's set later.
@@ -330,12 +339,12 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
         // ── 2. TCP connect completions ────────────────────────────────────────
         let now_ms = now().total_millis();
         for (id, slot) in tcp_table.iter_mut().enumerate() {
-            let (handle, reply_ep, created_at_ms) = match slot {
+            let (handle, reply_fd, created_at_ms) = match slot {
                 None => continue,
-                Some(e) => (e.handle, e.reply_ep, e.created_at_ms),
+                Some(e) => (e.handle, e.reply_fd, e.created_at_ms),
             };
 
-            let Some(rp) = reply_ep else { continue };
+            let Some(rp) = reply_fd else { continue };
 
             // 10-second connect timeout: avoid blocking the client forever.
             let timed_out = now_ms - created_at_ms > 10_000;
@@ -347,16 +356,16 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                     let mut rep = [0u8; 8];
                     rep[0..4].copy_from_slice(&(id as u32).to_le_bytes());
                     // rep[4..8] = NET_OK (zero)
-                    sys_try_channel_send(rp, &rep);
-                    sys_channel_close(rp);
-                    slot.as_mut().unwrap().reply_ep = None;
+                    sys_try_channel_send(rp as u64, &rep);
+                    sys_channel_close(rp as u64);
+                    slot.as_mut().unwrap().reply_fd = None;
                 }
                 tcp::State::Closed | tcp::State::CloseWait => {
                     ulib::sys_debug_log(id as u64, 0xBEEF_2005);
                     let mut rep = [0u8; 8];
                     rep[4..8].copy_from_slice(&NET_ERR_REFUSED.to_le_bytes());
-                    sys_try_channel_send(rp, &rep);
-                    sys_channel_close(rp);
+                    sys_try_channel_send(rp as u64, &rep);
+                    sys_channel_close(rp as u64);
                     sockets.remove(handle);
                     *slot = None;
                 }
@@ -366,8 +375,8 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                     sockets.get_mut::<tcp::Socket>(handle).abort();
                     let mut rep = [0u8; 8];
                     rep[4..8].copy_from_slice(&NET_ERR_TIMEOUT.to_le_bytes());
-                    sys_try_channel_send(rp, &rep);
-                    sys_channel_close(rp);
+                    sys_try_channel_send(rp as u64, &rep);
+                    sys_channel_close(rp as u64);
                     sockets.remove(handle);
                     *slot = None;
                 }
@@ -377,13 +386,13 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
 
         // ── 3. TCP RX push ────────────────────────────────────────────────────
         for slot in tcp_table.iter_mut() {
-            let (handle, notify_ep) = match slot {
+            let (handle, notify_fd) = match slot {
                 None => continue,
-                Some(e) if e.reply_ep.is_some() => continue, // not yet connected
-                Some(e) => (e.handle, e.notify_ep),
+                Some(e) if e.reply_fd.is_some() => continue, // not yet connected
+                Some(e) => (e.handle, e.notify_fd),
             };
 
-            let Some(nep) = notify_ep else { continue };
+            let Some(nep) = notify_fd else { continue };
 
             let sock = sockets.get_mut::<tcp::Socket>(handle);
             let mut buf = [0u8; 4096];
@@ -391,16 +400,16 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                 match sock.recv_slice(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let ret = sys_try_channel_send(nep, &buf[..n]);
+                        let ret = sys_try_channel_send(nep as u64, &buf[..n]);
                         if ret == IPC_ERR_PEER_CLOSED {
-                            slot.as_mut().unwrap().notify_ep = None;
+                            slot.as_mut().unwrap().notify_fd = None;
                             break;
                         }
                     }
                     Err(_) => {
                         // EOF — zero-length push signals connection closed
-                        sys_try_channel_send(nep, &[]);
-                        slot.as_mut().unwrap().notify_ep = None;
+                        sys_try_channel_send(nep as u64, &[]);
+                        slot.as_mut().unwrap().notify_fd = None;
                         break;
                     }
                 }
@@ -441,14 +450,10 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
 
         // ── 5. Drain client IPC requests ──────────────────────────────────────
         loop {
-            let (ret, n) = sys_try_channel_recv(net_recv_ep, &mut req_buf);
-            if ret != IPC_OK {
-                break;
-            }
-            let n = n as usize;
-            if n == 0 {
-                continue;
-            }
+            let n = match ulib::handle::try_read(net_recv_fd, &mut req_buf) {
+                Some(n) if n > 0 => n,
+                _ => break,
+            };
 
             match req_buf[0] {
                 // MSG_CONNECT: [1][reply_ep:u64][ip:4][port:u16]
@@ -484,8 +489,8 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                             let handle = sockets.add(socket);
                             tcp_table[id] = Some(TcpEntry {
                                 handle,
-                                reply_ep: Some(reply_ep),
-                                notify_ep: None,
+                                reply_fd: Some(reply_ep as u32),
+                                notify_fd: None,
                                 _local_port: local_port,
                                 created_at_ms: now().total_millis(),
                             });
@@ -519,7 +524,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                     let notify_ep =
                         u64::from_le_bytes(req_buf[5..13].try_into().unwrap());
                     if let Some(entry) = tcp_table.get_mut(sock_id).and_then(|s| s.as_mut()) {
-                        entry.notify_ep = Some(notify_ep);
+                        entry.notify_fd = Some(notify_ep as u32);
                     }
                 }
 
@@ -530,11 +535,11 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                     if let Some(entry) = tcp_table.get_mut(sock_id).and_then(|s| s.take()) {
                         sockets.get_mut::<tcp::Socket>(entry.handle).close();
                         sockets.remove(entry.handle);
-                        if let Some(ep) = entry.reply_ep {
-                            sys_channel_close(ep);
+                        if let Some(fd) = entry.reply_fd {
+                            sys_channel_close(fd as u64);
                         }
-                        if let Some(ep) = entry.notify_ep {
-                            sys_channel_close(ep);
+                        if let Some(fd) = entry.notify_fd {
+                            sys_channel_close(fd as u64);
                         }
                     }
                 }
@@ -592,7 +597,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
             Some(d) => d.total_millis().clamp(1, 100),
             None    => 100,
         };
-        sys_wait_for_event(&[rx_notify_recv_ep, net_recv_ep], 0, timeout_ms);
+        ulib::handle::wait(&[rx_notify_recv_fd, net_recv_fd], 0, timeout_ms as u64);
     }
 }
 

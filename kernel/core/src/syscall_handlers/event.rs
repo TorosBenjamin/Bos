@@ -96,6 +96,41 @@ pub fn check_timeout_waiters() {
 ///   timeout_ms     – 0 = infinite; non-zero = wake after this many ms
 ///
 /// Returns: 0 = event available, 1 = timed out, 2 = invalid args
+pub fn sys_wait_for_event(
+    channels_ptr: u64,
+    channel_count: u64,
+    flags: u64,
+    timeout_ms: u64,
+    _: u64,
+    _: u64,
+) -> u64 {
+    const MAX_CHANNELS: usize = 64;
+    const RESULT_INVALID: u64 = 2;
+
+    let count = channel_count.min(MAX_CHANNELS as u64) as usize;
+
+    // Validate and copy channel IDs from userspace.
+    let mut ep_ids = [0u64; MAX_CHANNELS];
+    if count > 0 {
+        let _guard = match validate_user_ptr(channels_ptr, (count as u64) * 8) {
+            Some(g) => g,
+            None => return RESULT_INVALID,
+        };
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                channels_ptr as *const u64,
+                ep_ids.as_mut_ptr(),
+                count,
+            );
+        }
+    }
+
+    wait_for_event_inner(&ep_ids[..count], flags, timeout_ms)
+}
+
+/// Core wait logic shared by `sys_wait_for_event` and `sys_handle_wait`.
+///
+/// Takes a kernel-side slice of recv endpoint IDs (already validated/resolved).
 ///
 /// ## Wakeup protocol
 ///
@@ -117,37 +152,11 @@ pub fn check_timeout_waiters() {
 /// it. The remaining window — between step 3 and step 4 — is a handful of
 /// instructions: if an event arrives there, the task sleeps until the next LAPIC
 /// timer tick (~1 ms), wakes, loops back to step 1, and finds the buffered data.
-pub fn sys_wait_for_event(
-    channels_ptr: u64,
-    channel_count: u64,
-    flags: u64,
-    timeout_ms: u64,
-    _: u64,
-    _: u64,
-) -> u64 {
-    const MAX_CHANNELS: usize = 64;
+pub fn wait_for_event_inner(ep_ids: &[u64], flags: u64, timeout_ms: u64) -> u64 {
     const RESULT_EVENT:   u64 = 0;
     const RESULT_TIMEOUT: u64 = 1;
-    const RESULT_INVALID: u64 = 2;
 
-    let count = channel_count.min(MAX_CHANNELS as u64) as usize;
-
-    // Validate and copy channel IDs from userspace.
-    let mut ep_ids = [0u64; MAX_CHANNELS];
-    if count > 0 {
-        let _guard = match validate_user_ptr(channels_ptr, (count as u64) * 8) {
-            Some(g) => g,
-            None => return RESULT_INVALID,
-        };
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                channels_ptr as *const u64,
-                ep_ids.as_mut_ptr(),
-                count,
-            );
-        }
-        // _guard dropped here; kernel uses the copied ep_ids from now on.
-    }
+    let count = ep_ids.len();
 
     let wait_keyboard = flags & kernel_api_types::WAIT_KEYBOARD as u64 != 0;
     let wait_mouse    = flags & kernel_api_types::WAIT_MOUSE    as u64 != 0;

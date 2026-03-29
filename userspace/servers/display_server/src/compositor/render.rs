@@ -1,7 +1,7 @@
 use super::{Compositor, MAX_WINDOWS};
 use crate::cursor::{CURSOR_H, CURSOR_IMAGE, CURSOR_MASK, CURSOR_W};
 use kernel_api_types::window::{DirtyRect, WindowEventType};
-use kernel_api_types::IPC_ERR_PEER_CLOSED;
+use kernel_api_types::HANDLE_ERR_BROKEN_PIPE;
 
 impl Compositor {
     /// Fill a rectangle in the back buffer, clipped to `clip` (or unconstrained if None).
@@ -373,11 +373,11 @@ impl Compositor {
             let mut n_crashed = 0usize;
             for w in self.windows.iter().flatten() {
                 if w.closing { continue; }
-                let result = ulib::sys_try_channel_send(
-                    w.event_send_ep,
+                let result = ulib::handle::try_write_raw(
+                    w.event_send_fd,
                     &[WindowEventType::FramePresented as u8],
                 );
-                if result == IPC_ERR_PEER_CLOSED {
+                if result == HANDLE_ERR_BROKEN_PIPE {
                     crashed[n_crashed] = w.id;
                     n_crashed += 1;
                 }
@@ -434,11 +434,11 @@ impl Compositor {
         for (i, opt_dr) in dirty_rects.iter().enumerate() {
             if opt_dr.is_some() && let Some(w) = &self.windows[i] {
                 if w.closing { continue; }
-                let result = ulib::sys_try_channel_send(
-                    w.event_send_ep,
+                let result = ulib::handle::try_write_raw(
+                    w.event_send_fd,
                     &[WindowEventType::FramePresented as u8],
                 );
-                if result == IPC_ERR_PEER_CLOSED {
+                if result == HANDLE_ERR_BROKEN_PIPE {
                     crashed[n_crashed] = w.id;
                     n_crashed += 1;
                 }

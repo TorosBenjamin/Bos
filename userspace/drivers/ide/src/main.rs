@@ -4,10 +4,8 @@
 mod driver;
 
 use driver::IdeDriver;
-use ulib::{sys_channel_create, sys_register_service, sys_channel_recv, sys_channel_send,
-           sys_channel_close, sys_create_shared_buf, sys_map_shared_buf, sys_destroy_shared_buf,
+use ulib::{sys_create_shared_buf, sys_map_shared_buf, sys_destroy_shared_buf,
            sys_debug_log};
-use kernel_api_types::IPC_OK;
 
 // IPC message types
 const MSG_READ: u8 = 1;
@@ -30,17 +28,17 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
 
     sys_debug_log(driver.sector_count, 0x1DE_0000); // "ide: sectors"
 
-    let (send_ep, recv_ep) = sys_channel_create(16);
-    sys_register_service(b"ide", send_ep);
+    let (send_fd, recv_fd) = ulib::handle::channel(16).unwrap();
+    ulib::handle::register_service(b"ide", send_fd);
 
     let mut msg_buf = [0u8; MAX_MSG];
 
     loop {
-        let (result, n) = sys_channel_recv(recv_ep, &mut msg_buf);
-        if result != IPC_OK || n == 0 {
-            continue;
-        }
-        let n = n as usize;
+        let bytes_read = match ulib::handle::read(recv_fd, &mut msg_buf) {
+            Some(n) if n > 0 => n,
+            _ => continue,
+        };
+        let n = bytes_read;
 
         match msg_buf[0] {
             MSG_READ  if n >= 21 => handle_read(&driver, &msg_buf[..n]),
@@ -70,8 +68,8 @@ fn handle_read(driver: &IdeDriver, msg: &[u8]) {
         } else {
             resp[1] = 1; // error
         }
-        let _ = sys_channel_send(reply_ep, &resp);
-        sys_channel_close(reply_ep);
+        ulib::sys_channel_send(reply_ep, &resp);
+        ulib::sys_channel_close(reply_ep);
     } else {
         // Multi-sector: shared buffer response
         let byte_count = count as u64 * 512;
@@ -94,15 +92,15 @@ fn handle_read(driver: &IdeDriver, msg: &[u8]) {
         resp[1] = 0; // success
         resp[2..10].copy_from_slice(&buf_id.to_le_bytes());
         resp[10..14].copy_from_slice(&(byte_count as u32).to_le_bytes());
-        let _ = sys_channel_send(reply_ep, &resp);
-        sys_channel_close(reply_ep);
+        ulib::sys_channel_send(reply_ep, &resp);
+        ulib::sys_channel_close(reply_ep);
     }
 }
 
 fn send_read_error(reply_ep: u64) {
     let resp = [MSG_READ_RESP, 1]; // error
-    let _ = sys_channel_send(reply_ep, &resp);
-    sys_channel_close(reply_ep);
+    ulib::sys_channel_send(reply_ep, &resp);
+    ulib::sys_channel_close(reply_ep);
 }
 
 /// Write request: [1:type][8:lba LE][4:count LE][8:shared_buf_id LE][8:reply_ep LE] = 29 bytes
@@ -135,8 +133,8 @@ fn handle_write(driver: &IdeDriver, msg: &[u8]) {
 
 fn send_write_resp(reply_ep: u64, result: u8) {
     let resp = [MSG_WRITE_RESP, result];
-    let _ = sys_channel_send(reply_ep, &resp);
-    sys_channel_close(reply_ep);
+    ulib::sys_channel_send(reply_ep, &resp);
+    ulib::sys_channel_close(reply_ep);
 }
 
 #[panic_handler]

@@ -7,8 +7,7 @@ mod regs;
 
 use driver::{E1000, MAX_FRAME};
 use regs::{MSG_SUBSCRIBE, MSG_TX_PACKET, MSG_GET_MAC};
-use ulib::{sys_channel_create, sys_register_service, sys_try_channel_recv, sys_try_channel_send, sys_yield};
-use kernel_api_types::{IPC_OK, IPC_ERR_PEER_CLOSED};
+use ulib::sys_yield;
 
 /// Maximum number of tasks that can subscribe to receive packets.
 const MAX_SUBSCRIBERS: usize = 4;
@@ -33,11 +32,11 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
     );
 
     // Create the service channel and register it.
-    let (send_ep, recv_ep) = sys_channel_create(32);
-    sys_register_service(b"e1000", send_ep);
+    let (send_fd, recv_fd) = ulib::handle::channel(32).unwrap();
+    ulib::handle::register_service(b"e1000", send_fd);
 
-    // Subscriber list: send endpoints to forward received packets to.
-    let mut subscribers = [0u64; MAX_SUBSCRIBERS];
+    // Subscriber list: handle fds to forward received packets to.
+    let mut subscribers = [0u32; MAX_SUBSCRIBERS];
 
     // Reusable buffers.
     let mut msg_buf = [0u8; MSG_BUF_SIZE];
@@ -59,23 +58,22 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                 if *slot == 0 {
                     continue;
                 }
-                let ret = sys_try_channel_send(*slot, &notif[..notif_len]);
-                if ret == IPC_ERR_PEER_CLOSED {
-                    *slot = 0; // subscriber disconnected, clear the slot
+                if ulib::handle::try_write(*slot, &notif[..notif_len]).is_none() {
+                    // Peer closed or error — clear the slot.
+                    ulib::handle::close(*slot);
+                    *slot = 0;
                 }
-                // IPC_ERR_CHANNEL_FULL → drop for this subscriber (best-effort)
+                // Would-block (returns Some(0)) → drop for this subscriber (best-effort)
             }
         }
 
         // ── 2. Drain incoming requests (TX packets / subscriptions) ──────────
         loop {
-            let (ret, n) = sys_try_channel_recv(recv_ep, &mut msg_buf);
-            if ret != IPC_OK {
-                break;
-            }
-            if n == 0 {
-                continue;
-            }
+            let n = match ulib::handle::try_read(recv_fd, &mut msg_buf) {
+                Some(n) if n > 0 => n,
+                Some(_) => continue,
+                None => break,
+            };
 
             match msg_buf[0] {
                 MSG_TX_PACKET if n >= 3 => {
@@ -89,17 +87,21 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                         msg_buf[1], msg_buf[2], msg_buf[3], msg_buf[4],
                         msg_buf[5], msg_buf[6], msg_buf[7], msg_buf[8],
                     ]);
-                    // Find a free slot.
-                    let mut added = false;
-                    for slot in &mut subscribers {
-                        if *slot == 0 {
-                            *slot = ep;
-                            added = true;
-                            break;
+                    // Wrap the endpoint as a send handle.
+                    if let Some(fd) = ulib::handle::handle_from_channel(ep, 1) {
+                        // Find a free slot.
+                        let mut added = false;
+                        for slot in &mut subscribers {
+                            if *slot == 0 {
+                                *slot = fd;
+                                added = true;
+                                break;
+                            }
                         }
-                    }
-                    if !added {
-                        ulib::sys_debug_log(ep, 0xE1_0001);
+                        if !added {
+                            ulib::handle::close(fd);
+                            ulib::sys_debug_log(ep, 0xE1_0001);
+                        }
                     }
                 }
                 MSG_GET_MAC if n >= 9 => {
@@ -107,7 +109,10 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                         msg_buf[1], msg_buf[2], msg_buf[3], msg_buf[4],
                         msg_buf[5], msg_buf[6], msg_buf[7], msg_buf[8],
                     ]);
-                    sys_try_channel_send(reply_ep, &driver.mac);
+                    if let Some(fd) = ulib::handle::handle_from_channel(reply_ep, 1) {
+                        ulib::handle::write(fd, &driver.mac);
+                        ulib::handle::close(fd);
+                    }
                 }
                 _ => {} // unknown or malformed message — ignore
             }

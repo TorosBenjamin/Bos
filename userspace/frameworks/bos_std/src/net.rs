@@ -56,24 +56,23 @@ mod imp {
 
 #[cfg(not(target_os = "linux"))]
 mod imp {
-    use kernel_api_types::IPC_OK;
     use ulib::net;
 
-    /// Lazily-initialized net_server endpoint.
-    static mut NET_EP: u64 = 0;
+    /// Lazily-initialized net_server handle fd.
+    static mut NET_FD: u32 = 0;
 
-    fn net_ep() -> u64 {
+    fn net_fd() -> u32 {
         unsafe {
-            if NET_EP == 0 {
-                NET_EP = net::net_lookup();
+            if NET_FD == 0 {
+                NET_FD = net::net_lookup();
             }
-            NET_EP
+            NET_FD
         }
     }
 
     pub struct TcpStream {
         sock_id: u32,
-        rx_ep: u64,
+        rx_fd: u32,
         /// Internal read buffer holding the last IPC message.
         rxbuf: [u8; 4096],
         /// Start offset of unconsumed data in `rxbuf`.
@@ -85,12 +84,12 @@ mod imp {
 
     impl TcpStream {
         pub fn connect(ip: [u8; 4], port: u16) -> Option<Self> {
-            let ep = net_ep();
-            let sock_id = net::net_connect(ep, ip, port)?;
-            let rx_ep = net::net_recv_subscribe(ep, sock_id);
+            let fd = net_fd();
+            let sock_id = net::net_connect(fd, ip, port)?;
+            let rx_fd = net::net_recv_subscribe(fd, sock_id);
             Some(Self {
                 sock_id,
-                rx_ep,
+                rx_fd,
                 rxbuf: [0u8; 4096],
                 rx_pos: 0,
                 rx_len: 0,
@@ -101,9 +100,9 @@ mod imp {
 
     impl Drop for TcpStream {
         fn drop(&mut self) {
-            let ep = net_ep();
-            ulib::sys_channel_close(self.rx_ep);
-            net::net_close(ep, self.sock_id);
+            let fd = net_fd();
+            ulib::handle::close(self.rx_fd);
+            net::net_close(fd, self.sock_id);
         }
     }
 
@@ -126,27 +125,28 @@ mod imp {
                 return Ok(0);
             }
 
-            // Buffer empty — receive a new IPC message into our internal buffer.
-            let (ret, n) = ulib::sys_channel_recv(self.rx_ep, &mut self.rxbuf);
-            let n = n as usize;
-            if ret != IPC_OK || n == 0 {
-                self.eof = true;
-                return Ok(0);
+            // Buffer empty — blocking read from the rx handle.
+            match ulib::handle::read(self.rx_fd, &mut self.rxbuf) {
+                Some(0) | None => {
+                    self.eof = true;
+                    Ok(0)
+                }
+                Some(n) => {
+                    // Copy as much as the caller wants.
+                    let copy = n.min(buf.len());
+                    buf[..copy].copy_from_slice(&self.rxbuf[..copy]);
+                    // Buffer the rest for next read.
+                    self.rx_pos = copy;
+                    self.rx_len = n;
+                    Ok(copy)
+                }
             }
-
-            // Copy as much as the caller wants.
-            let copy = n.min(buf.len());
-            buf[..copy].copy_from_slice(&self.rxbuf[..copy]);
-            // Buffer the rest for next read.
-            self.rx_pos = copy;
-            self.rx_len = n;
-            Ok(copy)
         }
     }
 
     impl embedded_io::Write for TcpStream {
         fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-            net::net_send(net_ep(), self.sock_id, buf);
+            net::net_send(net_fd(), self.sock_id, buf);
             Ok(buf.len())
         }
 
@@ -159,7 +159,7 @@ mod imp {
     ///
     /// Returns `Some([a, b, c, d])` on success, `None` on timeout or error.
     pub fn resolve(hostname: &[u8]) -> Option<[u8; 4]> {
-        net::net_resolve(net_ep(), hostname)
+        net::net_resolve(net_fd(), hostname)
     }
 }
 

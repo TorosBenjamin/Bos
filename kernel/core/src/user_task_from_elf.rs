@@ -550,6 +550,9 @@ pub(crate) struct ElfLoaderArgs {
     pub name_len: u8,
     pub priority: u8,
     pub parent_id: TaskId,
+    /// Handles to install in the child's handle table after ELF loading succeeds.
+    /// Each entry is (child_fd, Handle). Empty for regular sys_spawn.
+    pub inherited_handles: Vec<(u32, crate::handle::Handle)>,
 }
 
 /// Read bytes from the parent's address space via HHDM page-table walk.

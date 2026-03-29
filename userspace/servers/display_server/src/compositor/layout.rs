@@ -230,7 +230,7 @@ impl Compositor {
         );
 
         // Apply reconfigure and collect pending configure events
-        let mut pending: [(u64, ConfigureEvent); MAX_WINDOWS] = [(0, ConfigureEvent {
+        let mut pending: [(u32, ConfigureEvent); MAX_WINDOWS] = [(0, ConfigureEvent {
             event_type: WindowEventType::Configure as u8,
             _pad: [0; 3],
             width: 0,
@@ -249,7 +249,7 @@ impl Compositor {
                 let reconfigured = window.reconfigure(new_x, new_y, new_w, new_h);
                 if reconfigured && n_pending < MAX_WINDOWS {
                     pending[n_pending] = (
-                        window.event_send_ep,
+                        window.event_send_fd,
                         ConfigureEvent {
                             event_type: WindowEventType::Configure as u8,
                             _pad: [0; 3],

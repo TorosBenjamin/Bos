@@ -112,14 +112,14 @@ unsafe extern "sysv64" fn entry_point() -> ! {
         ulib::sys_munmap(utest_buf, utest_size);
     } else {
         // Normal mode: load apps from FAT32 filesystem
-        let fs_ep = ulib::fs::fs_lookup();
+        let fs_fd = ulib::fs::fs_lookup();
 
         // Normal mode: spawn launcher first (hidden, toggled by Super+Space), then regular apps.
         for (path, name) in [
             ("LAUNCH.ELF", b"launcher" as &[u8]),
             ("BOSER.ELF",  b"boser"),
         ] {
-            if let Some((buf_id, size)) = ulib::fs::fs_map_file(fs_ep, path) {
+            if let Some((buf_id, size)) = ulib::fs::fs_map_file(fs_fd, path) {
                 let ptr = ulib::sys_map_shared_buf(buf_id);
                 if !ptr.is_null() {
                     let elf = unsafe { core::slice::from_raw_parts(ptr as *const u8, size as usize) };

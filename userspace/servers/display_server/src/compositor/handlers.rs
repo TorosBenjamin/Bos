@@ -1,7 +1,7 @@
 use super::{Compositor, MAX_WINDOWS, CLOSE_MAX_ATTEMPTS};
 use crate::window::Window;
 use kernel_api_types::window::*;
-use kernel_api_types::IPC_ERR_PEER_CLOSED;
+use kernel_api_types::HANDLE_ERR_BROKEN_PIPE;
 
 fn read_unaligned_at<T: Copy>(msg: &[u8], offset: usize) -> T {
     unsafe { core::ptr::read_unaligned(msg.as_ptr().add(offset) as *const T) }
@@ -224,7 +224,7 @@ impl Compositor {
         let (buf, buf_size, shared_buf_id, event_ep, pending_ids, n_pending) = match slot {
             Some(s @ &mut Some(_)) => {
                 let w = s.as_mut().unwrap();
-                let t = (w.buffer as *mut u8, w.buf_size, w.shared_buf_id, w.event_send_ep, w.pending_old_buf_ids, w.n_pending_old);
+                let t = (w.buffer as *mut u8, w.buf_size, w.shared_buf_id, w.event_send_fd, w.pending_old_buf_ids, w.n_pending_old);
                 *s = None;
                 t
             }
@@ -237,7 +237,7 @@ impl Compositor {
         }
         ulib::sys_destroy_shared_buf(shared_buf_id);
         if event_ep != 0 {
-            ulib::sys_channel_close(event_ep);
+            ulib::handle::close(event_ep);
         }
         self.z_remove(id);
 
@@ -259,15 +259,15 @@ impl Compositor {
             .filter_map(|w| w.as_ref())
             .find(|w| w.id == id)
         {
-            Some(w) => (w.event_send_ep, w.closing),
+            Some(w) => (w.event_send_fd, w.closing),
             None    => return,
         };
         if already_closing {
             return;
         }
 
-        let result = ulib::sys_try_channel_send(ep, &[WindowEventType::Close as u8]);
-        if result == IPC_ERR_PEER_CLOSED {
+        let result = ulib::handle::try_write_raw(ep, &[WindowEventType::Close as u8]);
+        if result == HANDLE_ERR_BROKEN_PIPE {
             self.complete_cleanup(id);
         } else {
             // Mark closing; remove from compositing immediately.
@@ -294,8 +294,8 @@ impl Compositor {
         for slot in &self.windows {
             if let Some(w) = slot.as_ref() {
                 if !w.closing { continue; }
-                let result = ulib::sys_try_channel_send(w.event_send_ep, &[0xFF]);
-                if result == IPC_ERR_PEER_CLOSED || w.close_attempts >= CLOSE_MAX_ATTEMPTS {
+                let result = ulib::handle::try_write_raw(w.event_send_fd, &[0xFF]);
+                if result == HANDLE_ERR_BROKEN_PIPE || w.close_attempts >= CLOSE_MAX_ATTEMPTS {
                     to_cleanup[n_cleanup] = w.id;
                     n_cleanup += 1;
                 } else {

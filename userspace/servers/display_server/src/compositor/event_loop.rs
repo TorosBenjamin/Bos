@@ -1,5 +1,5 @@
 use kernel_api_types::window::*;
-use kernel_api_types::{IPC_OK, MMAP_WRITE, MOUSE_LEFT, MOUSE_RIGHT, MOUSE_MIDDLE, KEY_MOD_SUPER};
+use kernel_api_types::{MMAP_WRITE, MOUSE_LEFT, MOUSE_RIGHT, MOUSE_MIDDLE, KEY_MOD_SUPER};
 use super::{Compositor, DragKind, MAX_MSG_SIZE, send_event};
 
 impl Compositor {
@@ -30,11 +30,11 @@ impl Compositor {
             // Capped at 64 per frame so a spamming client can't starve the compositor.
             for _ in 0..64 {
                 let msg_slice = unsafe { core::slice::from_raw_parts_mut(msg_buf, MAX_MSG_SIZE) };
-                let (result, bytes_read) = ulib::sys_try_channel_recv(self.recv_endpoint, msg_slice);
-                if result != IPC_OK || bytes_read == 0 {
-                    break;
-                }
-                let msg = unsafe { core::slice::from_raw_parts(msg_buf, bytes_read as usize) };
+                let bytes_read = match ulib::handle::try_read(self.recv_fd, msg_slice) {
+                    Some(n) if n > 0 => n,
+                    _ => break,
+                };
+                let msg = unsafe { core::slice::from_raw_parts(msg_buf, bytes_read) };
                 self.process_message(msg);
             }
 
@@ -82,7 +82,7 @@ impl Compositor {
                 let info = self.windows.iter()
                     .filter_map(|w| w.as_ref())
                     .find(|w| w.id == fw_id)
-                    .map(|w| (w.x, w.y, w.event_send_ep));
+                    .map(|w| (w.x, w.y, w.event_send_fd));
                 if let Some((wx, wy, ep)) = info && ep != 0 {
                     send_event(ep, &MouseMoveEvent {
                         event_type: WindowEventType::MouseMove as u8,
@@ -191,14 +191,14 @@ impl Compositor {
 
             // Sleep for whatever budget remains in this 16.67ms frame window.
             // This caps the compositor at ~60 fps while remaining event-driven:
-            // sys_wait_for_event returns early as soon as mouse/keyboard/IPC arrives.
+            // handle::wait returns early as soon as mouse/keyboard/IPC arrives.
             let elapsed_ns = ulib::sys_get_time_ns().saturating_sub(frame_start_ns);
             let remaining_ns = FRAME_BUDGET_NS.saturating_sub(elapsed_ns);
             // Convert to ms (ceiling so a sub-ms remainder doesn't collapse to 0 = infinite).
             let timeout_ms = (remaining_ns / 1_000_000).max(remaining_ns.min(1));
             if timeout_ms > 0 {
-                ulib::sys_wait_for_event(
-                    &[self.recv_endpoint],
+                ulib::handle::wait(
+                    &[self.recv_fd],
                     ulib::WAIT_MOUSE | ulib::WAIT_KEYBOARD,
                     timeout_ms,
                 );

@@ -146,14 +146,14 @@ impl Compositor {
         if let Some(old_id) = old_id {
             let ep = self.window_event_ep(old_id);
             if ep != 0 {
-                ulib::sys_try_channel_send(ep, &[WindowEventType::FocusLost as u8]);
+                ulib::handle::try_write(ep, &[WindowEventType::FocusLost as u8]);
             }
         }
 
         if let Some(new_id) = new_id {
             let ep = self.window_event_ep(new_id);
             if ep != 0 {
-                ulib::sys_try_channel_send(ep, &[WindowEventType::FocusGained as u8]);
+                ulib::handle::try_write(ep, &[WindowEventType::FocusGained as u8]);
             }
         }
 
@@ -161,11 +161,11 @@ impl Compositor {
         self.mark_full_redraw();
     }
 
-    pub(super) fn window_event_ep(&self, id: WindowId) -> u64 {
+    pub(super) fn window_event_ep(&self, id: WindowId) -> u32 {
         self.windows.iter()
             .filter_map(|w| w.as_ref())
             .find(|w| w.id == id)
-            .map(|w| w.event_send_ep)
+            .map(|w| w.event_send_fd)
             .unwrap_or(0)
     }
 

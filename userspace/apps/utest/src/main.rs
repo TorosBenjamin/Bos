@@ -1,13 +1,14 @@
 #![no_std]
 #![no_main]
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use kernel_api_types::{
-    IPC_ERR_CHANNEL_FULL, IPC_ERR_INVALID_ENDPOINT, IPC_ERR_PEER_CLOSED,
-    IPC_OK, MMAP_WRITE, SVC_ERR_NOT_FOUND, SVC_OK,
+    IPC_ERR_CHANNEL_FULL, IPC_ERR_INVALID_ENDPOINT, IPC_ERR_PEER_CLOSED, IPC_OK, MMAP_WRITE,
+    SVC_ERR_NOT_FOUND, SVC_OK,
 };
 use ulib::fs;
+use ulib::handle;
 use ulib::test_framework::TestRunner;
 
 #[panic_handler]
@@ -160,18 +161,12 @@ fn service_lookup_missing() -> bool {
 // Filesystem server tests
 // ---------------------------------------------------------------------------
 
-static FS_ENDPOINT: AtomicU64 = AtomicU64::new(0);
+static FS_FD: AtomicU32 = AtomicU32::new(0);
 
-/// Poll the service registry until the "fatfs" service appears, then cache it.
+/// Poll the service registry until the "fatfs" service appears, wrap as handle, and cache.
 fn wait_for_fs_service() {
-    loop {
-        let ep = ulib::sys_lookup_service(b"fatfs");
-        if ep != SVC_ERR_NOT_FOUND {
-            FS_ENDPOINT.store(ep, Ordering::Relaxed);
-            return;
-        }
-        ulib::sys_yield();
-    }
+    let fd = ulib::fs::fs_lookup();
+    FS_FD.store(fd, Ordering::Relaxed);
 }
 
 fn fs_service_registered() -> bool {
@@ -179,7 +174,7 @@ fn fs_service_registered() -> bool {
 }
 
 fn fs_readdir_root() -> bool {
-    let ep = FS_ENDPOINT.load(Ordering::Relaxed);
+    let ep = FS_FD.load(Ordering::Relaxed);
     match fs::fs_readdir(ep, "/") {
         Some(resp) => resp.count > 0,
         None => false,
@@ -187,7 +182,7 @@ fn fs_readdir_root() -> bool {
 }
 
 fn fs_stat_existing_file() -> bool {
-    let ep = FS_ENDPOINT.load(Ordering::Relaxed);
+    let ep = FS_FD.load(Ordering::Relaxed);
     match fs::fs_stat(ep, "CUBE1.ELF") {
         Some(resp) => resp.is_dir == 0 && resp.size > 0,
         None => false,
@@ -195,7 +190,7 @@ fn fs_stat_existing_file() -> bool {
 }
 
 fn fs_map_file_elf_magic() -> bool {
-    let ep = FS_ENDPOINT.load(Ordering::Relaxed);
+    let ep = FS_FD.load(Ordering::Relaxed);
     let (buf_id, file_size) = match fs::fs_map_file(ep, "CUBE1.ELF") {
         Some(v) => v,
         None => return false,
@@ -220,12 +215,12 @@ fn fs_map_file_elf_magic() -> bool {
 }
 
 fn fs_map_missing_returns_none() -> bool {
-    let ep = FS_ENDPOINT.load(Ordering::Relaxed);
+    let ep = FS_FD.load(Ordering::Relaxed);
     fs::fs_map_file(ep, "NOSUCHFILE.BIN").is_none()
 }
 
 fn fs_write_read_roundtrip() -> bool {
-    let ep = FS_ENDPOINT.load(Ordering::Relaxed);
+    let ep = FS_FD.load(Ordering::Relaxed);
 
     // Create a shared buffer and fill it with known data
     let content = b"utest_write_roundtrip";
@@ -270,14 +265,16 @@ fn fs_write_read_roundtrip() -> bool {
 // Display server tests
 // ---------------------------------------------------------------------------
 
-static DS_ENDPOINT: AtomicU64 = AtomicU64::new(0);
+static DS_FD: AtomicU32 = AtomicU32::new(0);
 
-/// Poll the service registry until the "display" service appears, then cache its endpoint.
+/// Poll the service registry until the "display" service appears, wrap as handle, and cache.
 fn wait_for_display_service() {
     loop {
         let ep = ulib::sys_lookup_service(b"display");
         if ep != SVC_ERR_NOT_FOUND {
-            DS_ENDPOINT.store(ep, Ordering::Relaxed);
+            let fd = ulib::handle::handle_from_channel(ep, 1)
+                .expect("wait_for_display_service: handle_from_channel failed");
+            DS_FD.store(fd, Ordering::Relaxed);
             return;
         }
         ulib::sys_yield();
@@ -294,8 +291,8 @@ fn display_registered() -> bool {
 }
 
 fn create_window_ok() -> bool {
-    let ds_ep = DS_ENDPOINT.load(Ordering::Relaxed);
-    ulib::window::Window::new(ds_ep, "utest").is_some()
+    let ds_fd = DS_FD.load(Ordering::Relaxed);
+    ulib::window::Window::new(ds_fd, "utest").is_some()
 }
 
 fn update_window() -> bool {
@@ -307,8 +304,8 @@ fn update_window() -> bool {
         prelude::OriginDimensions,
     };
 
-    let ds_ep = DS_ENDPOINT.load(Ordering::Relaxed);
-    let mut window = match ulib::window::Window::new(ds_ep, "utest") {
+    let ds_fd = DS_FD.load(Ordering::Relaxed);
+    let mut window = match ulib::window::Window::new(ds_fd, "utest") {
         Some(w) => w,
         None => return false,
     };

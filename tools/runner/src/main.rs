@@ -62,6 +62,31 @@ fn find_ovmf() -> (String, String) {
     );
 }
 
+/// Strip ANSI/VT100 escape sequences from a string.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Consume CSI sequence: ESC [ ... final_byte
+            if let Some(next) = chars.next() {
+                if next == '[' {
+                    // Skip until we hit a letter (0x40-0x7E)
+                    for c2 in chars.by_ref() {
+                        if c2.is_ascii_alphabetic() || c2 == '~' {
+                            break;
+                        }
+                    }
+                }
+                // else: ESC + something else, just skip both
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn main() {
     spawn_stub_http_server();
     let (ovmf_code, ovmf_vars_readonly) = (
@@ -115,6 +140,27 @@ fn main() {
     qemu.arg("-device").arg("e1000,netdev=net0");
     qemu.arg("-netdev").arg("user,id=net0");
 
-    let exit_status = qemu.status().expect("Failed to run QEMU");
+    // Filter QEMU serial output: strip ANSI escape sequences and blank lines
+    // produced by the OVMF UEFI firmware before the kernel starts.
+    qemu.stdout(process::Stdio::piped());
+    let mut child = qemu.spawn().expect("Failed to run QEMU");
+    let stdout = child.stdout.take().unwrap();
+
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(stdout);
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            // Strip ANSI escape sequences.
+            let cleaned: String = strip_ansi(&line);
+            // Skip blank lines (OVMF screen clears / cursor moves).
+            if cleaned.trim().is_empty() {
+                continue;
+            }
+            println!("{cleaned}");
+        }
+    });
+
+    let exit_status = child.wait().expect("Failed to wait for QEMU");
     process::exit(exit_status.code().unwrap_or(1));
 }

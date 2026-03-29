@@ -39,6 +39,7 @@
 #![no_std]
 
 pub mod bench_harness;
+pub mod handle;
 pub mod display;
 pub mod fs;
 pub mod net;

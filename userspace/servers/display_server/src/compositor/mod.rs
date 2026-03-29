@@ -52,7 +52,9 @@ pub struct Compositor {
     display_info: kernel_api_types::graphics::DisplayInfo,
     windows: [Option<Window>; MAX_WINDOWS],
     next_window_id: WindowId,
-    recv_endpoint: u64,
+    recv_fd: u32,
+    /// Keyboard handle fd (opened once at init).
+    kb_fd: u32,
     /// z_order[0] = bottom-most, z_order[n_windows-1] = top-most
     z_order: [WindowId; MAX_WINDOWS],
     n_windows: usize,
@@ -109,7 +111,7 @@ pub struct Compositor {
 }
 
 impl Compositor {
-    pub fn new(recv_endpoint: u64, config: DisplayConfig) -> Self {
+    pub fn new(recv_fd: u32, config: DisplayConfig) -> Self {
         let display = ulib::display::Display::new();
         let display_info = ulib::sys_get_display_info();
 
@@ -149,12 +151,15 @@ impl Compositor {
         let window_rules   = config.window_rules;
         let n_window_rules = config.n_window_rules;
 
+        let kb_fd = ulib::handle::open_keyboard().unwrap_or(u32::MAX);
+
         Compositor {
             display,
             display_info,
             windows: [NONE_WINDOW; MAX_WINDOWS],
             next_window_id: 1,
-            recv_endpoint,
+            recv_fd,
+            kb_fd,
             z_order: [0; MAX_WINDOWS],
             n_windows: 0,
             background_buf,
@@ -283,15 +288,15 @@ impl Compositor {
     }
 }
 
-/// Send an event struct to a persistent event channel (does NOT close the endpoint).
+/// Send an event struct to a persistent event channel handle (does NOT close the handle).
 /// Non-blocking: if the channel is full, the event is dropped rather than blocking
 /// the compositor. This prevents any blocking calls in the DS hot path.
-fn send_event<T>(ep: u64, event: &T) {
+fn send_event<T>(fd: u32, event: &T) {
     let bytes = unsafe {
         core::slice::from_raw_parts(
             event as *const T as *const u8,
             core::mem::size_of::<T>(),
         )
     };
-    ulib::sys_try_channel_send(ep, bytes);
+    ulib::handle::try_write(fd, bytes);
 }

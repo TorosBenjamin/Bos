@@ -93,6 +93,30 @@ startup ordering — clients retry until the service appears.
 keyboard has data (or a timeout expires). This avoids busy-polling while still
 allowing multi-source wakeup.
 
+### Handles & Pipes
+
+Per-task handle tables provide a unified I/O interface (like Unix file descriptors).
+`sys_pipe` creates a byte-stream pipe; `sys_read`/`sys_write` dispatch by handle
+type (pipe, IPC channel, keyboard, null). Handles 0/1/2 are stdin/stdout/stderr
+by convention.
+
+Syscalls: `Pipe(48)`, `HandleRead(49)`, `HandleWrite(50)`, `HandleClose(51)`,
+`HandleDup(52)`, `HandleDup2(53)`, `SpawnWithHandles(54)`,
+`HandleFromChannel(55)`, `HandleOpenKeyboard(56)`.
+
+Handle types:
+- **Pipe** — unidirectional byte stream with 4 KB ring buffer and blocking I/O.
+- **IpcChannel** — wraps an existing IPC endpoint ID. Created via `HandleFromChannel`
+  (direction 0 = recv/readable, 1 = send/writable). Reads block until a message arrives.
+- **Keyboard** — raw keyboard input. Created via `HandleOpenKeyboard`. Reads block
+  and return `KeyEvent` structs as raw bytes (4 bytes each).
+- **Null** — reads return 0 (EOF), writes discard silently.
+
+Handle inheritance: `SpawnWithHandles` accepts a `SpawnHandlesDesc` pointer
+with an array of `HandleMapping` entries. Each maps a parent fd to a child fd.
+The kernel clones the parent's handles and installs them in the child's table
+before activation.
+
 ### Scheduling Policies
 
 The scheduler is policy-pluggable. Three policies are implemented:

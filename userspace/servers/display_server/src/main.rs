@@ -19,11 +19,11 @@ use kernel_api_types::SVC_ERR_NOT_FOUND;
 
 #[unsafe(no_mangle)]
 unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
-    let (send_ep, recv_ep) = ulib::sys_channel_create(16);
-    ulib::sys_register_service(b"display", send_ep);
+    let (send_fd, recv_fd) = ulib::handle::channel(16).unwrap();
+    ulib::handle::register_service(b"display", send_fd);
 
     let config = load_config();
-    let mut compositor = Compositor::new(recv_ep, config);
+    let mut compositor = Compositor::new(recv_fd, config);
     compositor.run()
 }
 
@@ -31,7 +31,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
 /// Polls for up to ~200 ms (200 yields), then falls back to defaults on any failure.
 fn load_config() -> DisplayConfig {
     // Wait up to 200 yields for the fatfs service to come up.
-    let fs_ep = {
+    let fs_fd = {
         let mut ep = SVC_ERR_NOT_FOUND;
         for _ in 0..200u32 {
             ep = ulib::sys_lookup_service(b"fatfs");
@@ -40,17 +40,24 @@ fn load_config() -> DisplayConfig {
             }
             ulib::sys_yield();
         }
-        ep
+        if ep == SVC_ERR_NOT_FOUND {
+            return DisplayConfig::default();
+        }
+        match ulib::handle::handle_from_channel(ep, 1) {
+            Some(fd) => fd,
+            None => return DisplayConfig::default(),
+        }
     };
 
-    if fs_ep == SVC_ERR_NOT_FOUND {
-        return DisplayConfig::default();
-    }
-
-    let (buf_id, file_size) = match ulib::fs::fs_map_file(fs_ep, "/bos_ds.conf") {
+    let (buf_id, file_size) = match ulib::fs::fs_map_file(fs_fd, "/bos_ds.conf") {
         Some(v) => v,
-        None => return DisplayConfig::default(),
+        None => {
+            ulib::handle::close(fs_fd);
+            return DisplayConfig::default();
+        }
     };
+
+    ulib::handle::close(fs_fd);
 
     let ptr = ulib::sys_map_shared_buf(buf_id);
     if ptr.is_null() {

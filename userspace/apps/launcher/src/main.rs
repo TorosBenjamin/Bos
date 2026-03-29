@@ -55,7 +55,7 @@ struct Launcher {
     filtered:        [usize; MAX_APPS],
     nfilt:           usize,
     sel:             usize,
-    fs_ep:           u64,
+    fs_fd:           u32,
     /// Pre-loaded ELF shared buffers: (shared_buf_id, file_size) per config app slot.
     /// Only populated for apps with `preload = true`; never destroyed so subsequent
     /// launches only need map → spawn → unmap without disk I/O.
@@ -68,7 +68,7 @@ struct Launcher {
 }
 
 impl Launcher {
-    fn new(config: LauncherConfig, fs_ep: u64) -> Self {
+    fn new(config: LauncherConfig, fs_fd: u32) -> Self {
         // Pre-load apps marked with `preload = true` in the config while the window
         // is still hidden. Shared buffers are never destroyed so future launches only
         // need sys_map_shared_buf + sys_spawn_named + sys_munmap (no disk I/O).
@@ -79,7 +79,7 @@ impl Launcher {
             if !entry.preload { continue; }
             let path_len = entry.path_len as usize;
             if let Ok(path) = core::str::from_utf8(&entry.path[..path_len]) {
-                preloaded[i] = ulib::fs::fs_map_file(fs_ep, path);
+                preloaded[i] = ulib::fs::fs_map_file(fs_fd, path);
             }
         }
 
@@ -89,7 +89,7 @@ impl Launcher {
             filtered: [0usize; MAX_APPS],
             nfilt: 0,
             sel: 0,
-            fs_ep,
+            fs_fd,
             preloaded,
             dirty: true,
             frame_presented: true,
@@ -172,7 +172,7 @@ impl Launcher {
             let path_len = entry.path_len as usize;
             #[allow(clippy::collapsible_if)]
             if let Ok(path) = core::str::from_utf8(&entry.path[..path_len]) {
-                if let Some((buf_id, size)) = ulib::fs::fs_map_file(self.fs_ep, path) {
+                if let Some((buf_id, size)) = ulib::fs::fs_map_file(self.fs_fd, path) {
                     let ptr = ulib::sys_map_shared_buf(buf_id);
                     if !ptr.is_null() {
                         let elf = unsafe { core::slice::from_raw_parts(ptr as *const u8, size as usize) };
@@ -598,8 +598,8 @@ fn wait_for_service(name: &[u8]) -> u64 {
     }
 }
 
-fn load_config(fs_ep: u64) -> LauncherConfig {
-    if let Some((buf_id, size)) = ulib::fs::fs_map_file(fs_ep, "LAUNCH.CFG") {
+fn load_config(fs_fd: u32) -> LauncherConfig {
+    if let Some((buf_id, size)) = ulib::fs::fs_map_file(fs_fd, "LAUNCH.CFG") {
         let ptr = ulib::sys_map_shared_buf(buf_id);
         if !ptr.is_null() {
             let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, size as usize) };
@@ -621,19 +621,21 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
     unsafe { ALLOCATOR.lock().init(heap_ptr, heap_size) }
 
     let ds_ep = wait_for_service(b"display");
+    let ds_fd = ulib::handle::handle_from_channel(ds_ep, 1)
+        .expect("failed to wrap display endpoint as handle");
 
     // Create window hidden at startup
     let mut window = loop {
         // Height: 12 margin + 32 search + 6 gap + 12 sep + (9 items × 30) + 12 margin = 344
-        match Window::new_floating(ds_ep, "launcher", 0, 400, 344, WINDOW_FLAG_HIDDEN) {
+        match Window::new_floating(ds_fd, "launcher", 0, 400, 344, WINDOW_FLAG_HIDDEN) {
             Some(w) => break w,
             None    => ulib::sys_yield(),
         }
     };
 
-    let fs_ep = wait_for_service(b"fatfs");
-    let config = load_config(fs_ep);
-    let mut state = Launcher::new(config, fs_ep);
+    let fs_fd = ulib::fs::fs_lookup();
+    let config = load_config(fs_fd);
+    let mut state = Launcher::new(config, fs_fd);
 
     loop {
         while let Some(ev) = window.poll_event() {
@@ -694,6 +696,6 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
             }
         }
 
-        ulib::sys_wait_for_event(&[window.event_recv_ep()], 0, 100);
+        ulib::handle::wait(&[window.event_recv_fd()], 0, 100);
     }
 }

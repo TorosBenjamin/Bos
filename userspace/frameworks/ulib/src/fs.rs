@@ -3,20 +3,24 @@
 //! The filesystem server registers itself as the `"fatfs"` service.
 //! All operations create a one-shot reply channel, send a request, and block
 //! until the response arrives — the same pattern as `ulib::window`.
+//!
+//! All functions accept a `fs_fd: u32` handle (wrapping the send endpoint
+//! returned by `sys_lookup_service`). Use [`fs_lookup`] to obtain one.
 
 use core::mem;
 use kernel_api_types::fs::*;
-use kernel_api_types::{IPC_OK, SVC_ERR_NOT_FOUND};
+use kernel_api_types::SVC_ERR_NOT_FOUND;
 
 // ─── Service lookup ────────────────────────────────────────────────────────────
 
 /// Spin-yield until the `"fatfs"` service is registered.
-/// Returns the send endpoint.
-pub fn fs_lookup() -> u64 {
+/// Returns a handle fd wrapping the send endpoint.
+pub fn fs_lookup() -> u32 {
     loop {
         let ep = crate::sys_lookup_service(b"fatfs");
         if ep != SVC_ERR_NOT_FOUND {
-            return ep;
+            return crate::handle::handle_from_channel(ep, 1)
+                .expect("fs_lookup: handle_from_channel failed");
         }
         crate::sys_sleep_ms(1);
     }
@@ -30,12 +34,24 @@ const RESP_BUF_SIZE: usize = 4096;
 /// Build and send a request, then await the response into `resp_buf`.
 /// Returns the number of bytes received, or 0 on failure.
 fn send_request_raw<Req: Sized>(
-    fs_ep: u64,
+    fs_fd: u32,
     msg_type: FsMessageType,
     req: &Req,
     resp_buf: &mut [u8; RESP_BUF_SIZE],
 ) -> usize {
     let (our_send, our_recv) = crate::sys_channel_create(1);
+
+    // Wrap our_recv as a handle for reading the reply (clones the endpoint).
+    let recv_fd = match crate::handle::handle_from_channel(our_recv, 0) {
+        Some(fd) => fd,
+        None => {
+            crate::sys_channel_close(our_send);
+            crate::sys_channel_close(our_recv);
+            return 0;
+        }
+    };
+    // Close original raw recv — the handle owns its clone.
+    crate::sys_channel_close(our_recv);
 
     // Serialise: [type: u8][req bytes][reply_ep: u64 le]
     const MAX_MSG: usize = 1 + 512 + 8; // path requests are at most ~270 bytes
@@ -44,7 +60,7 @@ fn send_request_raw<Req: Sized>(
 
     if msg_size > MAX_MSG {
         crate::sys_channel_close(our_send);
-        crate::sys_channel_close(our_recv);
+        crate::handle::close(recv_fd);
         return 0;
     }
 
@@ -57,38 +73,45 @@ fn send_request_raw<Req: Sized>(
             req_size,
         );
     }
+    // Embed raw endpoint ID so the server can send the reply through it
     msg[1 + req_size..1 + req_size + 8].copy_from_slice(&our_send.to_le_bytes());
 
-    if crate::sys_channel_send(fs_ep, &msg[..msg_size]) != IPC_OK {
+    if crate::handle::write(fs_fd, &msg[..msg_size]).is_none() {
         crate::sys_channel_close(our_send);
-        crate::sys_channel_close(our_recv);
+        crate::handle::close(recv_fd);
         return 0;
     }
+    // Message sent — server now owns our_send and will close it after replying.
 
     // Wait (with yield) for the response
     loop {
-        let (res, len) = crate::sys_channel_recv(our_recv, resp_buf);
-        if res == IPC_OK && len > 0 {
-            crate::sys_channel_close(our_recv);
-            return len as usize;
+        match crate::handle::read(recv_fd, resp_buf) {
+            Some(len) if len > 0 => {
+                crate::handle::close(recv_fd);
+                return len;
+            }
+            Some(0) => {
+                // EOF — peer closed
+                crate::handle::close(recv_fd);
+                return 0;
+            }
+            _ => {
+                // No data yet — yield and retry
+                crate::sys_sleep_ms(1);
+            }
         }
-        if res == kernel_api_types::IPC_ERR_PEER_CLOSED {
-            crate::sys_channel_close(our_recv);
-            return 0;
-        }
-        crate::sys_sleep_ms(1);
     }
 }
 
 /// Type-safe wrapper: sends request and reads response struct from the raw buffer.
 fn send_request_and_recv<Req: Sized, Resp: Sized>(
-    fs_ep: u64,
+    fs_fd: u32,
     msg_type: FsMessageType,
     req: &Req,
     resp: &mut Resp,
 ) -> bool {
     let mut buf = [0u8; RESP_BUF_SIZE];
-    let len = send_request_raw(fs_ep, msg_type, req, &mut buf);
+    let len = send_request_raw(fs_fd, msg_type, req, &mut buf);
     if len < mem::size_of::<Resp>() {
         return false;
     }
@@ -114,12 +137,12 @@ fn build_path_req(path: &str) -> ([u8; 256], u16) {
 ///   1. `ulib::sys_map_shared_buf(id)` to get a pointer to the data.
 ///   2. Use the data.
 ///   3. `ulib::sys_destroy_shared_buf(id)` when done.
-pub fn fs_map_file(fs_ep: u64, path: &str) -> Option<(u64, u64)> {
+pub fn fs_map_file(fs_fd: u32, path: &str) -> Option<(u64, u64)> {
     let (path_buf, path_len) = build_path_req(path);
     let req = MapFileRequest { path: path_buf, path_len };
     let mut resp = MapFileResponse { result: FsResult::IoError as u64, shared_buf_id: u64::MAX, file_size: 0 };
 
-    if !send_request_and_recv(fs_ep, FsMessageType::MapFile, &req, &mut resp) {
+    if !send_request_and_recv(fs_fd, FsMessageType::MapFile, &req, &mut resp) {
         return None;
     }
     if FsResult::from_u64(resp.result) != FsResult::Ok {
@@ -129,12 +152,12 @@ pub fn fs_map_file(fs_ep: u64, path: &str) -> Option<(u64, u64)> {
 }
 
 /// Retrieve metadata for a file or directory.
-pub fn fs_stat(fs_ep: u64, path: &str) -> Option<StatFileResponse> {
+pub fn fs_stat(fs_fd: u32, path: &str) -> Option<StatFileResponse> {
     let (path_buf, path_len) = build_path_req(path);
     let req = StatFileRequest { path: path_buf, path_len };
     let mut resp = StatFileResponse { result: FsResult::IoError as u64, size: 0, is_dir: 0, _pad: [0; 7] };
 
-    if !send_request_and_recv(fs_ep, FsMessageType::StatFile, &req, &mut resp) {
+    if !send_request_and_recv(fs_fd, FsMessageType::StatFile, &req, &mut resp) {
         return None;
     }
     if FsResult::from_u64(resp.result) != FsResult::Ok {
@@ -144,7 +167,7 @@ pub fn fs_stat(fs_ep: u64, path: &str) -> Option<StatFileResponse> {
 }
 
 /// List directory contents (up to 48 entries).
-pub fn fs_readdir(fs_ep: u64, path: &str) -> Option<ReadDirResponse> {
+pub fn fs_readdir(fs_fd: u32, path: &str) -> Option<ReadDirResponse> {
     let (path_buf, path_len) = build_path_req(path);
     let req = ReadDirRequest { path: path_buf, path_len };
     let blank = kernel_api_types::fs::DirEntry { name: [0; 64], name_len: 0, is_dir: 0, _pad: [0; 2], size: 0 };
@@ -152,7 +175,7 @@ pub fn fs_readdir(fs_ep: u64, path: &str) -> Option<ReadDirResponse> {
         result: FsResult::IoError as u64, count: 0, _pad: 0, entries: [blank; 48],
     };
 
-    if !send_request_and_recv(fs_ep, FsMessageType::ReadDir, &req, &mut resp) {
+    if !send_request_and_recv(fs_fd, FsMessageType::ReadDir, &req, &mut resp) {
         return None;
     }
     if FsResult::from_u64(resp.result) != FsResult::Ok {
@@ -165,7 +188,7 @@ pub fn fs_readdir(fs_ep: u64, path: &str) -> Option<ReadDirResponse> {
 ///
 /// The caller must create the shared buffer with `ulib::sys_create_shared_buf`,
 /// fill it with data, then call this function.
-pub fn fs_write_file(fs_ep: u64, path: &str, shared_buf_id: u64, size: u64) -> FsResult {
+pub fn fs_write_file(fs_fd: u32, path: &str, shared_buf_id: u64, size: u64) -> FsResult {
     let (path_buf, path_len) = build_path_req(path);
     let req = WriteFileRequest {
         path: path_buf,
@@ -176,7 +199,7 @@ pub fn fs_write_file(fs_ep: u64, path: &str, shared_buf_id: u64, size: u64) -> F
     };
     let mut resp = WriteFileResponse { result: FsResult::IoError as u64 };
 
-    if !send_request_and_recv(fs_ep, FsMessageType::WriteFile, &req, &mut resp) {
+    if !send_request_and_recv(fs_fd, FsMessageType::WriteFile, &req, &mut resp) {
         return FsResult::IoError;
     }
     FsResult::from_u64(resp.result)
