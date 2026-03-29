@@ -28,6 +28,7 @@ const FAT32_BINARIES: &[(&str, &str, &str)] = &[
     ("files",      "files",           "FILES.ELF"),
     ("launcher",   "launcher",        "LAUNCH.ELF"),
     ("boser",      "boser",           "BOSER.ELF"),
+    ("shell",      "shell",           "SHELL.ELF"),
 ];
 
 /// Kernel test feature flags → test suite name passed on the kernel cmdline.

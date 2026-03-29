@@ -220,6 +220,19 @@ impl Compositor {
                             }
                         }
                     }
+                    crate::compositor_config::ShortcutAction::FocusTerminal => {
+                        if let Some(wid) = self.find_by_app_id(b"shell") {
+                            let is_hidden = self.windows.iter()
+                                .filter_map(|w| w.as_ref())
+                                .find(|w| w.id == wid)
+                                .map(|w| w.hidden)
+                                .unwrap_or(false);
+                            if is_hidden {
+                                self.show_window(wid);
+                            }
+                            self.set_focus(Some(wid));
+                        }
+                    }
                 }
                 return true;
             }

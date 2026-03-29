@@ -3492,6 +3492,7 @@ dependencies = [
  "kernel",
  "launcher",
  "net_server",
+ "shell",
  "tests",
  "user_land",
  "utest",
@@ -3677,6 +3678,15 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
+]
+
+[[package]]
+name = "shell"
+version = "0.1.0"
+dependencies = [
+ "bos_egui",
+ "kernel_api_types",
+ "ulib",
 ]
 
 [[package]]

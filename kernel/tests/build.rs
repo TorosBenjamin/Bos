@@ -10,5 +10,7 @@ fn main() {
     let linker_file = kernel_core_dir.join(format!("linker-{}.ld", arch));
 
     println!("cargo:rustc-link-arg=-T{}", linker_file.display());
+    // Override the global -eentry_point from .cargo/config.toml with the kernel entry.
+    println!("cargo:rustc-link-arg=-ekernel_main");
     println!("cargo:rerun-if-changed={}", linker_file.display());
 }

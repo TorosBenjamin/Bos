@@ -118,6 +118,7 @@ unsafe extern "sysv64" fn entry_point() -> ! {
         for (path, name) in [
             ("LAUNCH.ELF", b"launcher" as &[u8]),
             ("BOSER.ELF",  b"boser"),
+            ("SHELL.ELF",  b"shell"),
         ] {
             if let Some((buf_id, size)) = ulib::fs::fs_map_file(fs_fd, path) {
                 let ptr = ulib::sys_map_shared_buf(buf_id);

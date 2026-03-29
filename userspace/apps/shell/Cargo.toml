@@ -1,0 +1,16 @@
+[package]
+name = "shell"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+bos_egui         = { path = "../../frameworks/bos_egui" }
+ulib             = { path = "../../frameworks/ulib" }
+kernel_api_types = { path = "../../../../kernel-api" }
+
+[[bin]]
+name = "shell"
+path = "src/main.rs"
+test = false
+bench = false

@@ -29,7 +29,7 @@
 /// focus_down    = super+down
 /// ```
 /// Unknown keys/sections are silently ignored.
-use kernel_api_types::{KeyEventType, KEY_MOD_SHIFT, KEY_MOD_ALT, KEY_MOD_SUPER};
+use kernel_api_types::{KeyEventType, KEY_MOD_SHIFT, KEY_MOD_CTRL, KEY_MOD_ALT, KEY_MOD_SUPER};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum WindowMode { Tiled, Floating }
@@ -52,6 +52,7 @@ pub enum ShortcutAction {
     FocusUp     = 5,   // focus window above        (default: Super+Up)
     FocusDown   = 6,   // focus window below        (default: Super+Down)
     ToggleLauncher = 7, // toggle the launcher window (default: Super+Space)
+    FocusTerminal  = 8, // focus/show the terminal window (default: Ctrl+T)
 }
 
 /// A single key binding: modifier bitmask + key type + optional character.
@@ -106,6 +107,10 @@ impl Default for DisplayConfig {
         shortcuts[n] = Some(ShortcutBinding { action: ShortcutAction::FocusUp,     modifiers: KEY_MOD_SUPER,                key_type: KeyEventType::ArrowUp,    character: 0   }); n += 1;
         shortcuts[n] = Some(ShortcutBinding { action: ShortcutAction::FocusDown,       modifiers: KEY_MOD_SUPER,                key_type: KeyEventType::ArrowDown,  character: 0   }); n += 1;
         shortcuts[n] = Some(ShortcutBinding { action: ShortcutAction::ToggleLauncher,  modifiers: KEY_MOD_SUPER,                key_type: KeyEventType::Char,        character: b' ' }); n += 1;
+        // Ctrl-based fallbacks for QEMU (host WM intercepts Super, host IM intercepts Ctrl+Space)
+        shortcuts[n] = Some(ShortcutBinding { action: ShortcutAction::ToggleLauncher, modifiers: 0,                              key_type: KeyEventType::F12,         character: 0    }); n += 1;
+        shortcuts[n] = Some(ShortcutBinding { action: ShortcutAction::CloseWindow,    modifiers: KEY_MOD_CTRL | KEY_MOD_SHIFT,  key_type: KeyEventType::Char,        character: b'q' }); n += 1;
+        shortcuts[n] = Some(ShortcutBinding { action: ShortcutAction::FocusTerminal,  modifiers: KEY_MOD_CTRL,                  key_type: KeyEventType::Char,        character: b't' }); n += 1;
 
         Self {
             outer_gap:        8,
