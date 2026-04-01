@@ -1157,6 +1157,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "doom"
+version = "0.1.0"
+dependencies = [
+ "bos_egui",
+ "cc",
+ "kernel_api_types",
+ "ulib",
+]
+
+[[package]]
 name = "downcast-rs"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3482,6 +3492,7 @@ version = "0.1.0"
 dependencies = [
  "boser",
  "display_server",
+ "doom",
  "e1000",
  "fatfs",
  "files",

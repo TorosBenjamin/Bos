@@ -327,7 +327,7 @@ pub fn create_user_task_from_elf(priority: Priority, parent_id: Option<TaskId>) 
     // for the stack top, then subtract one page so RSP starts within mapped pages.
     let rsp = (LOWER_HALF_END + 1) - 0x1000;
     {
-        let stack_size: u64 = 256 * 0x400;
+        let stack_size: u64 = 8 * 1024 * 1024; // 8 MiB — demand-paged, only touched pages cost memory
         let pages_len = stack_size.div_ceil(page_size);
         let stack_start_vaddr = rsp - pages_len * page_size;
         let stack_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE
@@ -508,7 +508,7 @@ pub fn create_user_task_from_elf_bytes(elf_bytes: &[u8], child_arg: u64, name: &
     // Register a lazy (demand-filled) user stack at the top of the canonical lower half
     let rsp = (LOWER_HALF_END + 1) - 0x1000;
     {
-        let stack_size: u64 = 256 * 0x400;
+        let stack_size: u64 = 8 * 1024 * 1024; // 8 MiB — demand-paged, only touched pages cost memory
         let pages_len = stack_size.div_ceil(page_size);
         let stack_start_vaddr = rsp - pages_len * page_size;
         let stack_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE
@@ -816,7 +816,7 @@ pub(crate) fn fill_loading_task(
     // Register user stack VMA
     let rsp = (crate::consts::LOWER_HALF_END + 1) - 0x1000;
     {
-        let stack_size: u64 = 256 * 0x400;
+        let stack_size: u64 = 8 * 1024 * 1024; // 8 MiB — demand-paged, only touched pages cost memory
         let pages_len = stack_size.div_ceil(page_size);
         let stack_start_vaddr = rsp - pages_len * page_size;
         let stack_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE

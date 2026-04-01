@@ -1,3 +1,4 @@
+extern crate alloc;
 use linked_list_allocator::LockedHeap;
 use kernel_api_types::{MMAP_WRITE, SVC_ERR_NOT_FOUND};
 use ulib::window::{Window, WindowEvent, KeyEvent};
@@ -45,11 +46,20 @@ fn oom(_: core::alloc::Layout) -> ! {
     loop { core::hint::spin_loop(); }
 }
 
-pub fn run<A: App>(name: &str, mut app: A) -> ! {
-    // Heap: 8 MB is plenty for the stub (no font atlas, no tessellation)
-    let heap_size: usize = 8 * 1024 * 1024;
+pub fn run<A: App>(name: &str, app: A) -> ! {
+    run_with_heap(name, app, 8 * 1024 * 1024)
+}
+
+pub fn run_with_heap<A: App>(name: &str, mut app: A, heap_size: usize) -> ! {
+    let rsp0: u64;
+    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp0); }
+    ulib::sys_debug_log(heap_size as u64, 0xE001); // E001 = run_with_heap entry, also RSP next
+    ulib::sys_debug_log(rsp0, 0xE00A);             // E00A = RSP at entry
+
     let heap_ptr = ulib::sys_mmap(heap_size as u64, MMAP_WRITE);
+    ulib::sys_debug_log(heap_ptr as u64, 0xE002); // E002 = heap_ptr from sys_mmap
     unsafe { ALLOCATOR.lock().init(heap_ptr, heap_size) }
+    ulib::sys_debug_log(0, 0xE003); // E003 = allocator initialized
 
     // Wait for display service
     let display_ep = loop {
@@ -57,18 +67,27 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
         if ep != SVC_ERR_NOT_FOUND { break ep; }
         ulib::sys_yield();
     };
+    ulib::sys_debug_log(display_ep, 0xE004); // E004 = display_ep found
 
     // Wrap the raw endpoint as a handle fd for the new handle-based IPC API.
     let display_fd = ulib::handle::handle_from_channel(display_ep, 1)
         .expect("failed to wrap display endpoint as handle");
+    let rsp5: u64;
+    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp5); }
+    ulib::sys_debug_log(display_fd as u64, 0xE005); // E005 = display_fd
+    ulib::sys_debug_log(rsp5, 0xE00B);              // E00B = RSP before Window::new loop
 
     // Create toplevel window
     let mut window = loop {
+        let rsp_w: u64;
+        unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp_w); }
+        ulib::sys_debug_log(rsp_w, 0xE00C); // E00C = RSP at each Window::new attempt
         match Window::new(display_fd, name) {
             Some(w) => break w,
             None => ulib::sys_yield(),
         }
     };
+    ulib::sys_debug_log(0, 0xE006); // E006 = window created
     let main_id = window.window_id();
 
     // `frame_presented`: the compositor has finished presenting our last frame — safe to render.
@@ -79,7 +98,7 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
     let mut cursor_x: f32 = (window.width() / 2) as f32;
     let mut cursor_y: f32 = (window.height() / 2) as f32;
     let mut click: Option<(f32, f32)> = None;
-    let mut key: Option<KeyEvent> = None;
+    let mut keys: alloc::vec::Vec<KeyEvent> = alloc::vec::Vec::new();
 
     let mut child: Option<ChildState> = None;
 
@@ -112,7 +131,7 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
                     frame_presented = true;
                 }
                 WindowEvent::KeyPress(ev) => {
-                    key = Some(ev);
+                    keys.push(ev);
                     needs_redraw = true;
                     frame_presented = true;
                 }
@@ -141,7 +160,7 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
             let info = *window.display_info();
             let pixels = window.pixels_mut();
 
-            let ctx = stub_egui::Context::new(pixels, w, h, info, cursor_x, cursor_y, click.take(), key.take());
+            let ctx = stub_egui::Context::new(pixels, w, h, info, cursor_x, cursor_y, click.take(), core::mem::take(&mut keys), !app.skip_bg_clear());
             app.update(&ctx);
 
             window.mark_dirty_all();
@@ -214,7 +233,7 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
 
                 let child_ctx = stub_egui::Context::new(
                     pixels, cw, ch, info,
-                    cs.cursor_x, cs.cursor_y, cs.click.take(), None,
+                    cs.cursor_x, cs.cursor_y, cs.click.take(), alloc::vec::Vec::new(), true,
                 );
                 app.child_update(&child_ctx);
 
@@ -237,6 +256,11 @@ pub fn run<A: App>(name: &str, mut app: A) -> ! {
             // will handle it on the next iteration without forcing a redraw.
             if ret == 1 {
                 needs_redraw = true;
+                // If FramePresented was lost (e.g. channel overflow during a long
+                // blocking init), the loop would deadlock waiting for it forever.
+                // On timeout, assume the compositor has presented and allow the
+                // next render to proceed.
+                frame_presented = true;
             }
         } else {
             ulib::sys_yield();

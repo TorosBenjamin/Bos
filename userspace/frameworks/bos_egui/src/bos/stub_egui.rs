@@ -54,8 +54,8 @@ struct Inner {
     cursor_y: f32,
     /// Mouse click coordinates this frame (window-relative), if any.
     click: Option<(f32, f32)>,
-    /// Key event this frame, if any.
-    key: Option<KeyEvent>,
+    /// Key events this frame (all accumulated since last render).
+    keys: alloc::vec::Vec<KeyEvent>,
     /// Current vertical drawing position for the layout pass.
     draw_y: i32,
     /// Left margin.
@@ -82,11 +82,13 @@ impl Context {
         cursor_x: f32,
         cursor_y: f32,
         click: Option<(f32, f32)>,
-        key: Option<KeyEvent>,
+        keys: alloc::vec::Vec<KeyEvent>,
+        clear: bool,
     ) -> Self {
-        // Clear to background
-        let bg = info.build_pixel(BG.r(), BG.g(), BG.b());
-        pixels.iter_mut().for_each(|p| *p = bg);
+        if clear {
+            let bg = info.build_pixel(BG.r(), BG.g(), BG.b());
+            pixels.iter_mut().for_each(|p| *p = bg);
+        }
 
         Context {
             inner: RefCell::new(Inner {
@@ -97,7 +99,7 @@ impl Context {
                 cursor_x,
                 cursor_y,
                 click,
-                key,
+                keys,
                 draw_y: 0,
                 margin: 12,
                 draw_x: 0,
@@ -109,13 +111,18 @@ impl Context {
 
     /// Returns `true` if a key of the given type was pressed this frame.
     pub fn key_pressed(&self, code: KeyEventType) -> bool {
-        self.inner.borrow().key
-            .is_some_and(|k| k.event_type == code && k.pressed)
+        self.inner.borrow().keys.iter()
+            .any(|k| k.event_type == code && k.pressed)
     }
 
-    /// Returns the key event for this frame, if any.
+    /// Returns the last key event for this frame, if any.
     pub fn key_event(&self) -> Option<KeyEvent> {
-        self.inner.borrow().key
+        self.inner.borrow().keys.last().copied()
+    }
+
+    /// Returns all key events accumulated this frame.
+    pub fn key_events(&self) -> alloc::vec::Vec<KeyEvent> {
+        self.inner.borrow().keys.clone()
     }
 
     /// Returns the window size in pixels.
@@ -541,6 +548,16 @@ impl<'a> Canvas<'a> {
             embedded_graphics::geometry::Point::new(self.origin_x + self.width, abs_y),
         )
         .into_styled(PrimitiveStyle::with_stroke(color, 1))
+        .draw(&mut self.buf);
+    }
+
+    /// Fill a rectangle at `(x, y)` relative to the canvas origin with `color`.
+    pub fn fill_rect(&mut self, x: i32, y: i32, w: i32, h: i32, color: Rgb888) {
+        let _ = Rectangle::new(
+            embedded_graphics::geometry::Point::new(self.origin_x + x, self.origin_y + y),
+            embedded_graphics::geometry::Size::new(w.max(0) as u32, h.max(0) as u32),
+        )
+        .into_styled(PrimitiveStyle::with_fill(color))
         .draw(&mut self.buf);
     }
 }

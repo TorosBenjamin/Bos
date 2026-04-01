@@ -29,6 +29,7 @@ const FAT32_BINARIES: &[(&str, &str, &str)] = &[
     ("launcher",   "launcher",        "LAUNCH.ELF"),
     ("boser",      "boser",           "BOSER.ELF"),
     ("shell",      "shell",           "SHELL.ELF"),
+    ("doom",       "doom",            "DOOM.ELF"),
 ];
 
 /// Kernel test feature flags → test suite name passed on the kernel cmdline.
@@ -188,7 +189,7 @@ fn check_command_exists(cmd: &str) {
 // ── FAT32 disk image ──────────────────────────────────────────────────────────
 
 fn create_fat32_disk_image(path: &Path, runner_dir: &Path) {
-    const DISK_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
+    const DISK_SIZE: u64 = 128 * 1024 * 1024; // 128 MB (needs room for doom1.wad ~14 MB)
 
     let mut disk: Cursor<Vec<u8>> = Cursor::new(vec![0u8; DISK_SIZE as usize]);
     fatfs::format_volume(
@@ -231,6 +232,19 @@ fn create_fat32_disk_image(path: &Path, runner_dir: &Path) {
         let net_conf = std::fs::read(runner_dir.join("net.conf")).unwrap_or_default();
         root.create_file("net.conf").expect("fatfs: create net.conf")
             .write_all(&net_conf).unwrap();
+
+        // Doom WAD file
+        let wad_path = runner_dir.join("assets/doom1.wad");
+        if wad_path.exists() {
+            let wad_data = std::fs::read(&wad_path)
+                .unwrap_or_else(|e| panic!("build.rs: cannot read doom1.wad: {e}"));
+            root.create_file("DOOM1.WAD").expect("fatfs: create DOOM1.WAD")
+                .write_all(&wad_data).unwrap();
+            println!("build.rs: wrote doom1.wad ({} MB)", wad_data.len() / 1_048_576);
+        } else {
+            println!("cargo:warning=doom1.wad not found at {}; Doom will fail to start", wad_path.display());
+        }
+        println!("cargo:rerun-if-changed={}", wad_path.display());
     }
 
     std::fs::write(path, disk.into_inner()).expect("build.rs: failed to write disk.img");

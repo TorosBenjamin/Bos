@@ -63,6 +63,10 @@ pub mod egui {
 pub trait App {
     fn update(&mut self, ctx: &egui::Context);
     fn child_update(&mut self, _ctx: &egui::Context) {}
+    /// Return true to skip clearing the pixel buffer to the background colour
+    /// before update(). Apps that overwrite every pixel (e.g. full-screen games)
+    /// should return true to avoid a compositor-visible gray flash.
+    fn skip_bg_clear(&self) -> bool { false }
 }
 
 /// Ask the run loop to render another frame even if no input event arrived.
@@ -120,6 +124,11 @@ pub fn run<A: App + 'static>(name: &str, app: A) {
 #[cfg(not(target_os = "linux"))]
 pub fn run<A: App + 'static>(name: &str, app: A) -> ! {
     bos::run(name, app)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn run_with_heap<A: App + 'static>(name: &str, app: A, heap_bytes: usize) -> ! {
+    bos::run_with_heap(name, app, heap_bytes)
 }
 
 #[cfg(not(target_os = "linux"))]

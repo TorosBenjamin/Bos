@@ -20,6 +20,10 @@ const DIR_COLOR: Rgb888 = Rgb888::new(0x8b, 0xd5, 0xca);
 const DIM_COLOR: Rgb888 = Rgb888::new(0xa5, 0xad, 0xcb);
 const CURSOR_COLOR: Rgb888 = Rgb888::new(0xca, 0xd3, 0xf5);
 
+// Editor-specific colors
+const STATUS_BG: Rgb888 = Rgb888::new(0x36, 0x3a, 0x4f);
+const DIRTY_COLOR: Rgb888 = Rgb888::new(0xed, 0x87, 0x96);
+
 // ── Panic / entry ────────────────────────────────────────────────────────────
 
 #[panic_handler]
@@ -32,11 +36,26 @@ unsafe extern "sysv64" fn entry_point() -> ! {
     bos_egui::run("shell", ShellApp::new())
 }
 
+// ── Editor state ─────────────────────────────────────────────────────────────
+
+struct EditorMode {
+    path: String,
+    lines: Vec<String>,      // file content; always at least one entry
+    cursor_row: usize,
+    cursor_col: usize,
+    view_top: usize,         // first visible line index
+    dirty: bool,
+    quit_requested: bool,    // first Esc/^Q when dirty; second confirms quit
+    status_msg: String,      // transient status message
+    status_tick: u64,        // tick when status_msg was set (show for ~2s)
+}
+
 // ── Shell state ──────────────────────────────────────────────────────────────
 
 struct ShellApp {
     lines: Vec<Line>,
     scroll_offset: usize,
+    auto_scroll: bool,
     input: String,
     cursor_pos: usize,
     history: Vec<String>,
@@ -47,6 +66,7 @@ struct ShellApp {
     cursor_visible: bool,
     last_blink_tick: u64,
     cwd: String,
+    editor: Option<EditorMode>,
 }
 
 #[derive(Clone)]
@@ -65,6 +85,7 @@ impl ShellApp {
         Self {
             lines: Vec::new(),
             scroll_offset: 0,
+            auto_scroll: true,
             input: String::new(),
             cursor_pos: 0,
             history: Vec::new(),
@@ -74,11 +95,15 @@ impl ShellApp {
             initialized: false,
             cursor_visible: true,
             last_blink_tick: 0,
-            cwd: String::new(), // set to "/" in initialized block (allocator not yet ready here)
+            cwd: String::new(), // set to "/" in initialized block (allocator not ready here)
+            editor: None,
         }
     }
 
-    /// Resolve `input` against the current working directory.
+    fn prompt_str(&self) -> String {
+        format!("bos:{}$ ", self.cwd)
+    }
+
     fn resolve_path(&self, input: &str) -> String {
         if input.starts_with('/') {
             return String::from(input);
@@ -106,7 +131,11 @@ impl ShellApp {
         if self.lines.len() > MAX_SCROLLBACK {
             let excess = self.lines.len() - MAX_SCROLLBACK;
             self.lines.drain(0..excess);
-            self.scroll_offset = self.scroll_offset.saturating_sub(excess);
+            if self.scroll_offset > excess {
+                self.scroll_offset -= excess;
+            } else {
+                self.scroll_offset = 0;
+            }
         }
     }
 
@@ -125,7 +154,7 @@ impl ShellApp {
     // ── Command dispatch ─────────────────────────────────────────────────────
 
     fn execute(&mut self, cmd_line: &str) {
-        self.push_line(Line::colored(format!("bos:{}$ {}", self.cwd, cmd_line), PROMPT_COLOR));
+        self.push_line(Line::colored(format!("{}{}", self.prompt_str(), cmd_line), PROMPT_COLOR));
 
         let parts: Vec<&str> = cmd_line.split_whitespace().collect();
         if parts.is_empty() { return; }
@@ -144,6 +173,7 @@ impl ShellApp {
             "touch" => self.cmd_touch(parts.get(1).copied()),
             "rm"    => self.cmd_rm(parts.get(1).copied()),
             "mv"    => self.cmd_mv(parts.get(1).copied(), parts.get(2).copied()),
+            "edit"  => self.cmd_edit(parts.get(1).copied()),
             other   => self.push_err(format!("unknown command: {}", other)),
         }
     }
@@ -163,6 +193,7 @@ impl ShellApp {
         self.push_normal(String::from("  touch <path>      Create an empty file"));
         self.push_normal(String::from("  rm <path>         Delete a file"));
         self.push_normal(String::from("  mv <old> <new>    Rename a file or directory"));
+        self.push_normal(String::from("  edit <path>       Open text editor"));
     }
 
     fn cmd_echo(&mut self, args: &[&str]) {
@@ -177,6 +208,7 @@ impl ShellApp {
     fn cmd_clear(&mut self) {
         self.lines.clear();
         self.scroll_offset = 0;
+        self.auto_scroll = true;
     }
 
     fn cmd_time(&mut self) {
@@ -199,18 +231,11 @@ impl ShellApp {
                 for i in 0..(resp.count as usize) {
                     let entry = &resp.entries[i];
                     let name_len = (entry.name_len as usize).min(entry.name.len());
-                    let name = core::str::from_utf8(&entry.name[..name_len])
-                        .unwrap_or("???");
+                    let name = core::str::from_utf8(&entry.name[..name_len]).unwrap_or("???");
                     if entry.is_dir != 0 {
-                        self.push_line(Line::colored(
-                            format!("  <DIR>     {}", name),
-                            DIR_COLOR,
-                        ));
+                        self.push_line(Line::colored(format!("  <DIR>     {}", name), DIR_COLOR));
                     } else {
-                        self.push_line(Line::colored(
-                            format!("  {:>7}   {}", entry.size, name),
-                            DIM_COLOR,
-                        ));
+                        self.push_line(Line::colored(format!("  {:>7}   {}", entry.size, name), DIM_COLOR));
                     }
                 }
                 if resp.count == 0 {
@@ -237,17 +262,13 @@ impl ShellApp {
                 }
                 let cap = (file_size as usize).min(64 * 1024);
                 let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, cap) };
-                // Push each line
                 for line in bytes.split(|&b| b == b'\n') {
                     let s = core::str::from_utf8(line).unwrap_or("(binary data)");
-                    // Strip trailing \r
-                    let s = s.trim_end_matches('\r');
-                    self.push_normal(String::from(s));
+                    self.push_normal(String::from(s.trim_end_matches('\r')));
                 }
                 if file_size > 64 * 1024 {
                     self.push_line(Line::colored(
-                        format!("... truncated ({} bytes total)", file_size),
-                        DIM_COLOR,
+                        format!("... truncated ({} bytes total)", file_size), DIM_COLOR,
                     ));
                 }
                 ulib::sys_munmap(ptr, file_size);
@@ -288,8 +309,7 @@ impl ShellApp {
                     return;
                 }
                 let elf = unsafe { core::slice::from_raw_parts(ptr as *const u8, size as usize) };
-                let name = path.as_bytes();
-                let task_id = ulib::sys_spawn_named(elf, 0, name);
+                let task_id = ulib::sys_spawn_named(elf, 0, path.as_bytes());
                 ulib::sys_munmap(ptr, size);
                 ulib::sys_destroy_shared_buf(buf_id);
                 if task_id == 0 {
@@ -363,7 +383,6 @@ impl ShellApp {
             _ => { self.push_err(String::from("mv: usage: mv <old> <new>")); return; }
         };
         let resolved_old = self.resolve_path(old);
-        // `new` is the bare new name (same directory), not a full path.
         let fs_fd = self.ensure_fs();
         match ulib::fs::fs_rename(fs_fd, &resolved_old, new) {
             ulib::fs::FsResult::Ok => {}
@@ -372,7 +391,259 @@ impl ShellApp {
         }
     }
 
-    // ── Input handling ───────────────────────────────────────────────────────
+    fn cmd_edit(&mut self, path: Option<&str>) {
+        let path = match path {
+            Some(p) => p,
+            None => { self.push_err(String::from("edit: usage: edit <path>")); return; }
+        };
+        let path = self.resolve_path(path);
+        let fs_fd = self.ensure_fs();
+
+        let lines = match ulib::fs::fs_map_file(fs_fd, &path) {
+            Some((buf_id, size)) => {
+                let ptr = ulib::sys_map_shared_buf(buf_id);
+                if ptr.is_null() {
+                    ulib::sys_destroy_shared_buf(buf_id);
+                    self.push_err(format!("edit: failed to map '{}'", path));
+                    return;
+                }
+                let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, size as usize) };
+                let mut lines: Vec<String> = bytes
+                    .split(|&b| b == b'\n')
+                    .map(|l| String::from(core::str::from_utf8(l).unwrap_or("").trim_end_matches('\r')))
+                    .collect();
+                if lines.is_empty() { lines.push(String::new()); }
+                ulib::sys_munmap(ptr, size);
+                ulib::sys_destroy_shared_buf(buf_id);
+                lines
+            }
+            // New file — open with one empty line
+            None => { let mut v = Vec::new(); v.push(String::new()); v }
+        };
+
+        self.editor = Some(EditorMode {
+            path,
+            lines,
+            cursor_row: 0,
+            cursor_col: 0,
+            view_top: 0,
+            dirty: false,
+            quit_requested: false,
+            status_msg: String::new(),
+            status_tick: 0,
+        });
+    }
+
+    // ── Editor: save ─────────────────────────────────────────────────────────
+
+    fn editor_save(&mut self) {
+        let fs_fd = self.ensure_fs();
+        let ed = match self.editor.as_mut() { Some(e) => e, None => return };
+
+        // Calculate total byte size: all lines joined with '\n'
+        let mut total = 0usize;
+        for (i, line) in ed.lines.iter().enumerate() {
+            total += line.len();
+            if i + 1 < ed.lines.len() { total += 1; } // '\n'
+        }
+
+        let (buf_id, ptr) = ulib::sys_create_shared_buf(total.max(1) as u64);
+        if ptr.is_null() || buf_id == u64::MAX {
+            let ed = self.editor.as_mut().unwrap();
+            ed.status_msg = String::from("Error: out of memory.");
+            ed.status_tick = ulib::sys_get_ticks();
+            return;
+        }
+
+        // Serialize lines into the shared buffer
+        let mut off = 0usize;
+        for (i, line) in ed.lines.iter().enumerate() {
+            let b = line.as_bytes();
+            unsafe { core::ptr::copy_nonoverlapping(b.as_ptr(), ptr.add(off), b.len()); }
+            off += b.len();
+            if i + 1 < ed.lines.len() {
+                unsafe { *ptr.add(off) = b'\n'; }
+                off += 1;
+            }
+        }
+
+        let path = ed.path.clone();
+        let result = ulib::fs::fs_write_file(fs_fd, &path, buf_id, total as u64);
+        ulib::sys_destroy_shared_buf(buf_id);
+
+        let ed = self.editor.as_mut().unwrap();
+        ed.status_tick = ulib::sys_get_ticks();
+        if result == ulib::fs::FsResult::Ok {
+            ed.dirty = false;
+            ed.status_msg = String::from("Saved.");
+        } else {
+            ed.status_msg = String::from("Error: save failed.");
+        }
+    }
+
+    // ── Editor: key handling ──────────────────────────────────────────────────
+
+    fn handle_editor_key(&mut self, key: kernel_api_types::KeyEvent, text_rows: usize) {
+        if !key.pressed { return; }
+        let ctrl = key.modifiers & kernel_api_types::KEY_MOD_CTRL != 0;
+
+        let ed = match self.editor.as_mut() { Some(e) => e, None => return };
+
+        match key.event_type {
+            KeyEventType::Char => {
+                if ctrl {
+                    match key.character {
+                        b's' | b'S' => {
+                            let _ = ed; // release borrow so editor_save can take &mut self
+                            self.editor_save();
+                            return;
+                        }
+                        b'q' | b'Q' => {
+                            let ed = self.editor.as_mut().unwrap();
+                            if ed.dirty && !ed.quit_requested {
+                                ed.quit_requested = true;
+                                ed.status_msg = String::from("Unsaved! ^Q/Esc again to quit.");
+                                ed.status_tick = ulib::sys_get_ticks();
+                            } else {
+                                self.editor = None;
+                            }
+                            return;
+                        }
+                        b'h' | b'e' => {} // Ctrl+H = backspace handled below, ignore others
+                        _ => return,
+                    }
+                }
+                let ch = key.character;
+                if (0x20..0x7f).contains(&ch) {
+                    let ed = self.editor.as_mut().unwrap();
+                    ed.lines[ed.cursor_row].insert(ed.cursor_col, ch as char);
+                    ed.cursor_col += 1;
+                    ed.dirty = true;
+                    ed.quit_requested = false;
+                }
+            }
+            KeyEventType::Tab => {
+                ed.lines[ed.cursor_row].insert_str(ed.cursor_col, "    ");
+                ed.cursor_col += 4;
+                ed.dirty = true;
+                ed.quit_requested = false;
+            }
+            KeyEventType::Enter => {
+                let rest = String::from(&ed.lines[ed.cursor_row][ed.cursor_col..]);
+                ed.lines[ed.cursor_row].truncate(ed.cursor_col);
+                ed.cursor_row += 1;
+                ed.lines.insert(ed.cursor_row, rest);
+                ed.cursor_col = 0;
+                ed.dirty = true;
+                ed.quit_requested = false;
+            }
+            KeyEventType::Backspace => {
+                ed.quit_requested = false;
+                if ed.cursor_col > 0 {
+                    ed.cursor_col -= 1;
+                    ed.lines[ed.cursor_row].remove(ed.cursor_col);
+                    ed.dirty = true;
+                } else if ed.cursor_row > 0 {
+                    let cur_line = ed.lines.remove(ed.cursor_row);
+                    ed.cursor_row -= 1;
+                    ed.cursor_col = ed.lines[ed.cursor_row].len();
+                    ed.lines[ed.cursor_row].push_str(&cur_line);
+                    ed.dirty = true;
+                }
+            }
+            KeyEventType::Delete => {
+                ed.quit_requested = false;
+                let line_len = ed.lines[ed.cursor_row].len();
+                if ed.cursor_col < line_len {
+                    ed.lines[ed.cursor_row].remove(ed.cursor_col);
+                    ed.dirty = true;
+                } else if ed.cursor_row + 1 < ed.lines.len() {
+                    let next = ed.lines.remove(ed.cursor_row + 1);
+                    ed.lines[ed.cursor_row].push_str(&next);
+                    ed.dirty = true;
+                }
+            }
+            KeyEventType::ArrowLeft => {
+                ed.quit_requested = false;
+                if ed.cursor_col > 0 {
+                    ed.cursor_col -= 1;
+                } else if ed.cursor_row > 0 {
+                    ed.cursor_row -= 1;
+                    ed.cursor_col = ed.lines[ed.cursor_row].len();
+                }
+            }
+            KeyEventType::ArrowRight => {
+                ed.quit_requested = false;
+                let line_len = ed.lines[ed.cursor_row].len();
+                if ed.cursor_col < line_len {
+                    ed.cursor_col += 1;
+                } else if ed.cursor_row + 1 < ed.lines.len() {
+                    ed.cursor_row += 1;
+                    ed.cursor_col = 0;
+                }
+            }
+            KeyEventType::ArrowUp => {
+                ed.quit_requested = false;
+                if ed.cursor_row > 0 {
+                    ed.cursor_row -= 1;
+                    ed.cursor_col = ed.cursor_col.min(ed.lines[ed.cursor_row].len());
+                }
+            }
+            KeyEventType::ArrowDown => {
+                ed.quit_requested = false;
+                if ed.cursor_row + 1 < ed.lines.len() {
+                    ed.cursor_row += 1;
+                    ed.cursor_col = ed.cursor_col.min(ed.lines[ed.cursor_row].len());
+                }
+            }
+            KeyEventType::Home => {
+                ed.quit_requested = false;
+                ed.cursor_col = 0;
+            }
+            KeyEventType::End => {
+                ed.quit_requested = false;
+                ed.cursor_col = ed.lines[ed.cursor_row].len();
+            }
+            KeyEventType::PageUp => {
+                ed.quit_requested = false;
+                let step = text_rows.saturating_sub(1).max(1);
+                ed.view_top = ed.view_top.saturating_sub(step);
+                ed.cursor_row = ed.cursor_row.saturating_sub(step).max(ed.view_top);
+                ed.cursor_col = ed.cursor_col.min(ed.lines[ed.cursor_row].len());
+            }
+            KeyEventType::PageDown => {
+                ed.quit_requested = false;
+                let step = text_rows.saturating_sub(1).max(1);
+                let last_line = ed.lines.len().saturating_sub(1);
+                ed.view_top = (ed.view_top + step).min(last_line);
+                ed.cursor_row = (ed.cursor_row + step).min(last_line);
+                ed.cursor_col = ed.cursor_col.min(ed.lines[ed.cursor_row].len());
+            }
+            KeyEventType::Escape => {
+                if ed.dirty && !ed.quit_requested {
+                    ed.quit_requested = true;
+                    ed.status_msg = String::from("Unsaved! Esc/^Q again to quit.");
+                    ed.status_tick = ulib::sys_get_ticks();
+                } else {
+                    self.editor = None;
+                }
+                return;
+            }
+            _ => {}
+        }
+
+        // Scroll viewport to keep cursor visible
+        if let Some(ed) = self.editor.as_mut() {
+            if ed.cursor_row < ed.view_top {
+                ed.view_top = ed.cursor_row;
+            }
+            if text_rows > 0 && ed.cursor_row >= ed.view_top + text_rows {
+                ed.view_top = ed.cursor_row + 1 - text_rows;
+            }
+        }
+    }
+
+    // ── Shell: input handling ─────────────────────────────────────────────────
 
     fn handle_key(&mut self, key: kernel_api_types::KeyEvent) {
         if !key.pressed { return; }
@@ -387,6 +658,7 @@ impl ShellApp {
                             self.input.clear();
                             self.cursor_pos = 0;
                             self.history_index = None;
+                            self.scroll_to_bottom();
                             return;
                         }
                         _ => return,
@@ -396,6 +668,7 @@ impl ShellApp {
                 if (0x20..0x7f).contains(&ch) {
                     self.input.insert(self.cursor_pos, ch as char);
                     self.cursor_pos += 1;
+                    self.scroll_to_bottom();
                     self.reset_blink();
                 }
             }
@@ -404,8 +677,8 @@ impl ShellApp {
                 self.input.clear();
                 self.cursor_pos = 0;
                 self.history_index = None;
+                self.scroll_to_bottom();
                 if !cmd.is_empty() {
-                    // Don't duplicate last history entry
                     if self.history.last().map_or(true, |h| h != &cmd) {
                         self.history.push(cmd.clone());
                         if self.history.len() > MAX_HISTORY {
@@ -414,39 +687,44 @@ impl ShellApp {
                     }
                     self.execute(&cmd);
                 }
-                self.scroll_offset = 0;
             }
             KeyEventType::Backspace => {
                 if self.cursor_pos > 0 {
                     self.cursor_pos -= 1;
                     self.input.remove(self.cursor_pos);
+                    self.scroll_to_bottom();
                     self.reset_blink();
                 }
             }
             KeyEventType::Delete => {
                 if self.cursor_pos < self.input.len() {
                     self.input.remove(self.cursor_pos);
+                    self.scroll_to_bottom();
                     self.reset_blink();
                 }
             }
             KeyEventType::ArrowLeft => {
                 if self.cursor_pos > 0 {
                     self.cursor_pos -= 1;
+                    self.scroll_to_bottom();
                     self.reset_blink();
                 }
             }
             KeyEventType::ArrowRight => {
                 if self.cursor_pos < self.input.len() {
                     self.cursor_pos += 1;
+                    self.scroll_to_bottom();
                     self.reset_blink();
                 }
             }
             KeyEventType::Home => {
                 self.cursor_pos = 0;
+                self.scroll_to_bottom();
                 self.reset_blink();
             }
             KeyEventType::End => {
                 self.cursor_pos = self.input.len();
+                self.scroll_to_bottom();
                 self.reset_blink();
             }
             KeyEventType::ArrowUp => {
@@ -466,6 +744,7 @@ impl ShellApp {
                     _ => {}
                 }
                 self.cursor_pos = self.input.len();
+                self.scroll_to_bottom();
                 self.reset_blink();
             }
             KeyEventType::ArrowDown => {
@@ -480,6 +759,7 @@ impl ShellApp {
                             self.input = core::mem::take(&mut self.saved_input);
                         }
                         self.cursor_pos = self.input.len();
+                        self.scroll_to_bottom();
                         self.reset_blink();
                     }
                     None => {}
@@ -487,40 +767,41 @@ impl ShellApp {
             }
             KeyEventType::PageUp => {
                 self.scroll_offset = self.scroll_offset.saturating_add(10);
-                let max = self.lines.len();
-                if self.scroll_offset > max { self.scroll_offset = max; }
+                self.auto_scroll = false;
             }
             KeyEventType::PageDown => {
                 self.scroll_offset = self.scroll_offset.saturating_sub(10);
+                if self.scroll_offset == 0 {
+                    self.auto_scroll = true;
+                }
             }
             _ => {}
         }
+    }
+
+    fn scroll_to_bottom(&mut self) {
+        self.scroll_offset = 0;
+        self.auto_scroll = true;
     }
 
     fn reset_blink(&mut self) {
         self.cursor_visible = true;
         self.last_blink_tick = ulib::sys_get_ticks();
     }
-
 }
 
 impl App for ShellApp {
     fn update(&mut self, ctx: &egui::Context) {
         if !self.initialized {
             self.initialized = true;
-            self.cwd = String::from("/"); // first allocation — heap is ready at this point
+            self.cwd = String::from("/");
             self.push_normal(String::from("Bos Shell v0.1"));
             self.push_normal(String::from("Type 'help' for available commands."));
             self.push_normal(String::new());
             self.last_blink_tick = ulib::sys_get_ticks();
         }
 
-        // Handle key input
-        if let Some(key) = ctx.key_event() {
-            self.handle_key(key);
-        }
-
-        // Cursor blink: toggle every ~500ms
+        // Cursor blink (shared between shell and editor)
         let now = ulib::sys_get_ticks();
         if now.wrapping_sub(self.last_blink_tick) >= 500 {
             self.cursor_visible = !self.cursor_visible;
@@ -528,86 +809,175 @@ impl App for ShellApp {
         }
         bos_egui::request_timed_redraw(500);
 
-        // Render
-        CentralPanel::default().show(ctx, |ui| {
-            let mut canvas = ui.canvas();
-            let cols = (canvas.width / 8) as usize;
-            let visible_rows = (canvas.height / LINE_H) as usize;
-            if cols == 0 || visible_rows < 2 { return; }
-
-            // Reserve bottom row for prompt
-            let output_rows = visible_rows - 1;
-
-            // Flatten all lines into visual rows (wrapping long lines).
-            // O(n) but scrollback is capped at 1000 lines — fine.
-            let mut all_visual: Vec<(&str, Rgb888)> = Vec::new();
-            for line in &self.lines {
-                let color = line.color;
-                let text = &line.text;
-                if text.is_empty() {
-                    all_visual.push(("", color));
-                } else {
-                    let mut pos = 0;
-                    while pos < text.len() {
-                        let end = (pos + cols).min(text.len());
-                        all_visual.push((&text[pos..end], color));
-                        pos = end;
-                    }
+        if self.editor.is_some() {
+            // Process key events before creating canvas — same pattern as shell mode.
+            // This avoids a blank frame: handling inside the closure would require
+            // drop(canvas)+return which leaves the frame empty.
+            {
+                let (_, h) = ctx.screen_size();
+                let text_rows = ((h as i32 / LINE_H) as usize).saturating_sub(1);
+                if let Some(key) = ctx.key_event() {
+                    self.handle_editor_key(key, text_rows);
                 }
             }
 
-            let total = all_visual.len();
-            let max_scroll = total.saturating_sub(output_rows);
-            let scroll = self.scroll_offset.min(max_scroll);
+            // ── Editor mode ───────────────────────────────────────────────────
+            CentralPanel::default().show(ctx, |ui| {
+                let mut canvas = ui.canvas();
+                let cols = (canvas.width / 8) as usize;
+                let visible_rows = (canvas.height / LINE_H) as usize;
+                if cols == 0 || visible_rows == 0 { return; }
 
-            let visible_start = if total > output_rows + scroll {
-                total - output_rows - scroll
-            } else {
-                0
-            };
-            let visible_end = if total > scroll {
-                total - scroll
-            } else {
-                0
-            };
+                let text_rows = visible_rows.saturating_sub(1); // last row = status bar
+                let status_y = (visible_rows as i32 - 1) * LINE_H;
 
-            let mut y: i32 = 0;
-            for i in visible_start..visible_end {
-                let (text, color) = all_visual[i];
-                canvas.draw_text(text, 0, y, color, &FONT_8X13);
-                y += LINE_H;
-            }
+                let ed = match self.editor.as_ref() { Some(e) => e, None => return };
 
-            // Draw prompt line at the bottom
-            let prompt_y = (visible_rows as i32 - 1) * LINE_H;
-            let prompt_str = format!("bos:{}$ ", self.cwd);
-            canvas.draw_text(&prompt_str, 0, prompt_y, PROMPT_COLOR, &FONT_8X13_BOLD);
+                // ── Text area ─────────────────────────────────────────────────
+                let view_end = (ed.view_top + text_rows).min(ed.lines.len());
+                for (row_idx, line) in ed.lines[ed.view_top..view_end].iter().enumerate() {
+                    let y = (row_idx as i32) * LINE_H;
+                    let visible_len = cols.min(line.len());
+                    canvas.draw_text(&line[..visible_len], 0, y, FG, &FONT_8X13);
+                }
 
-            let prompt_offset = (prompt_str.len() as i32) * 8;
-            // Render input text, possibly scrolled if wider than the window
-            let input_cols = cols.saturating_sub(prompt_str.len());
-            let display_input = if self.input.len() > input_cols {
-                // Show the tail of input around cursor
-                let start = self.cursor_pos.saturating_sub(input_cols / 2);
-                let start = start.min(self.input.len().saturating_sub(input_cols));
-                &self.input[start..start + input_cols.min(self.input.len() - start)]
-            } else {
-                &self.input
-            };
-            canvas.draw_text(display_input, prompt_offset, prompt_y, FG, &FONT_8X13);
+                // ── Cursor ────────────────────────────────────────────────────
+                if self.cursor_visible {
+                    if let Some(ed) = self.editor.as_ref() {
+                        if ed.cursor_row >= ed.view_top && ed.cursor_row < ed.view_top + text_rows {
+                            let screen_row = (ed.cursor_row - ed.view_top) as i32;
+                            let cx = (ed.cursor_col as i32) * 8;
+                            let cy = screen_row * LINE_H;
+                            canvas.draw_text("_", cx, cy, CURSOR_COLOR, &FONT_8X13);
+                        }
+                    }
+                }
 
-            // Draw cursor
-            if self.cursor_visible {
-                let cursor_display_pos = if self.input.len() > input_cols {
-                    let start = self.cursor_pos.saturating_sub(input_cols / 2);
-                    let start = start.min(self.input.len().saturating_sub(input_cols));
-                    self.cursor_pos - start
+                // ── Status bar ────────────────────────────────────────────────
+                canvas.fill_rect(0, status_y, canvas.width, LINE_H, STATUS_BG);
+
+                let ed = match self.editor.as_ref() { Some(e) => e, None => return };
+
+                // Show transient status message for up to 2000ms
+                let elapsed = ulib::sys_get_ticks().wrapping_sub(ed.status_tick);
+                if !ed.status_msg.is_empty() && elapsed < 2000 {
+                    canvas.draw_text(&ed.status_msg, 8, status_y, PROMPT_COLOR, &FONT_8X13_BOLD);
                 } else {
-                    self.cursor_pos
-                };
-                let cx = prompt_offset + (cursor_display_pos as i32) * 8;
-                canvas.draw_text("_", cx, prompt_y, CURSOR_COLOR, &FONT_8X13);
+                    // Left: dirty indicator + filename
+                    if ed.dirty {
+                        canvas.draw_text("[+] ", 8, status_y, DIRTY_COLOR, &FONT_8X13_BOLD);
+                        canvas.draw_text(&ed.path, 8 + 4 * 8, status_y, PROMPT_COLOR, &FONT_8X13_BOLD);
+                    } else {
+                        canvas.draw_text(&ed.path, 8, status_y, PROMPT_COLOR, &FONT_8X13_BOLD);
+                    }
+                    // Right: position + hints
+                    let total_lines = ed.lines.len();
+                    let right_text = format!(
+                        "Ln {}/{}  Col {}  | ^S:Save  Esc:Quit",
+                        ed.cursor_row + 1, total_lines, ed.cursor_col + 1
+                    );
+                    let right_x = (canvas.width - (right_text.len() as i32) * 8).max(0);
+                    canvas.draw_text(&right_text, right_x, status_y, DIM_COLOR, &FONT_8X13);
+                }
+            });
+        } else {
+            // ── Shell mode ────────────────────────────────────────────────────
+            if let Some(key) = ctx.key_event() {
+                self.handle_key(key);
             }
-        });
+
+            CentralPanel::default().show(ctx, |ui| {
+                let mut canvas = ui.canvas();
+                let cols = (canvas.width / 8) as usize;
+                let visible_rows = (canvas.height / LINE_H) as usize;
+                if cols == 0 || visible_rows == 0 { return; }
+
+                // Build output visual rows
+                let mut all_visual: Vec<(&str, Rgb888)> = Vec::new();
+                for line in &self.lines {
+                    let color = line.color;
+                    let text = &line.text;
+                    if text.is_empty() {
+                        all_visual.push(("", color));
+                    } else {
+                        let mut pos = 0;
+                        while pos < text.len() {
+                            let end = (pos + cols).min(text.len());
+                            all_visual.push((&text[pos..end], color));
+                            pos = end;
+                        }
+                    }
+                }
+
+                // Build live prompt rows
+                let prompt_prefix = self.prompt_str();
+                let prompt_full = format!("{}{}", prompt_prefix, self.input);
+                let prefix_len = prompt_prefix.len();
+
+                let mut prompt_row_starts: Vec<usize> = Vec::new();
+                if prompt_full.is_empty() {
+                    prompt_row_starts.push(0);
+                } else {
+                    let mut pos = 0;
+                    while pos < prompt_full.len() {
+                        prompt_row_starts.push(pos);
+                        pos += cols;
+                    }
+                }
+                let num_prompt_rows = prompt_row_starts.len();
+
+                let total = all_visual.len() + num_prompt_rows;
+
+                let view_end = if self.auto_scroll {
+                    total
+                } else {
+                    total.saturating_sub(self.scroll_offset)
+                };
+                let view_start = view_end.saturating_sub(visible_rows);
+
+                if !self.auto_scroll {
+                    let max_offset = total.saturating_sub(1);
+                    if self.scroll_offset > max_offset {
+                        self.scroll_offset = max_offset;
+                    }
+                }
+
+                // Render rows
+                let mut y: i32 = 0;
+                for i in view_start..view_end {
+                    if i < all_visual.len() {
+                        let (text, color) = all_visual[i];
+                        canvas.draw_text(text, 0, y, color, &FONT_8X13);
+                    } else {
+                        let row_idx = i - all_visual.len();
+                        let row_start = prompt_row_starts[row_idx];
+                        let row_end = (row_start + cols).min(prompt_full.len());
+                        let row_text = &prompt_full[row_start..row_end];
+
+                        if row_end <= prefix_len {
+                            canvas.draw_text(row_text, 0, y, PROMPT_COLOR, &FONT_8X13_BOLD);
+                        } else if row_start >= prefix_len {
+                            canvas.draw_text(row_text, 0, y, FG, &FONT_8X13);
+                        } else {
+                            let split = prefix_len - row_start;
+                            canvas.draw_text(&row_text[..split], 0, y, PROMPT_COLOR, &FONT_8X13_BOLD);
+                            canvas.draw_text(&row_text[split..], (split as i32) * 8, y, FG, &FONT_8X13);
+                        }
+                    }
+                    y += LINE_H;
+                }
+
+                // Cursor
+                if self.cursor_visible {
+                    let cursor_abs = prefix_len + self.cursor_pos;
+                    let cursor_total_row = all_visual.len() + cursor_abs / cols;
+                    let cursor_col = cursor_abs % cols;
+                    if cursor_total_row >= view_start && cursor_total_row < view_end {
+                        let screen_row = (cursor_total_row - view_start) as i32;
+                        canvas.draw_text("_", (cursor_col as i32) * 8, screen_row * LINE_H, CURSOR_COLOR, &FONT_8X13);
+                    }
+                }
+            });
+        }
     }
 }

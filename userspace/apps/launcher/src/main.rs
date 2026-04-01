@@ -164,7 +164,9 @@ impl Launcher {
             let ptr = ulib::sys_map_shared_buf(buf_id);
             if !ptr.is_null() {
                 let elf = unsafe { core::slice::from_raw_parts(ptr as *const u8, size as usize) };
-                let _ = ulib::sys_spawn_named(elf, 0, name);
+                let task_id = ulib::sys_spawn_named(elf, 0, name);
+                // Wait for the kernel loader to finish reading our pages before unmapping.
+                if task_id != 0 { ulib::sys_wait_task_ready(task_id); }
                 ulib::sys_munmap(ptr, size);
             }
         } else {
@@ -176,7 +178,9 @@ impl Launcher {
                     let ptr = ulib::sys_map_shared_buf(buf_id);
                     if !ptr.is_null() {
                         let elf = unsafe { core::slice::from_raw_parts(ptr as *const u8, size as usize) };
-                        let _ = ulib::sys_spawn_named(elf, 0, name);
+                        let task_id = ulib::sys_spawn_named(elf, 0, name);
+                        // Wait for the kernel loader to finish reading our pages before unmapping.
+                        if task_id != 0 { ulib::sys_wait_task_ready(task_id); }
                         ulib::sys_munmap(ptr, size);
                     }
                     ulib::sys_destroy_shared_buf(buf_id);

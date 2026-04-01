@@ -7,8 +7,9 @@ use talc::{ErrOnOom, Talc, Talck};
 use x86_64::PhysAddr;
 
 pub const GLOBAL_ALLOCATOR_SIZE: u64 = {
-    // 4 MiB
-    4 * 0x400 * 0x400
+    // 16 MiB — increased from 4 MiB to handle large file I/O (Doom WAD ~14 MB
+    // causes ~28K IPC sector reads, each needing kernel heap for channel/handle objects).
+    16 * 0x400 * 0x400
 };
 
 #[global_allocator]

@@ -21,6 +21,7 @@
 //! - [`bench_harness`] — reusable benchmark framework with warmup, measurement,
 //!   and per-task CPU tick reporting.
 //! - [`test_framework`] — integration test runner with pass/fail reporting over serial.
+//! - [`c_compat`] — compatibility layer for C applications
 //!
 //! ## Syscall Calling Convention
 //!
@@ -45,6 +46,7 @@ pub mod fs;
 pub mod net;
 pub mod window;
 pub mod test_framework;
+pub mod c_compat;
 
 use core::arch::asm;
 use kernel_api_types::{SysCallNumber, SVC_ERR_NOT_FOUND, SVC_OK};

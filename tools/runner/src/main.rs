@@ -111,6 +111,7 @@ fn main() {
     qemu.env("QEMU_RESOLV_CONF", "/run/systemd/resolve/stub-resolv.conf");
 
     qemu.arg("-enable-kvm");
+    qemu.arg("-m").arg("512M");
     qemu.arg("-display").arg("gtk");
     qemu.arg("-cdrom").arg(env!("ISO"));
 
