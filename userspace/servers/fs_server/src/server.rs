@@ -1,5 +1,15 @@
 use core::mem;
-use kernel_api_types::fs::*;
+use kernel_api_types::fs::{
+    FsMessageType, FsResult,
+    MapFileRequest, MapFileResponse,
+    StatFileRequest, StatFileResponse,
+    ReadDirRequest, ReadDirResponse,
+    WriteFileRequest, WriteFileResponse,
+    CreateFileRequest, CreateFileResponse,
+    DeleteFileRequest, DeleteFileResponse,
+    MkdirRequest, MkdirResponse,
+    RenameRequest, RenameResponse,
+};
 use kernel_api_types::{MMAP_WRITE, SVC_ERR_NOT_FOUND};
 
 use crate::fat32::{BlockDev, Entry, Fat32};
@@ -231,10 +241,14 @@ pub fn run(recv_fd: u32) -> ! {
                 }
 
                 match msg[0] {
-                    t if t == FsMessageType::MapFile as u8   => handle_map_file(&mut fs, msg),
-                    t if t == FsMessageType::StatFile as u8  => handle_stat_file(&mut fs, msg),
-                    t if t == FsMessageType::ReadDir as u8   => handle_read_dir(&mut fs, msg),
-                    t if t == FsMessageType::WriteFile as u8 => handle_write_file(&mut fs, msg),
+                    t if t == FsMessageType::MapFile as u8    => handle_map_file(&mut fs, msg),
+                    t if t == FsMessageType::StatFile as u8   => handle_stat_file(&mut fs, msg),
+                    t if t == FsMessageType::ReadDir as u8    => handle_read_dir(&mut fs, msg),
+                    t if t == FsMessageType::WriteFile as u8  => handle_write_file(&mut fs, msg),
+                    t if t == FsMessageType::CreateFile as u8 => handle_create_file(&mut fs, msg),
+                    t if t == FsMessageType::DeleteFile as u8 => handle_delete_file(&mut fs, msg),
+                    t if t == FsMessageType::Mkdir as u8      => handle_mkdir(&mut fs, msg),
+                    t if t == FsMessageType::Rename as u8     => handle_rename(&mut fs, msg),
                     _ => {}
                 }
             }
@@ -435,11 +449,6 @@ fn handle_write_file(fs: &mut Fat32<IpcDisk>, msg: &[u8]) {
         None => { send_response(reply_ep, &err_resp(FsResult::IoError)); return; }
     };
 
-    if path.contains('/') {
-        send_response(reply_ep, &err_resp(FsResult::IoError));
-        return;
-    }
-
     let ptr = ulib::sys_map_shared_buf(req.shared_buf_id);
     if ptr.is_null() {
         send_response(reply_ep, &err_resp(FsResult::IoError));
@@ -449,4 +458,101 @@ fn handle_write_file(fs: &mut Fat32<IpcDisk>, msg: &[u8]) {
     let data = unsafe { core::slice::from_raw_parts(ptr as *const u8, req.size as usize) };
     let ok = fs.write_file(path, data);
     send_response(reply_ep, &err_resp(if ok { FsResult::Ok } else { FsResult::IoError }));
+}
+
+fn handle_create_file(fs: &mut Fat32<IpcDisk>, msg: &[u8]) {
+    const REQ: usize = mem::size_of::<CreateFileRequest>();
+    let reply_ep = match extract_reply_ep(msg, 1 + REQ) {
+        Some(ep) => ep,
+        None => return,
+    };
+    let err_resp = |result: FsResult| CreateFileResponse { result: result as u64 };
+    if msg.len() < 1 + REQ {
+        send_response(reply_ep, &err_resp(FsResult::IoError));
+        return;
+    }
+    let req: CreateFileRequest = unsafe {
+        core::ptr::read_unaligned(msg.as_ptr().add(1) as *const CreateFileRequest)
+    };
+    let path = match path_str(&req.path, req.path_len) {
+        Some(p) => p,
+        None => { send_response(reply_ep, &err_resp(FsResult::IoError)); return; }
+    };
+    let ok = fs.create_empty_file(path);
+    send_response(reply_ep, &err_resp(if ok { FsResult::Ok } else { FsResult::IoError }));
+}
+
+fn handle_delete_file(fs: &mut Fat32<IpcDisk>, msg: &[u8]) {
+    const REQ: usize = mem::size_of::<DeleteFileRequest>();
+    let reply_ep = match extract_reply_ep(msg, 1 + REQ) {
+        Some(ep) => ep,
+        None => return,
+    };
+    let err_resp = |result: FsResult| DeleteFileResponse { result: result as u64 };
+    if msg.len() < 1 + REQ {
+        send_response(reply_ep, &err_resp(FsResult::IoError));
+        return;
+    }
+    let req: DeleteFileRequest = unsafe {
+        core::ptr::read_unaligned(msg.as_ptr().add(1) as *const DeleteFileRequest)
+    };
+    let path = match path_str(&req.path, req.path_len) {
+        Some(p) => p,
+        None => { send_response(reply_ep, &err_resp(FsResult::IoError)); return; }
+    };
+    let ok = fs.rm_file(path);
+    send_response(reply_ep, &err_resp(if ok { FsResult::Ok } else { FsResult::NotFound }));
+}
+
+fn handle_mkdir(fs: &mut Fat32<IpcDisk>, msg: &[u8]) {
+    const REQ: usize = mem::size_of::<MkdirRequest>();
+    let reply_ep = match extract_reply_ep(msg, 1 + REQ) {
+        Some(ep) => ep,
+        None => return,
+    };
+    let err_resp = |result: FsResult| MkdirResponse { result: result as u64 };
+    if msg.len() < 1 + REQ {
+        send_response(reply_ep, &err_resp(FsResult::IoError));
+        return;
+    }
+    let req: MkdirRequest = unsafe {
+        core::ptr::read_unaligned(msg.as_ptr().add(1) as *const MkdirRequest)
+    };
+    let path = match path_str(&req.path, req.path_len) {
+        Some(p) => p,
+        None => { send_response(reply_ep, &err_resp(FsResult::IoError)); return; }
+    };
+    let ok = fs.mkdir(path);
+    send_response(reply_ep, &err_resp(if ok { FsResult::Ok } else { FsResult::IoError }));
+}
+
+fn handle_rename(fs: &mut Fat32<IpcDisk>, msg: &[u8]) {
+    const REQ: usize = mem::size_of::<RenameRequest>();
+    let reply_ep = match extract_reply_ep(msg, 1 + REQ) {
+        Some(ep) => ep,
+        None => return,
+    };
+    let err_resp = |result: FsResult| RenameResponse { result: result as u64 };
+    if msg.len() < 1 + REQ {
+        send_response(reply_ep, &err_resp(FsResult::IoError));
+        return;
+    }
+    let req: RenameRequest = unsafe {
+        core::ptr::read_unaligned(msg.as_ptr().add(1) as *const RenameRequest)
+    };
+    let old_path = match path_str(&req.old_path, req.old_path_len) {
+        Some(p) => p,
+        None => { send_response(reply_ep, &err_resp(FsResult::IoError)); return; }
+    };
+    let new_name_len = req.new_name_len as usize;
+    if new_name_len > 12 {
+        send_response(reply_ep, &err_resp(FsResult::IoError));
+        return;
+    }
+    let new_name = match core::str::from_utf8(&req.new_name[..new_name_len]) {
+        Ok(s) => s,
+        Err(_) => { send_response(reply_ep, &err_resp(FsResult::IoError)); return; }
+    };
+    let ok = fs.rename(old_path, new_name);
+    send_response(reply_ep, &err_resp(if ok { FsResult::Ok } else { FsResult::NotFound }));
 }

@@ -8,7 +8,19 @@
 //! returned by `sys_lookup_service`). Use [`fs_lookup`] to obtain one.
 
 use core::mem;
-use kernel_api_types::fs::*;
+pub use kernel_api_types::fs::FsResult;
+use kernel_api_types::fs::{
+    FsMessageType,
+    MapFileRequest, MapFileResponse,
+    StatFileRequest, StatFileResponse,
+    ReadDirRequest, ReadDirResponse,
+    WriteFileRequest, WriteFileResponse,
+    CreateFileRequest, CreateFileResponse,
+    DeleteFileRequest, DeleteFileResponse,
+    MkdirRequest, MkdirResponse,
+    RenameRequest, RenameResponse,
+    DirEntry,
+};
 use kernel_api_types::SVC_ERR_NOT_FOUND;
 
 // ─── Service lookup ────────────────────────────────────────────────────────────
@@ -170,7 +182,7 @@ pub fn fs_stat(fs_fd: u32, path: &str) -> Option<StatFileResponse> {
 pub fn fs_readdir(fs_fd: u32, path: &str) -> Option<ReadDirResponse> {
     let (path_buf, path_len) = build_path_req(path);
     let req = ReadDirRequest { path: path_buf, path_len };
-    let blank = kernel_api_types::fs::DirEntry { name: [0; 64], name_len: 0, is_dir: 0, _pad: [0; 2], size: 0 };
+    let blank = DirEntry { name: [0; 64], name_len: 0, is_dir: 0, _pad: [0; 2], size: 0 };
     let mut resp = ReadDirResponse {
         result: FsResult::IoError as u64, count: 0, _pad: 0, entries: [blank; 48],
     };
@@ -200,6 +212,58 @@ pub fn fs_write_file(fs_fd: u32, path: &str, shared_buf_id: u64, size: u64) -> F
     let mut resp = WriteFileResponse { result: FsResult::IoError as u64 };
 
     if !send_request_and_recv(fs_fd, FsMessageType::WriteFile, &req, &mut resp) {
+        return FsResult::IoError;
+    }
+    FsResult::from_u64(resp.result)
+}
+
+/// Create an empty file at `path` (touch semantics: succeeds if it already exists).
+pub fn fs_create_file(fs_fd: u32, path: &str) -> FsResult {
+    let (path_buf, path_len) = build_path_req(path);
+    let req = CreateFileRequest { path: path_buf, path_len };
+    let mut resp = CreateFileResponse { result: FsResult::IoError as u64 };
+    if !send_request_and_recv(fs_fd, FsMessageType::CreateFile, &req, &mut resp) {
+        return FsResult::IoError;
+    }
+    FsResult::from_u64(resp.result)
+}
+
+/// Delete a file at `path`. Returns `NotFound` if not present, `IsDir` if it is a directory.
+pub fn fs_rm(fs_fd: u32, path: &str) -> FsResult {
+    let (path_buf, path_len) = build_path_req(path);
+    let req = DeleteFileRequest { path: path_buf, path_len };
+    let mut resp = DeleteFileResponse { result: FsResult::IoError as u64 };
+    if !send_request_and_recv(fs_fd, FsMessageType::DeleteFile, &req, &mut resp) {
+        return FsResult::IoError;
+    }
+    FsResult::from_u64(resp.result)
+}
+
+/// Create a new directory at `path`.
+pub fn fs_mkdir(fs_fd: u32, path: &str) -> FsResult {
+    let (path_buf, path_len) = build_path_req(path);
+    let req = MkdirRequest { path: path_buf, path_len };
+    let mut resp = MkdirResponse { result: FsResult::IoError as u64 };
+    if !send_request_and_recv(fs_fd, FsMessageType::Mkdir, &req, &mut resp) {
+        return FsResult::IoError;
+    }
+    FsResult::from_u64(resp.result)
+}
+
+/// Rename `old_path` to `new_name` (bare filename, same directory).
+pub fn fs_rename(fs_fd: u32, old_path: &str, new_name: &str) -> FsResult {
+    let (old_path_buf, old_path_len) = build_path_req(old_path);
+    let mut new_name_buf = [0u8; 12];
+    let new_name_len = new_name.len().min(12);
+    new_name_buf[..new_name_len].copy_from_slice(&new_name.as_bytes()[..new_name_len]);
+    let req = RenameRequest {
+        old_path: old_path_buf,
+        old_path_len,
+        new_name: new_name_buf,
+        new_name_len: new_name_len as u16,
+    };
+    let mut resp = RenameResponse { result: FsResult::IoError as u64 };
+    if !send_request_and_recv(fs_fd, FsMessageType::Rename, &req, &mut resp) {
         return FsResult::IoError;
     }
     FsResult::from_u64(resp.result)

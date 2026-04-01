@@ -46,6 +46,7 @@ struct ShellApp {
     initialized: bool,
     cursor_visible: bool,
     last_blink_tick: u64,
+    cwd: String,
 }
 
 #[derive(Clone)]
@@ -73,7 +74,31 @@ impl ShellApp {
             initialized: false,
             cursor_visible: true,
             last_blink_tick: 0,
+            cwd: String::new(), // set to "/" in initialized block (allocator not yet ready here)
         }
+    }
+
+    /// Resolve `input` against the current working directory.
+    fn resolve_path(&self, input: &str) -> String {
+        if input.starts_with('/') {
+            return String::from(input);
+        }
+        let base = if self.cwd == "/" { String::new() } else { self.cwd.clone() };
+        let joined = format!("{}/{}", base, input);
+        let mut parts: Vec<&str> = Vec::new();
+        for component in joined.split('/') {
+            match component {
+                "" | "." => {}
+                ".." => { parts.pop(); }
+                c => parts.push(c),
+            }
+        }
+        let mut result = String::from("/");
+        for (i, p) in parts.iter().enumerate() {
+            if i > 0 { result.push('/'); }
+            result.push_str(p);
+        }
+        result
     }
 
     fn push_line(&mut self, line: Line) {
@@ -100,7 +125,7 @@ impl ShellApp {
     // ── Command dispatch ─────────────────────────────────────────────────────
 
     fn execute(&mut self, cmd_line: &str) {
-        self.push_line(Line::colored(format!("$ {}", cmd_line), PROMPT_COLOR));
+        self.push_line(Line::colored(format!("bos:{}$ {}", self.cwd, cmd_line), PROMPT_COLOR));
 
         let parts: Vec<&str> = cmd_line.split_whitespace().collect();
         if parts.is_empty() { return; }
@@ -114,20 +139,30 @@ impl ShellApp {
             "cat"   => self.cmd_cat(parts.get(1).copied()),
             "stat"  => self.cmd_stat(parts.get(1).copied()),
             "run"   => self.cmd_run(parts.get(1).copied()),
+            "cd"    => self.cmd_cd(parts.get(1).copied()),
+            "mkdir" => self.cmd_mkdir(parts.get(1).copied()),
+            "touch" => self.cmd_touch(parts.get(1).copied()),
+            "rm"    => self.cmd_rm(parts.get(1).copied()),
+            "mv"    => self.cmd_mv(parts.get(1).copied(), parts.get(2).copied()),
             other   => self.push_err(format!("unknown command: {}", other)),
         }
     }
 
     fn cmd_help(&mut self) {
         self.push_normal(String::from("Available commands:"));
-        self.push_normal(String::from("  help          Show this help"));
-        self.push_normal(String::from("  echo <text>   Print text"));
-        self.push_normal(String::from("  clear         Clear screen"));
-        self.push_normal(String::from("  time          Show time (seconds since epoch)"));
-        self.push_normal(String::from("  ls [path]     List directory contents"));
-        self.push_normal(String::from("  cat <path>    Print file contents"));
-        self.push_normal(String::from("  stat <path>   Show file metadata"));
-        self.push_normal(String::from("  run <path>    Launch an ELF from the filesystem"));
+        self.push_normal(String::from("  help              Show this help"));
+        self.push_normal(String::from("  echo <text>       Print text"));
+        self.push_normal(String::from("  clear             Clear screen"));
+        self.push_normal(String::from("  time              Show time (seconds since epoch)"));
+        self.push_normal(String::from("  ls [path]         List directory contents"));
+        self.push_normal(String::from("  cat <path>        Print file contents"));
+        self.push_normal(String::from("  stat <path>       Show file metadata"));
+        self.push_normal(String::from("  run <path>        Launch an ELF from the filesystem"));
+        self.push_normal(String::from("  cd <path>         Change working directory"));
+        self.push_normal(String::from("  mkdir <path>      Create a directory"));
+        self.push_normal(String::from("  touch <path>      Create an empty file"));
+        self.push_normal(String::from("  rm <path>         Delete a file"));
+        self.push_normal(String::from("  mv <old> <new>    Rename a file or directory"));
     }
 
     fn cmd_echo(&mut self, args: &[&str]) {
@@ -154,9 +189,12 @@ impl ShellApp {
     }
 
     fn cmd_ls(&mut self, path: Option<&str>) {
-        let path = path.unwrap_or("/");
+        let path = match path {
+            Some(p) => self.resolve_path(p),
+            None    => self.cwd.clone(),
+        };
         let fs_fd = self.ensure_fs();
-        match ulib::fs::fs_readdir(fs_fd, path) {
+        match ulib::fs::fs_readdir(fs_fd, &path) {
             Some(resp) => {
                 for i in 0..(resp.count as usize) {
                     let entry = &resp.entries[i];
@@ -180,7 +218,7 @@ impl ShellApp {
                 }
             }
             None => self.push_err(format!("ls: cannot read '{}'", path)),
-        }
+        };
     }
 
     fn cmd_cat(&mut self, path: Option<&str>) {
@@ -261,6 +299,76 @@ impl ShellApp {
                 }
             }
             None => self.push_err(format!("run: file not found: '{}'", path)),
+        }
+    }
+
+    fn cmd_cd(&mut self, path: Option<&str>) {
+        let path = match path {
+            Some(p) => p,
+            None => { self.cwd = String::from("/"); return; }
+        };
+        let resolved = self.resolve_path(path);
+        let fs_fd = self.ensure_fs();
+        match ulib::fs::fs_stat(fs_fd, &resolved) {
+            Some(resp) if resp.is_dir != 0 => { self.cwd = resolved; }
+            Some(_) => self.push_err(format!("cd: not a directory: '{}'", path)),
+            None    => self.push_err(format!("cd: no such directory: '{}'", path)),
+        }
+    }
+
+    fn cmd_mkdir(&mut self, path: Option<&str>) {
+        let path = match path {
+            Some(p) => p,
+            None => { self.push_err(String::from("mkdir: missing path")); return; }
+        };
+        let resolved = self.resolve_path(path);
+        let fs_fd = self.ensure_fs();
+        match ulib::fs::fs_mkdir(fs_fd, &resolved) {
+            ulib::fs::FsResult::Ok => {}
+            _ => self.push_err(format!("mkdir: failed to create '{}'", path)),
+        }
+    }
+
+    fn cmd_touch(&mut self, path: Option<&str>) {
+        let path = match path {
+            Some(p) => p,
+            None => { self.push_err(String::from("touch: missing path")); return; }
+        };
+        let resolved = self.resolve_path(path);
+        let fs_fd = self.ensure_fs();
+        match ulib::fs::fs_create_file(fs_fd, &resolved) {
+            ulib::fs::FsResult::Ok => {}
+            _ => self.push_err(format!("touch: failed to create '{}'", path)),
+        }
+    }
+
+    fn cmd_rm(&mut self, path: Option<&str>) {
+        let path = match path {
+            Some(p) => p,
+            None => { self.push_err(String::from("rm: missing path")); return; }
+        };
+        let resolved = self.resolve_path(path);
+        let fs_fd = self.ensure_fs();
+        match ulib::fs::fs_rm(fs_fd, &resolved) {
+            ulib::fs::FsResult::Ok => {}
+            ulib::fs::FsResult::NotFound => self.push_err(format!("rm: no such file: '{}'", path)),
+            ulib::fs::FsResult::IsDir    => self.push_err(format!("rm: is a directory: '{}'", path)),
+            _ => self.push_err(format!("rm: failed to remove '{}'", path)),
+        }
+    }
+
+    fn cmd_mv(&mut self, old: Option<&str>, new: Option<&str>) {
+        let (old, new) = match (old, new) {
+            (Some(o), Some(n)) => (o, n),
+            _ => { self.push_err(String::from("mv: usage: mv <old> <new>")); return; }
+        };
+        let resolved_old = self.resolve_path(old);
+        // `new` is the bare new name (same directory), not a full path.
+        let fs_fd = self.ensure_fs();
+        match ulib::fs::fs_rename(fs_fd, &resolved_old, new) {
+            ulib::fs::FsResult::Ok => {}
+            ulib::fs::FsResult::NotFound => self.push_err(format!("mv: no such file: '{}'", old)),
+            _ => self.push_err(format!("mv: failed to rename '{}'", old)),
         }
     }
 
@@ -400,6 +508,7 @@ impl App for ShellApp {
     fn update(&mut self, ctx: &egui::Context) {
         if !self.initialized {
             self.initialized = true;
+            self.cwd = String::from("/"); // first allocation — heap is ready at this point
             self.push_normal(String::from("Bos Shell v0.1"));
             self.push_normal(String::from("Type 'help' for available commands."));
             self.push_normal(String::new());
@@ -471,11 +580,12 @@ impl App for ShellApp {
 
             // Draw prompt line at the bottom
             let prompt_y = (visible_rows as i32 - 1) * LINE_H;
-            canvas.draw_text("$ ", 0, prompt_y, PROMPT_COLOR, &FONT_8X13_BOLD);
+            let prompt_str = format!("bos:{}$ ", self.cwd);
+            canvas.draw_text(&prompt_str, 0, prompt_y, PROMPT_COLOR, &FONT_8X13_BOLD);
 
-            let prompt_offset = 2 * 8; // "$ " is 2 chars * 8px
+            let prompt_offset = (prompt_str.len() as i32) * 8;
             // Render input text, possibly scrolled if wider than the window
-            let input_cols = cols.saturating_sub(2);
+            let input_cols = cols.saturating_sub(prompt_str.len());
             let display_input = if self.input.len() > input_cols {
                 // Show the tail of input around cursor
                 let start = self.cursor_pos.saturating_sub(input_cols / 2);

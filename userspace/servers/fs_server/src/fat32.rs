@@ -90,6 +90,7 @@ impl RawDirEntry {
     fn is_lfn(&self) -> bool  { self.attr & ATTR_LFN == ATTR_LFN }
     fn is_volume_id(&self) -> bool { self.attr & ATTR_VOLUME_ID != 0 && !self.is_lfn() }
     fn is_dir(&self) -> bool  { self.attr & ATTR_DIRECTORY != 0 }
+    fn is_dot(&self) -> bool  { self.name[0] == b'.' }
 
     fn cluster(&self) -> u32 {
         ((u16::from_le(self.cluster_hi) as u32) << 16)
@@ -234,7 +235,7 @@ impl<D: BlockDev> Fat32<D> {
                 let raw = unsafe { core::slice::from_raw_parts(sec.as_ptr() as *const RawDirEntry, epe) };
                 for de in raw {
                     if de.is_end() { break 'outer; }
-                    if de.is_free() || de.is_lfn() || de.is_volume_id() { continue; }
+                    if de.is_free() || de.is_lfn() || de.is_volume_id() || de.is_dot() { continue; }
                     if count >= out.len() { break 'outer; }
                     let (name, name_len) = de.short_name();
                     out[count] = Entry { cluster: de.cluster(), size: de.size(),
@@ -282,47 +283,246 @@ impl<D: BlockDev> Fat32<D> {
         written
     }
 
-    /// Create or overwrite a file in the root directory.
-    /// Only root-level files are supported (no subdirectory writes).
-    pub fn write_file(&mut self, filename: &str, data: &[u8]) -> bool {
+    /// Create or overwrite a file at `path` (supports subdirectory paths).
+    pub fn write_file(&mut self, path: &str, data: &[u8]) -> bool {
+        let path = path.trim_matches('/');
+        let (parent_cluster, filename) = match path.rfind('/') {
+            Some(i) => {
+                let parent_path = &path[..i];
+                let fname = &path[i+1..];
+                let parent = match self.lookup(parent_path) {
+                    Some(e) if e.is_dir => e.cluster,
+                    _ => return false,
+                };
+                (parent, fname)
+            }
+            None => (self.root_cluster, path),
+        };
         let (name8, ext3) = split_83(filename);
-        let lba_base = self.cluster_to_lba(self.root_cluster);
-        let epe = (self.bytes_per_sector / 32) as usize;
+        self.write_to_dir_cluster(parent_cluster, name8, ext3, data)
+    }
 
+    /// Create an empty file at `path`. If the file already exists, succeeds without modification.
+    pub fn create_empty_file(&mut self, path: &str) -> bool {
+        let path = path.trim_matches('/');
+        if path.is_empty() { return false; }
+        let (parent_cluster, filename) = match path.rfind('/') {
+            Some(i) => {
+                let parent_path = &path[..i];
+                let fname = &path[i+1..];
+                let parent = match self.lookup(parent_path) {
+                    Some(e) if e.is_dir => e.cluster,
+                    _ => return false,
+                };
+                (parent, fname)
+            }
+            None => (self.root_cluster, path),
+        };
+        if filename.is_empty() { return false; }
+        // If file already exists, succeed (touch semantics).
+        if self.find_in_dir(parent_cluster, filename).is_some() { return true; }
+        let (name8, ext3) = split_83(filename);
+        self.append_dir_entry(parent_cluster, name8, ext3, 0x20, 0, 0)
+    }
+
+    /// Create a new directory at `path`. Returns false if parent not found, name exists, or disk full.
+    pub fn mkdir(&mut self, path: &str) -> bool {
+        let path = path.trim_matches('/');
+        if path.is_empty() { return false; }
+        let (parent_cluster, dirname) = match path.rfind('/') {
+            Some(i) => {
+                let parent_path = &path[..i];
+                let dname = &path[i+1..];
+                let parent = match self.lookup(parent_path) {
+                    Some(e) if e.is_dir => e.cluster,
+                    _ => return false,
+                };
+                (parent, dname)
+            }
+            None => (self.root_cluster, path),
+        };
+        if dirname.is_empty() { return false; }
+        // Fail if name already exists.
+        if self.find_in_dir(parent_cluster, dirname).is_some() { return false; }
+
+        // Allocate one cluster for the new directory.
+        let new_cluster = match self.alloc_cluster() { Some(c) => c, None => return false };
+
+        // Zero-fill the new cluster.
+        let lba = self.cluster_to_lba(new_cluster);
+        let zero = [0u8; 512];
+        for s in 0..self.sectors_per_clus {
+            if !self.disk.write(lba + s as u64, &zero) { return false; }
+        }
+
+        // Write `.` entry (points to self).
+        let dot_name:    [u8; 8] = [b'.', b' ', b' ', b' ', b' ', b' ', b' ', b' '];
+        let dot_ext:     [u8; 3] = [b' ', b' ', b' '];
+        if !self.append_dir_entry(new_cluster, dot_name, dot_ext, ATTR_DIRECTORY, new_cluster, 0) {
+            return false;
+        }
+
+        // Write `..` entry (points to parent).
+        let dotdot_name: [u8; 8] = [b'.', b'.', b' ', b' ', b' ', b' ', b' ', b' '];
+        let dotdot_ext:  [u8; 3] = [b' ', b' ', b' '];
+        if !self.append_dir_entry(new_cluster, dotdot_name, dotdot_ext, ATTR_DIRECTORY, parent_cluster, 0) {
+            return false;
+        }
+
+        // Add the new directory entry in the parent.
+        let (name8, ext3) = split_83(dirname);
+        self.append_dir_entry(parent_cluster, name8, ext3, ATTR_DIRECTORY, new_cluster, 0)
+    }
+
+    /// Delete a file at `path`. Returns false if not found or if `path` is a directory.
+    pub fn rm_file(&mut self, path: &str) -> bool {
+        let path = path.trim_matches('/');
+        if path.is_empty() { return false; }
+        let (parent_cluster, filename) = match path.rfind('/') {
+            Some(i) => {
+                let parent_path = &path[..i];
+                let fname = &path[i+1..];
+                let parent = match self.lookup(parent_path) {
+                    Some(e) if e.is_dir => e.cluster,
+                    _ => return false,
+                };
+                (parent, fname)
+            }
+            None => (self.root_cluster, path),
+        };
+        if filename.is_empty() { return false; }
+
+        // Verify the target exists and is a regular file.
+        let entry = match self.find_in_dir(parent_cluster, filename) {
+            Some(e) if !e.is_dir => e,
+            _ => return false,
+        };
+
+        let (name8, ext3) = split_83(filename);
+
+        // Free the cluster chain.
+        let mut fc = entry.cluster;
+        while !Self::is_eoc(fc) && fc >= 2 {
+            let next = self.fat_entry(fc).unwrap_or(FAT32_EOC);
+            if !self.set_fat_entry(fc, 0) { return false; }
+            fc = next;
+        }
+
+        // Find the dir entry and mark it deleted (0xE5).
+        let epe = (self.bytes_per_sector / 32) as usize;
+        let mut cluster = parent_cluster;
+        while !Self::is_eoc(cluster) && cluster >= 2 {
+            let lba = self.cluster_to_lba(cluster);
+            for s in 0..self.sectors_per_clus {
+                let mut sec = [0u8; 512];
+                if !self.disk.read(lba + s as u64, &mut sec) { return false; }
+                for i in 0..epe {
+                    let off = i * 32;
+                    let de = unsafe { &*(sec.as_ptr().add(off) as *const RawDirEntry) };
+                    if de.is_end() { return false; }
+                    if de.is_free() || de.is_lfn() || de.is_volume_id() { continue; }
+                    if &de.name == &name8 && &de.ext == &ext3 {
+                        sec[off] = 0xE5;
+                        return self.disk.write(lba + s as u64, &sec);
+                    }
+                }
+            }
+            cluster = self.fat_entry(cluster).unwrap_or(FAT32_EOC);
+        }
+        false
+    }
+
+    /// Rename a file or directory. `new_name` is just the bare filename (no path component).
+    pub fn rename(&mut self, old_path: &str, new_name: &str) -> bool {
+        let old_path = old_path.trim_matches('/');
+        if old_path.is_empty() || new_name.is_empty() { return false; }
+        let (parent_cluster, old_filename) = match old_path.rfind('/') {
+            Some(i) => {
+                let parent_path = &old_path[..i];
+                let fname = &old_path[i+1..];
+                let parent = match self.lookup(parent_path) {
+                    Some(e) if e.is_dir => e.cluster,
+                    _ => return false,
+                };
+                (parent, fname)
+            }
+            None => (self.root_cluster, old_path),
+        };
+        if old_filename.is_empty() { return false; }
+        if self.find_in_dir(parent_cluster, old_filename).is_none() { return false; }
+
+        let (old_name8, old_ext3) = split_83(old_filename);
+        let (new_name8, new_ext3) = split_83(new_name);
+
+        let epe = (self.bytes_per_sector / 32) as usize;
+        let mut cluster = parent_cluster;
+        while !Self::is_eoc(cluster) && cluster >= 2 {
+            let lba = self.cluster_to_lba(cluster);
+            for s in 0..self.sectors_per_clus {
+                let mut sec = [0u8; 512];
+                if !self.disk.read(lba + s as u64, &mut sec) { return false; }
+                for i in 0..epe {
+                    let off = i * 32;
+                    let de = unsafe { &*(sec.as_ptr().add(off) as *const RawDirEntry) };
+                    if de.is_end() { return false; }
+                    if de.is_free() || de.is_lfn() || de.is_volume_id() { continue; }
+                    if &de.name == &old_name8 && &de.ext == &old_ext3 {
+                        let de_mut = unsafe { &mut *(sec.as_mut_ptr().add(off) as *mut RawDirEntry) };
+                        de_mut.name = new_name8;
+                        de_mut.ext  = new_ext3;
+                        return self.disk.write(lba + s as u64, &sec);
+                    }
+                }
+            }
+            cluster = self.fat_entry(cluster).unwrap_or(FAT32_EOC);
+        }
+        false
+    }
+
+    // ─── Private helpers ───────────────────────────────────────────────────────
+
+    /// Create or overwrite a file entry in the directory at `parent_cluster`.
+    fn write_to_dir_cluster(&mut self, parent_cluster: u32, name8: [u8;8], ext3: [u8;3], data: &[u8]) -> bool {
+        let epe = (self.bytes_per_sector / 32) as usize;
         let mut entry_lba = 0u64;
         let mut entry_idx = 0usize;
         let mut found = false;
+        let mut cluster = parent_cluster;
 
-        'search: for s in 0..self.sectors_per_clus {
-            let mut sec = [0u8; 512];
-            if !self.disk.read(lba_base + s as u64, &mut sec) { return false; }
-            for i in 0..epe {
-                let off = i * 32;
-                let de = unsafe { &*(sec.as_ptr().add(off) as *const RawDirEntry) };
-                if de.is_end() {
-                    if !found { entry_lba = lba_base + s as u64; entry_idx = i; found = true; }
-                    break 'search;
-                }
-                if de.is_free() || de.is_lfn() || de.is_volume_id() { continue; }
-                let (n, e) = (&de.name, &de.ext);
-                if n == &name8 && e == &ext3 {
-                    // Free existing cluster chain
-                    let mut fc = de.cluster();
-                    while !Self::is_eoc(fc) && fc >= 2 {
-                        let next = self.fat_entry(fc).unwrap_or(FAT32_EOC);
-                        self.set_fat_entry(fc, 0);
-                        fc = next;
+        'search: while !Self::is_eoc(cluster) && cluster >= 2 {
+            let lba = self.cluster_to_lba(cluster);
+            for s in 0..self.sectors_per_clus {
+                let mut sec = [0u8; 512];
+                if !self.disk.read(lba + s as u64, &mut sec) { return false; }
+                for i in 0..epe {
+                    let off = i * 32;
+                    let de = unsafe { &*(sec.as_ptr().add(off) as *const RawDirEntry) };
+                    if de.is_end() {
+                        if !found { entry_lba = lba + s as u64; entry_idx = i; found = true; }
+                        break 'search;
                     }
-                    entry_lba = lba_base + s as u64;
-                    entry_idx = i;
-                    found = true;
-                    break 'search;
+                    if de.is_free() || de.is_lfn() || de.is_volume_id() { continue; }
+                    let (n, e) = (&de.name, &de.ext);
+                    if n == &name8 && e == &ext3 {
+                        // Overwrite: free existing cluster chain.
+                        let mut fc = de.cluster();
+                        while !Self::is_eoc(fc) && fc >= 2 {
+                            let next = self.fat_entry(fc).unwrap_or(FAT32_EOC);
+                            self.set_fat_entry(fc, 0);
+                            fc = next;
+                        }
+                        entry_lba = lba + s as u64;
+                        entry_idx = i;
+                        found = true;
+                        break 'search;
+                    }
                 }
             }
+            cluster = self.fat_entry(cluster).unwrap_or(FAT32_EOC);
         }
         if !found { return false; }
 
-        // Allocate cluster chain and write data
+        // Allocate cluster chain and write data.
         let first_cluster = if data.is_empty() { 0 } else {
             match self.alloc_cluster() { Some(c) => c, None => return false }
         };
@@ -345,7 +545,7 @@ impl<D: BlockDev> Fat32<D> {
             cur = next;
         }
 
-        // Write directory entry
+        // Write directory entry.
         let mut sec = [0u8; 512];
         if !self.disk.read(entry_lba, &mut sec) { return false; }
         let de = unsafe { &mut *(sec.as_mut_ptr().add(entry_idx * 32) as *mut RawDirEntry) };
@@ -360,7 +560,37 @@ impl<D: BlockDev> Fat32<D> {
         self.disk.write(entry_lba, &sec)
     }
 
-    // ─── Private helpers ───────────────────────────────────────────────────────
+    /// Append a new directory entry to the directory at `parent_cluster`.
+    /// Scans for the first free or end slot; does not check for duplicate names.
+    fn append_dir_entry(&mut self, parent_cluster: u32, name8: [u8;8], ext3: [u8;3], attr: u8, first_cluster: u32, size: u32) -> bool {
+        let epe = (self.bytes_per_sector / 32) as usize;
+        let mut cluster = parent_cluster;
+        while !Self::is_eoc(cluster) && cluster >= 2 {
+            let lba = self.cluster_to_lba(cluster);
+            for s in 0..self.sectors_per_clus {
+                let mut sec = [0u8; 512];
+                if !self.disk.read(lba + s as u64, &mut sec) { return false; }
+                for i in 0..epe {
+                    let off = i * 32;
+                    let de = unsafe { &*(sec.as_ptr().add(off) as *const RawDirEntry) };
+                    if de.is_free() {
+                        let new_de = unsafe { &mut *(sec.as_mut_ptr().add(off) as *mut RawDirEntry) };
+                        *new_de = RawDirEntry {
+                            name: name8, ext: ext3, attr,
+                            _nt: 0, _crt_tenths: 0, _crt_time: 0, _crt_date: 0, _acc_date: 0,
+                            cluster_hi: ((first_cluster >> 16) as u16).to_le(),
+                            _mod_time: 0, _mod_date: 0,
+                            cluster_lo: (first_cluster as u16).to_le(),
+                            size: size.to_le(),
+                        };
+                        return self.disk.write(lba + s as u64, &sec);
+                    }
+                }
+            }
+            cluster = self.fat_entry(cluster).unwrap_or(FAT32_EOC);
+        }
+        false
+    }
 
     fn find_in_dir(&mut self, start_cluster: u32, name: &str) -> Option<Entry> {
         let epe = (self.bytes_per_sector / 32) as usize;
@@ -773,5 +1003,137 @@ mod tests {
         let mut buf = [0u8; 64];
         let n = unsafe { fs.read_file(entry.cluster, entry.size, buf.as_mut_ptr()) };
         assert_eq!(&buf[..n], content as &[u8]);
+    }
+
+    // ── mkdir ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn mkdir_creates_directory() {
+        let disk = make_disk();
+        let mut fs = Fat32::mount(disk).unwrap();
+        assert!(fs.mkdir("MYDIR"));
+        let entry = fs.lookup("MYDIR").unwrap();
+        assert!(entry.is_dir);
+    }
+
+    #[test]
+    fn mkdir_then_write_into_it() {
+        let disk = make_disk();
+        let mut fs = Fat32::mount(disk).unwrap();
+        assert!(fs.mkdir("SUB"));
+        assert!(fs.write_file("SUB/DATA.TXT", b"hello subdir"));
+        let entry = fs.lookup("SUB/DATA.TXT").unwrap();
+        assert!(!entry.is_dir);
+        assert_eq!(entry.size, 12);
+        let mut buf = [0u8; 32];
+        let n = unsafe { fs.read_file(entry.cluster, entry.size, buf.as_mut_ptr()) };
+        assert_eq!(&buf[..n], b"hello subdir");
+    }
+
+    #[test]
+    fn mkdir_duplicate_fails() {
+        let disk = make_disk();
+        let mut fs = Fat32::mount(disk).unwrap();
+        assert!(fs.mkdir("DUP"));
+        assert!(!fs.mkdir("DUP")); // second mkdir with same name should fail
+    }
+
+    // ── rm_file ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn rm_file_removes_entry() {
+        let disk = make_disk();
+        let mut fs = Fat32::mount(disk).unwrap();
+        assert!(fs.write_file("DEL.TXT", b"delete me"));
+        assert!(fs.lookup("DEL.TXT").is_some());
+        assert!(fs.rm_file("DEL.TXT"));
+        assert!(fs.lookup("DEL.TXT").is_none());
+    }
+
+    #[test]
+    fn rm_file_frees_clusters() {
+        let content: std::vec::Vec<u8> = (0..8192_u32).map(|i| i as u8).collect();
+        let disk = make_disk();
+        let mut fs = Fat32::mount(disk).unwrap();
+        assert!(fs.write_file("BIG.BIN", &content));
+        let entry_before = fs.lookup("BIG.BIN").unwrap();
+        let first_cluster = entry_before.cluster;
+        assert!(fs.rm_file("BIG.BIN"));
+        // After removal, the first cluster should be marked free (0) in the FAT.
+        let fat_val = fs.fat_entry(first_cluster).unwrap_or(FAT32_EOC);
+        assert_eq!(fat_val, 0);
+    }
+
+    #[test]
+    fn rm_file_on_directory_fails() {
+        let disk = make_disk();
+        let mut fs = Fat32::mount(disk).unwrap();
+        assert!(fs.mkdir("DIR"));
+        assert!(!fs.rm_file("DIR"));
+    }
+
+    #[test]
+    fn rm_file_missing_fails() {
+        let disk = make_disk();
+        let mut fs = Fat32::mount(disk).unwrap();
+        assert!(!fs.rm_file("GHOST.TXT"));
+    }
+
+    // ── rename ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn rename_changes_name() {
+        let disk = make_disk();
+        let mut fs = Fat32::mount(disk).unwrap();
+        assert!(fs.write_file("OLD.TXT", b"data"));
+        assert!(fs.rename("OLD.TXT", "NEW.TXT"));
+        assert!(fs.lookup("OLD.TXT").is_none());
+        let entry = fs.lookup("NEW.TXT").unwrap();
+        assert_eq!(entry.size, 4);
+    }
+
+    #[test]
+    fn rename_missing_fails() {
+        let disk = make_disk();
+        let mut fs = Fat32::mount(disk).unwrap();
+        assert!(!fs.rename("GHOST.TXT", "OTHER.TXT"));
+    }
+
+    // ── write_file in subdir ─────────────────────────────────────────────────
+
+    #[test]
+    fn write_file_in_subdir() {
+        let disk = make_disk();
+        let mut fs = Fat32::mount(disk).unwrap();
+        assert!(fs.mkdir("SUBDIR"));
+        assert!(fs.write_file("SUBDIR/FILE.TXT", b"subdir content"));
+        let entry = fs.lookup("SUBDIR/FILE.TXT").unwrap();
+        assert_eq!(entry.size, 14);
+        let mut buf = [0u8; 32];
+        let n = unsafe { fs.read_file(entry.cluster, entry.size, buf.as_mut_ptr()) };
+        assert_eq!(&buf[..n], b"subdir content");
+    }
+
+    // ── create_empty_file ────────────────────────────────────────────────────
+
+    #[test]
+    fn create_empty_file_creates_entry() {
+        let disk = make_disk();
+        let mut fs = Fat32::mount(disk).unwrap();
+        assert!(fs.create_empty_file("EMPTY.TXT"));
+        let entry = fs.lookup("EMPTY.TXT").unwrap();
+        assert!(!entry.is_dir);
+        assert_eq!(entry.size, 0);
+    }
+
+    #[test]
+    fn create_empty_file_on_existing_succeeds() {
+        let disk = make_disk();
+        let mut fs = Fat32::mount(disk).unwrap();
+        assert!(fs.write_file("EXIST.TXT", b"data"));
+        // touch on existing file should succeed without clobbering data
+        assert!(fs.create_empty_file("EXIST.TXT"));
+        let entry = fs.lookup("EXIST.TXT").unwrap();
+        assert_eq!(entry.size, 4);
     }
 }
