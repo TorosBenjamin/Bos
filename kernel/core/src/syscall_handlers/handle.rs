@@ -42,13 +42,20 @@ pub fn sys_pipe(
     let mut inner = task.inner.lock();
     let read_fd = match inner.handles.alloc(Handle::Pipe(pipe.clone(), PipeEnd::Read)) {
         Some(fd) => fd,
-        None => return HANDLE_ERR_TABLE_FULL,
+        None => {
+            drop(inner);
+            return HANDLE_ERR_TABLE_FULL;
+        }
     };
     let write_fd = match inner.handles.alloc(Handle::Pipe(pipe, PipeEnd::Write)) {
         Some(fd) => fd,
         None => {
             // Roll back the read handle.
-            inner.handles.remove(read_fd);
+            let h = inner.handles.remove(read_fd);
+            drop(inner);
+            if let Some(h) = h {
+                close_handle(h);
+            }
             return HANDLE_ERR_TABLE_FULL;
         }
     };
@@ -366,9 +373,18 @@ pub fn sys_handle_write(
             Some(Handle::Pipe(pipe, PipeEnd::Write)) => HandleWriteInfo::Pipe(pipe.clone()),
             Some(Handle::IpcChannel(ep_id, IpcChannelEnd::Send)) => HandleWriteInfo::IpcSend(*ep_id),
             Some(Handle::Null) => return buf_len, // discard silently
-            _ => return HANDLE_ERR_BAD_FD,
+            _ => {
+                log::warn!("task {}: sys_handle_write to invalid fd {}", task.id.to_u64(), fd);
+                return HANDLE_ERR_BAD_FD;
+            }
         }
     };
+
+    if fd == 1 || fd == 2 {
+        if let Some(s) = core::str::from_utf8(unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, buf_len as usize) }) {
+            log::info!("task {} {}: {}", task.id.to_u64(), fd, s.trim_end());
+        }
+    }
 
     if nonblock {
         match handle_info {
@@ -501,41 +517,8 @@ pub fn sys_handle_close(
 }
 
 /// Close a handle, updating pipe closed flags.
-pub(crate) fn close_handle(handle: Handle) {
-    match handle {
-        Handle::Pipe(pipe, PipeEnd::Read) => {
-            pipe.read_closed.store(true, Ordering::Release);
-            // Wake any writers blocked on a full pipe so they see BrokenPipe.
-            while let Some((task, cpu_id)) = pipe.write_waiters.lock().pop_front() {
-                task.state.store(TaskState::Ready, Ordering::Release);
-                crate::task::local_scheduler::add_front(
-                    crate::memory::cpu_local_data::get_cpu(cpu_id),
-                    task,
-                );
-            }
-        }
-        Handle::Pipe(pipe, PipeEnd::Write) => {
-            pipe.write_closed.store(true, Ordering::Release);
-            // Wake any readers blocked on an empty pipe so they see EOF.
-            while let Some((task, cpu_id)) = pipe.read_waiters.lock().pop_front() {
-                task.state.store(TaskState::Ready, Ordering::Release);
-                crate::task::local_scheduler::add_front(
-                    crate::memory::cpu_local_data::get_cpu(cpu_id),
-                    task,
-                );
-            }
-            crate::task::local_scheduler::try_wake_slot(&pipe.event_waiter);
-        }
-        Handle::IpcChannel(ep_id, _) => {
-            // Each handle owns its own cloned endpoint (clone-on-wrap).
-            // Releasing it decrements handle_refs and closes at 0.
-            let _ = crate::ipc::release_endpoint(ep_id);
-        }
-        Handle::Keyboard => {
-            // Nothing to release — keyboard is a shared global resource.
-        }
-        Handle::Null => {}
-    }
+pub(crate) fn close_handle(_handle: Handle) {
+    // Drop logic in Handle implementation takes care of cleanup.
 }
 
 // ---------------------------------------------------------------------------
@@ -559,20 +542,33 @@ pub fn sys_handle_dup(
     let cloned = match inner.handles.get(old_fd as u32) {
         Some(h) => match h.try_clone() {
             Some(c) => c,
-            None => return HANDLE_ERR_BAD_FD,
+            None => {
+                drop(inner);
+                return HANDLE_ERR_BAD_FD;
+            }
         },
-        None => return HANDLE_ERR_BAD_FD,
+        None => {
+            drop(inner);
+            return HANDLE_ERR_BAD_FD;
+        }
     };
+    drop(inner);
 
+    let mut inner = task.inner.lock();
     // Track cloned IPC endpoint for cleanup on task exit.
     if let Handle::IpcChannel(ep_id, _) = &cloned {
         inner.owned_endpoints.push(*ep_id);
     }
 
-    match inner.handles.alloc(cloned) {
+    let fd = match inner.handles.alloc(cloned) {
         Some(fd) => fd as u64,
-        None => HANDLE_ERR_TABLE_FULL,
-    }
+        None => {
+            drop(inner);
+            return HANDLE_ERR_TABLE_FULL;
+        }
+    };
+    drop(inner);
+    fd
 }
 
 // ---------------------------------------------------------------------------
@@ -615,9 +611,10 @@ pub fn sys_handle_dup2(
     }
 
     // Close whatever was at new_fd.
-    if let Some(old_handle) = inner.handles.alloc_at(new_fd as u32, cloned) {
-        drop(inner); // Release lock before close_handle which may wake tasks.
-        close_handle(old_handle);
+    let old_handle = inner.handles.alloc_at(new_fd as u32, cloned);
+    drop(inner); // Release lock before dropping old_handle which may wake tasks.
+    if let Some(h) = old_handle {
+        close_handle(h);
     }
 
     new_fd
@@ -677,15 +674,21 @@ pub fn sys_handle_from_channel(
     let mut inner = task.inner.lock();
     // Track the cloned endpoint for cleanup on task exit.
     inner.owned_endpoints.push(new_ep_id);
-    match inner.handles.alloc(Handle::IpcChannel(new_ep_id, dir)) {
-        Some(fd) => fd as u64,
+    let fd = match inner.handles.alloc(Handle::IpcChannel(new_ep_id, dir)) {
+        Some(fd) => {
+            log::info!("task {}: handle_from_channel(ep {}) -> fd {}", task.id.to_u64(), new_ep_id, fd);
+            fd as u64
+        }
         None => {
             // Rollback: destroy the cloned endpoint.
             inner.owned_endpoints.retain(|&id| id != new_ep_id);
+            drop(inner);
             let _ = crate::ipc::close_endpoint(new_ep_id);
-            HANDLE_ERR_TABLE_FULL
+            return HANDLE_ERR_TABLE_FULL;
         }
-    }
+    };
+    drop(inner);
+    fd
 }
 
 // ---------------------------------------------------------------------------
@@ -738,6 +741,7 @@ pub fn sys_handle_channel_create(
     let send_fd = match inner.handles.alloc(Handle::IpcChannel(send_ep, IpcChannelEnd::Send)) {
         Some(fd) => fd,
         None => {
+            drop(inner);
             let _ = crate::ipc::close_endpoint(send_ep);
             let _ = crate::ipc::close_endpoint(recv_ep);
             return HANDLE_ERR_TABLE_FULL;
@@ -746,7 +750,11 @@ pub fn sys_handle_channel_create(
     let recv_fd = match inner.handles.alloc(Handle::IpcChannel(recv_ep, IpcChannelEnd::Recv)) {
         Some(fd) => fd,
         None => {
-            inner.handles.remove(send_fd);
+            let h = inner.handles.remove(send_fd);
+            drop(inner);
+            if let Some(h) = h {
+                close_handle(h);
+            }
             let _ = crate::ipc::close_endpoint(send_ep);
             let _ = crate::ipc::close_endpoint(recv_ep);
             return HANDLE_ERR_TABLE_FULL;

@@ -8,6 +8,11 @@ impl ShellApp {
     pub(crate) fn execute(&mut self, cmd_line: &str) {
         self.push_line(Line::colored(format!("{}{}", self.prompt_str(), cmd_line), PROMPT_COLOR));
 
+        if cmd_line.contains('|') {
+            self.execute_pipeline(cmd_line);
+            return;
+        }
+
         let parts: Vec<&str> = cmd_line.split_whitespace().collect();
         if parts.is_empty() { return; }
 
@@ -155,31 +160,76 @@ impl ShellApp {
     }
 
     fn cmd_run(&mut self, path: Option<&str>) {
+        if self.active_child.is_some() {
+            self.push_err(String::from("run: a child is already running (Ctrl+C to detach)"));
+            return;
+        }
         let path = match path {
             Some(p) => p,
             None => { self.push_err(String::from("run: missing ELF path")); return; }
         };
         let resolved = self.resolve_path(path);
         let fs_fd = self.ensure_fs();
-        match ulib::fs::fs_map_file(fs_fd, &resolved) {
-            Some((buf_id, size)) => {
-                let ptr = ulib::sys_map_shared_buf(buf_id);
-                if ptr.is_null() {
-                    self.push_err(String::from("run: failed to map ELF"));
-                    ulib::sys_destroy_shared_buf(buf_id);
-                    return;
-                }
-                let elf = unsafe { core::slice::from_raw_parts(ptr as *const u8, size as usize) };
-                let task_id = ulib::sys_spawn_named(elf, 0, path.as_bytes());
-                ulib::sys_munmap(ptr, size);
+
+        let Some((buf_id, elf_size)) = ulib::fs::fs_map_file(fs_fd, &resolved) else {
+            self.push_err(format!("run: file not found: '{}'", resolved));
+            return;
+        };
+        let elf_ptr = ulib::sys_map_shared_buf(buf_id);
+        if elf_ptr.is_null() {
+            ulib::sys_destroy_shared_buf(buf_id);
+            self.push_err(String::from("run: failed to map ELF"));
+            return;
+        }
+
+        let (stdin_r, stdin_w) = match ulib::handle::pipe() {
+            Some(p) => p,
+            None => {
+                ulib::sys_munmap(elf_ptr, elf_size);
                 ulib::sys_destroy_shared_buf(buf_id);
-                if task_id == 0 {
-                    self.push_err(format!("run: failed to spawn '{}'", path));
-                } else {
-                    self.push_normal(format!("spawned '{}' (task {})", path, task_id));
-                }
+                self.push_err(String::from("run: pipe() failed"));
+                return;
             }
-            None => self.push_err(format!("run: file not found: '{}'", resolved)),
+        };
+        let (stdout_r, stdout_w) = match ulib::handle::pipe() {
+            Some(p) => p,
+            None => {
+                ulib::handle::close(stdin_r);
+                ulib::handle::close(stdin_w);
+                ulib::sys_munmap(elf_ptr, elf_size);
+                ulib::sys_destroy_shared_buf(buf_id);
+                self.push_err(String::from("run: pipe() failed"));
+                return;
+            }
+        };
+
+        let elf_bytes = unsafe {
+            core::slice::from_raw_parts(elf_ptr as *const u8, elf_size as usize)
+        };
+        let task_id = ulib::handle::spawn_with_handles(
+            elf_bytes,
+            0,
+            path.as_bytes(),
+            kernel_api_types::Priority::Normal as u8,
+            &[(stdin_r, 0), (stdout_w, 1), (stdout_w, 2)],
+        );
+        ulib::sys_munmap(elf_ptr, elf_size);
+        ulib::sys_destroy_shared_buf(buf_id);
+        ulib::handle::close(stdin_r);
+        ulib::handle::close(stdout_w);
+
+        if task_id == 0 {
+            ulib::handle::close(stdin_w);
+            ulib::handle::close(stdout_r);
+            self.push_err(format!("run: failed to spawn '{}'", path));
+        } else {
+            ulib::sys_wait_task_ready(task_id);
+            self.push_normal(format!("spawned '{}' (task {})", path, task_id));
+            self.active_child = Some(crate::ChildState {
+                stdout_read_fd: stdout_r,
+                stdin_write_fd: stdin_w,
+                input_echo:     String::new(),
+            });
         }
     }
 
@@ -335,5 +385,107 @@ impl ShellApp {
                 ulib::sys_destroy_shared_buf(buf_id);
             }
         }
+    }
+
+    // ── Pipeline ──────────────────────────────────────────────────────────────
+
+    fn execute_pipeline(&mut self, cmd_line: &str) {
+        if self.active_child.is_some() {
+            self.push_err(String::from("pipe: a child is already running (Ctrl+C to detach)"));
+            return;
+        }
+
+        let segments: Vec<&str> = cmd_line.split('|').collect();
+        let mut paths: Vec<&str> = Vec::new();
+        for seg in &segments {
+            let parts: Vec<&str> = seg.split_whitespace().collect();
+            if parts.len() < 2 || parts[0] != "run" {
+                self.push_err(String::from("pipe: only `run <elf>` segments are supported"));
+                return;
+            }
+            paths.push(parts[1]);
+        }
+
+        let n = paths.len();
+
+        // Create n-1 inter-process connecting pipes
+        let mut connecting: Vec<(u32, u32)> = Vec::new();
+        for _ in 0..n - 1 {
+            match ulib::handle::pipe() {
+                Some(p) => connecting.push(p),
+                None => {
+                    for (r, w) in &connecting { ulib::handle::close(*r); ulib::handle::close(*w); }
+                    self.push_err(String::from("pipe: failed to create pipe"));
+                    return;
+                }
+            }
+        }
+
+        // Shell ↔ first program stdin
+        let (first_stdin_r, first_stdin_w) = match ulib::handle::pipe() {
+            Some(p) => p,
+            None => {
+                for (r, w) in &connecting { ulib::handle::close(*r); ulib::handle::close(*w); }
+                self.push_err(String::from("pipe: failed to create pipe"));
+                return;
+            }
+        };
+
+        // Last program stdout ↔ shell
+        let (last_stdout_r, last_stdout_w) = match ulib::handle::pipe() {
+            Some(p) => p,
+            None => {
+                for (r, w) in &connecting { ulib::handle::close(*r); ulib::handle::close(*w); }
+                ulib::handle::close(first_stdin_r);
+                ulib::handle::close(first_stdin_w);
+                self.push_err(String::from("pipe: failed to create pipe"));
+                return;
+            }
+        };
+
+        let fs_fd = self.ensure_fs();
+        for (i, path) in paths.iter().enumerate() {
+            let resolved = self.resolve_path(path);
+            let Some((buf_id, elf_size)) = ulib::fs::fs_map_file(fs_fd, &resolved) else {
+                self.push_err(format!("pipe: not found: '{}'", path));
+                return;
+            };
+            let elf_ptr = ulib::sys_map_shared_buf(buf_id);
+            if elf_ptr.is_null() {
+                ulib::sys_destroy_shared_buf(buf_id);
+                self.push_err(String::from("pipe: failed to map ELF"));
+                return;
+            }
+            let elf_bytes = unsafe {
+                core::slice::from_raw_parts(elf_ptr as *const u8, elf_size as usize)
+            };
+
+            let stdin_r  = if i == 0     { first_stdin_r       } else { connecting[i - 1].0 };
+            let stdout_w = if i == n - 1 { last_stdout_w        } else { connecting[i].1     };
+
+            let task_id = ulib::handle::spawn_with_handles(
+                elf_bytes,
+                0,
+                path.as_bytes(),
+                kernel_api_types::Priority::Normal as u8,
+                &[(stdin_r, 0), (stdout_w, 1), (stdout_w, 2)],
+            );
+            ulib::sys_munmap(elf_ptr, elf_size);
+            ulib::sys_destroy_shared_buf(buf_id);
+            ulib::handle::close(stdin_r);
+            ulib::handle::close(stdout_w);
+
+            if task_id == 0 {
+                self.push_err(format!("pipe: spawn failed for '{}'", path));
+                return;
+            }
+        }
+
+        self.push_normal(format!("pipeline spawned ({} tasks)", n));
+        self.active_child = Some(crate::ChildState {
+            stdout_read_fd: last_stdout_r,
+            stdin_write_fd: first_stdin_w,
+            input_echo:     String::new(),
+        });
     }
 }

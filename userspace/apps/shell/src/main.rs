@@ -52,6 +52,12 @@ impl Line {
     pub(crate) fn colored(s: String, color: Rgb888) -> Self { Self { text: s, color } }
 }
 
+pub(crate) struct ChildState {
+    pub stdout_read_fd: u32,
+    pub stdin_write_fd: u32,
+    pub input_echo:     String,
+}
+
 pub(crate) struct ShellApp {
     pub lines:          Vec<Line>,
     pub scroll_offset:  usize,
@@ -67,6 +73,7 @@ pub(crate) struct ShellApp {
     pub last_blink_tick: u64,
     pub cwd:            String,
     pub editor:         Option<EditorMode>,
+    pub active_child:   Option<ChildState>,
 }
 
 impl ShellApp {
@@ -86,11 +93,16 @@ impl ShellApp {
             last_blink_tick: 0,
             cwd: String::new(), // set to "/" in initialized block (allocator not ready here)
             editor: None,
+            active_child: None,
         }
     }
 
     pub(crate) fn prompt_str(&self) -> String {
-        format!("bos:{}$ ", self.cwd)
+        if self.active_child.is_some() {
+            String::from("(running) > ")
+        } else {
+            format!("bos:{}$ ", self.cwd)
+        }
     }
 
     pub(crate) fn resolve_path(&self, input: &str) -> String {
@@ -155,6 +167,38 @@ impl ShellApp {
     fn handle_key(&mut self, key: kernel_api_types::KeyEvent) {
         if !key.pressed { return; }
         let ctrl = key.modifiers & kernel_api_types::KEY_MOD_CTRL != 0;
+
+        // Child running: forward input to it
+        if self.active_child.is_some() {
+            match key.event_type {
+                KeyEventType::Char if ctrl && matches!(key.character, b'c' | b'C') => {
+                    let child = self.active_child.take().unwrap();
+                    ulib::handle::close(child.stdin_write_fd);
+                    ulib::handle::close(child.stdout_read_fd);
+                    self.push_line(Line::colored(String::from("^C"), ERR_COLOR));
+                }
+                KeyEventType::Char if !ctrl && (0x20..0x7f).contains(&key.character) => {
+                    self.active_child.as_mut().unwrap().input_echo.push(key.character as char);
+                    self.scroll_to_bottom();
+                }
+                KeyEventType::Backspace => {
+                    self.active_child.as_mut().unwrap().input_echo.pop();
+                    self.scroll_to_bottom();
+                }
+                KeyEventType::Enter => {
+                    let (mut line, stdin_fd) = {
+                        let child = self.active_child.as_mut().unwrap();
+                        (core::mem::take(&mut child.input_echo), child.stdin_write_fd)
+                    };
+                    self.push_line(Line::colored(format!("> {}", line), DIM_COLOR));
+                    line.push('\n');
+                    let _ = ulib::handle::write(stdin_fd, line.as_bytes());
+                    self.scroll_to_bottom();
+                }
+                _ => {}
+            }
+            return;
+        }
 
         match key.event_type {
             KeyEventType::Char => {
@@ -313,6 +357,32 @@ impl App for ShellApp {
                 self.draw_editor(&mut canvas, cursor_visible);
             });
         } else {
+            // Poll active child stdout each frame
+            if self.active_child.is_some() {
+                bos_egui::request_timed_redraw(16);
+                let mut buf = [0u8; 256];
+                loop {
+                    let fd = self.active_child.as_ref().unwrap().stdout_read_fd;
+                    match ulib::handle::try_read(fd, &mut buf) {
+                        Some(0) => {
+                            let child = self.active_child.take().unwrap();
+                            ulib::handle::close(child.stdout_read_fd);
+                            ulib::handle::close(child.stdin_write_fd);
+                            self.push_line(Line::colored(String::from("[process exited]"), DIM_COLOR));
+                            break;
+                        }
+                        Some(n) => {
+                            let text = core::str::from_utf8(&buf[..n]).unwrap_or("(binary)");
+                            for raw in text.split('\n') {
+                                let line = raw.trim_end_matches('\r');
+                                if !line.is_empty() { self.push_normal(String::from(line)); }
+                            }
+                        }
+                        None => break,
+                    }
+                }
+            }
+
             if let Some(key) = ctx.key_event() {
                 self.handle_key(key);
             }
@@ -342,7 +412,11 @@ impl App for ShellApp {
 
                 // Build live prompt rows
                 let prompt_prefix = self.prompt_str();
-                let prompt_full = format!("{}{}", prompt_prefix, self.input);
+                let active_input = match &self.active_child {
+                    Some(c) => &c.input_echo,
+                    None    => &self.input,
+                };
+                let prompt_full = format!("{}{}", prompt_prefix, active_input);
                 let prefix_len = prompt_prefix.len();
 
                 let mut prompt_row_starts: Vec<usize> = Vec::new();

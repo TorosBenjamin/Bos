@@ -2,17 +2,11 @@
 //! to kernel I/O objects (pipes, IPC channels, etc.).
 
 use alloc::sync::Arc;
-use crate::pipe::Pipe;
+use core::sync::atomic::Ordering;
+use crate::pipe::{Pipe, PipeEnd};
 
 /// Maximum number of handles per task.
 pub const MAX_HANDLES: usize = 64;
-
-/// Which end of a pipe a handle refers to.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PipeEnd {
-    Read,
-    Write,
-}
 
 /// Which direction an IPC channel handle operates in.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -39,13 +33,73 @@ impl Handle {
     /// Returns `None` if the IPC endpoint clone fails.
     pub fn try_clone(&self) -> Option<Handle> {
         match self {
-            Handle::Pipe(pipe, end) => Some(Handle::Pipe(pipe.clone(), *end)),
+            Handle::Pipe(pipe, end) => {
+                if *end == PipeEnd::Write {
+                    pipe.inc_write_count();
+                }
+                Some(Handle::Pipe(pipe.clone(), *end))
+            }
             Handle::IpcChannel(ep_id, dir) => {
                 let new_id = crate::ipc::clone_endpoint(*ep_id).ok()?;
                 Some(Handle::IpcChannel(new_id, *dir))
             }
             Handle::Keyboard => Some(Handle::Keyboard),
             Handle::Null => Some(Handle::Null),
+        }
+    }
+}
+
+impl Drop for Handle {
+    fn drop(&mut self) {
+        match self {
+            Handle::Pipe(pipe, PipeEnd::Read) => {
+                pipe.read_closed.store(true, Ordering::Release);
+                // Wake any writers blocked on a full pipe so they see BrokenPipe.
+                while let Some((task, cpu_id)) = pipe.write_waiters.lock().pop_front() {
+                    task.state.store(crate::task::task::TaskState::Ready, Ordering::Release);
+                    crate::task::local_scheduler::add_front(
+                        crate::memory::cpu_local_data::get_cpu(cpu_id),
+                        task,
+                    );
+                    let local_id = crate::memory::cpu_local_data::get_local().kernel_id;
+                    if cpu_id != local_id {
+                        let apic_id = crate::memory::cpu_local_data::local_apic_id_of(cpu_id);
+                        crate::apic::send_fixed_ipi(
+                            apic_id,
+                            u8::from(crate::interrupt::InterruptVector::Reschedule),
+                        );
+                    }
+                }
+            }
+            Handle::Pipe(pipe, PipeEnd::Write) => {
+                // Only signal EOF when the last write-end handle is closed.
+                if pipe.dec_write_count() {
+                    pipe.write_closed.store(true, Ordering::Release);
+                    // Wake any readers blocked on an empty pipe so they see EOF.
+                    while let Some((task, cpu_id)) = pipe.read_waiters.lock().pop_front() {
+                        task.state.store(crate::task::task::TaskState::Ready, Ordering::Release);
+                        crate::task::local_scheduler::add_front(
+                            crate::memory::cpu_local_data::get_cpu(cpu_id),
+                            task,
+                        );
+                        let local_id = crate::memory::cpu_local_data::get_local().kernel_id;
+                        if cpu_id != local_id {
+                            let apic_id = crate::memory::cpu_local_data::local_apic_id_of(cpu_id);
+                            crate::apic::send_fixed_ipi(
+                                apic_id,
+                                u8::from(crate::interrupt::InterruptVector::Reschedule),
+                            );
+                        }
+                    }
+                    crate::task::local_scheduler::try_wake_slot(&pipe.event_waiter);
+                }
+            }
+            Handle::IpcChannel(ep_id, _) => {
+                // Each handle owns its own cloned endpoint (clone-on-wrap).
+                // Releasing it decrements handle_refs and closes at 0.
+                let _ = crate::ipc::release_endpoint(*ep_id);
+            }
+            _ => {}
         }
     }
 }

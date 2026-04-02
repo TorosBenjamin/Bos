@@ -6,7 +6,7 @@
 
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::Mutex;
 use crate::task::task::{Task, TaskState};
 use crate::task::local_scheduler::EventWaiterSlot;
@@ -15,10 +15,20 @@ type WaiterQueue = Mutex<VecDeque<(Arc<Task>, u32)>>;
 
 pub const PIPE_BUF_SIZE: usize = 4096;
 
+
+/// Which end of a pipe a handle refers to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PipeEnd {
+    Read,
+    Write,
+}
+
 pub struct Pipe {
     inner: Mutex<PipeInner>,
     pub read_closed: AtomicBool,
     pub write_closed: AtomicBool,
+    /// Number of live write-end handles. `write_closed` is set only when this reaches 0.
+    write_count: AtomicU32,
     /// Tasks blocked on an empty pipe (waiting to read).
     pub read_waiters: WaiterQueue,
     /// Tasks blocked on a full pipe (waiting to write).
@@ -65,10 +75,22 @@ impl Pipe {
             }),
             read_closed: AtomicBool::new(false),
             write_closed: AtomicBool::new(false),
+            write_count: AtomicU32::new(1),
             read_waiters: Mutex::new(VecDeque::new()),
             write_waiters: Mutex::new(VecDeque::new()),
             event_waiter: Mutex::new(None),
         })
+    }
+
+    /// Increment the write-end reference count (called when a write-end handle is cloned).
+    pub fn inc_write_count(&self) {
+        self.write_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Decrement the write-end reference count.
+    /// Returns `true` if this was the last write-end handle (caller should signal EOF).
+    pub fn dec_write_count(&self) -> bool {
+        self.write_count.fetch_sub(1, Ordering::AcqRel) == 1
     }
 
     /// Try to read up to `buf.len()` bytes. Non-blocking.

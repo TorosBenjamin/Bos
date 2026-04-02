@@ -62,6 +62,7 @@ pub fn run_with_heap<A: App>(name: &str, mut app: A, heap_size: usize) -> ! {
     ulib::sys_debug_log(0, 0xE003); // E003 = allocator initialized
 
     // Wait for display service
+    ulib::sys_debug_log(0, 0x1001); // Waiting for display
     let display_ep = loop {
         let ep = ulib::sys_lookup_service(b"display");
         if ep != SVC_ERR_NOT_FOUND { break ep; }
@@ -70,14 +71,17 @@ pub fn run_with_heap<A: App>(name: &str, mut app: A, heap_size: usize) -> ! {
     ulib::sys_debug_log(display_ep, 0xE004); // E004 = display_ep found
 
     // Wrap the raw endpoint as a handle fd for the new handle-based IPC API.
+    ulib::sys_debug_log(display_ep, 0x1002); // Found display, wrapping
     let display_fd = ulib::handle::handle_from_channel(display_ep, 1)
         .expect("failed to wrap display endpoint as handle");
+    ulib::sys_debug_log(display_fd as u64, 0x1003); // Got FD
     let rsp5: u64;
     unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp5); }
     ulib::sys_debug_log(display_fd as u64, 0xE005); // E005 = display_fd
     ulib::sys_debug_log(rsp5, 0xE00B);              // E00B = RSP before Window::new loop
 
     // Create toplevel window
+    ulib::sys_debug_log(0, 0x1004); // Creating window
     let mut window = loop {
         let rsp_w: u64;
         unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp_w); }

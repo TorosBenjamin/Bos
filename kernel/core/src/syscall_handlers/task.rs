@@ -38,7 +38,8 @@ pub fn sys_exit(exit_code: u64) -> ! {
 
     // 2a. Close all handles (pipes, wrapped channels, etc.)
     for h in handles {
-        super::close_handle(h);
+        // Drop them outside of any lock.
+        drop(h);
     }
 
     // 2b. Unregister any services this task registered
@@ -132,7 +133,8 @@ pub(crate) fn kill_from_exception(fault_type: u64, faulting_addr: u64, ip: u64) 
     }
 
     for h in handles {
-        super::close_handle(h);
+        // Drop them outside of any lock.
+        drop(h);
     }
 
     if let Some(task) = &task_arc {
@@ -352,8 +354,10 @@ extern "sysv64" fn elf_loader_entry_inner(args_ptr: u64) -> ! {
             if !inherited_handles.is_empty() {
                 let mut inner = stub.inner.lock();
                 for (child_fd, handle) in inherited_handles {
+                    log::info!("task {}: inheriting handle fd {} ({:?})", stub.id.to_u64(), child_fd, handle);
                     inner.handles.alloc_at(child_fd, handle);
                 }
+                drop(inner);
             }
             log::info!("async ELF load complete for task {}", stub.id.to_u64());
             spawn_task_activate(stub); // consumes the Arc
@@ -434,7 +438,7 @@ pub fn sys_spawn_with_handles(
             }
         };
 
-        let inner = parent_task.inner.lock();
+        let mut inner = parent_task.inner.lock();
         for i in 0..mapping_count {
             let m: HandleMapping = unsafe {
                 core::ptr::read_unaligned(
@@ -442,16 +446,23 @@ pub fn sys_spawn_with_handles(
                 )
             };
             if m.child_fd as usize >= crate::handle::MAX_HANDLES {
+                drop(inner);
                 return 0;
             }
             match inner.handles.get(m.parent_fd) {
                 Some(h) => {
                     match h.try_clone() {
                         Some(cloned) => inherited_handles.push((m.child_fd, cloned)),
-                        None => return 0, // clone failed (e.g. IPC endpoint gone)
+                        None => {
+                            drop(inner);
+                            return 0; // clone failed (e.g. IPC endpoint gone)
+                        }
                     }
                 }
-                None => return 0, // bad parent fd
+                None => {
+                    drop(inner);
+                    return 0; // bad parent fd
+                }
             }
         }
         drop(inner);

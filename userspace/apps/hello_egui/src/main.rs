@@ -47,6 +47,7 @@ impl App for HelloApp {
 #[cfg(not(target_os = "linux"))]
 #[unsafe(no_mangle)]
 unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
+    ulib::sys_debug_log(0x1234, 0x0); // "HELLO" debug tag
     bos_egui::run("Hello Egui", HelloApp::default())
 }
 

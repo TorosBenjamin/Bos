@@ -41,6 +41,7 @@
 
 pub mod bench_harness;
 pub mod handle;
+pub mod stdio;
 pub mod display;
 pub mod fs;
 pub mod log;
