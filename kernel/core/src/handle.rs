@@ -55,6 +55,10 @@ pub struct HandleTable {
     entries: [Option<Handle>; MAX_HANDLES],
 }
 
+impl Default for HandleTable {
+    fn default() -> Self { Self::new() }
+}
+
 impl HandleTable {
     pub const fn new() -> Self {
         Self {

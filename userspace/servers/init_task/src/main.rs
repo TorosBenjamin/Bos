@@ -27,6 +27,21 @@ unsafe extern "sysv64" fn entry_point() -> ! {
         }
     };
 
+    // Load and spawn logd (registers "logd" service) with High priority.
+    // Spawned before fs_server so all subsequent services can emit log entries.
+    let logd_id = {
+        let logd_size = ulib::sys_get_module("logd", core::ptr::null_mut(), 0);
+        if logd_size > 0 {
+            let logd_buf = ulib::sys_mmap(logd_size, kernel_api_types::MMAP_WRITE);
+            let _ = ulib::sys_get_module("logd", logd_buf, logd_size);
+            let logd_elf = unsafe { core::slice::from_raw_parts(logd_buf, logd_size as usize) };
+            let id = ulib::sys_spawn_with_priority(logd_elf, 0, b"logd", kernel_api_types::Priority::High as u8);
+            Some((id, logd_buf, logd_size))
+        } else {
+            None
+        }
+    };
+
     // Load and spawn fs_server (registers "fatfs" service) with High priority.
     // IMPORTANT: sys_munmap is deferred until after sys_wait_task_ready because
     // the kernel loader reads ELF data directly from our pages via HHDM.
@@ -78,24 +93,41 @@ unsafe extern "sysv64" fn entry_point() -> ! {
     let ds_elf_bytes = unsafe { core::slice::from_raw_parts(ds_buf, ds_size as usize) };
     let ds_id = ulib::sys_spawn_with_priority(ds_elf_bytes, 0, b"display_server", kernel_api_types::Priority::High as u8);
 
-    // Wait for all spawned tasks to finish loading, then free their ELF buffers
+    // Wait for all spawned tasks to finish loading, then free their ELF buffers.
+    // Log each service as it becomes ready (logd must be ready first for log::write to work).
+    if let Some((id, buf, size)) = logd_id {
+        ulib::sys_wait_task_ready(id);
+        ulib::sys_munmap(buf, size);
+        // Wait until logd has registered its service endpoint, not just loaded its ELF.
+        // sys_wait_task_ready returns when the ELF is mapped, which is before entry_point
+        // runs and calls register_service. Without this, log::write calls below silently
+        // drop because sys_lookup_service("logd") still returns SVC_ERR_NOT_FOUND.
+        while ulib::sys_lookup_service(b"logd") == kernel_api_types::SVC_ERR_NOT_FOUND {
+            ulib::sys_sleep_ms(1);
+        }
+    }
     if let Some((id, buf, size)) = ide_id {
         ulib::sys_wait_task_ready(id);
+        ulib::log::write(ulib::log::LogLevel::Info, "init", "ide: ready");
         ulib::sys_munmap(buf, size);
     }
     if let Some((id, buf, size)) = fss_id {
         ulib::sys_wait_task_ready(id);
+        ulib::log::write(ulib::log::LogLevel::Info, "init", "fatfs: ready");
         ulib::sys_munmap(buf, size);
     }
     if let Some((id, buf, size)) = net_id {
         ulib::sys_wait_task_ready(id);
+        ulib::log::write(ulib::log::LogLevel::Info, "init", "net: ready");
         ulib::sys_munmap(buf, size);
     }
     if let Some((id, buf, size)) = e1000_id {
         ulib::sys_wait_task_ready(id);
+        ulib::log::write(ulib::log::LogLevel::Info, "init", "e1000: ready");
         ulib::sys_munmap(buf, size);
     }
     ulib::sys_wait_task_ready(ds_id);
+    ulib::log::write(ulib::log::LogLevel::Info, "init", "display: ready");
     ulib::sys_munmap(ds_buf, ds_size);
 
     // Transfer display ownership to display_server

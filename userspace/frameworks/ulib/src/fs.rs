@@ -19,6 +19,7 @@ use kernel_api_types::fs::{
     DeleteFileRequest, DeleteFileResponse,
     MkdirRequest, MkdirResponse,
     RenameRequest, RenameResponse,
+    AppendFileRequest, AppendFileResponse,
     DirEntry,
 };
 use kernel_api_types::SVC_ERR_NOT_FOUND;
@@ -245,6 +246,26 @@ pub fn fs_mkdir(fs_fd: u32, path: &str) -> FsResult {
     let req = MkdirRequest { path: path_buf, path_len };
     let mut resp = MkdirResponse { result: FsResult::IoError as u64 };
     if !send_request_and_recv(fs_fd, FsMessageType::Mkdir, &req, &mut resp) {
+        return FsResult::IoError;
+    }
+    FsResult::from_u64(resp.result)
+}
+
+/// Append data from a shared buffer to an existing file, creating it if needed.
+///
+/// The caller must create the shared buffer with `ulib::sys_create_shared_buf`,
+/// fill it with data, then call this function.
+pub fn fs_append_file(fs_fd: u32, path: &str, shared_buf_id: u64, size: u64) -> FsResult {
+    let (path_buf, path_len) = build_path_req(path);
+    let req = AppendFileRequest {
+        path: path_buf,
+        path_len,
+        _pad: [0; 6],
+        shared_buf_id,
+        size,
+    };
+    let mut resp = AppendFileResponse { result: FsResult::IoError as u64 };
+    if !send_request_and_recv(fs_fd, FsMessageType::AppendFile, &req, &mut resp) {
         return FsResult::IoError;
     }
     FsResult::from_u64(resp.result)

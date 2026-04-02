@@ -302,6 +302,138 @@ impl<D: BlockDev> Fat32<D> {
         self.write_to_dir_cluster(parent_cluster, name8, ext3, data)
     }
 
+    /// Append `data` to an existing file at `path`.
+    /// If the file does not exist it is created. If `data` is empty, returns true immediately.
+    pub fn append_file(&mut self, path: &str, data: &[u8]) -> bool {
+        if data.is_empty() { return true; }
+
+        let path = path.trim_matches('/');
+        let (parent_cluster, filename) = match path.rfind('/') {
+            Some(i) => {
+                let parent_path = &path[..i];
+                let fname = &path[i+1..];
+                let parent = match self.lookup(parent_path) {
+                    Some(e) if e.is_dir => e.cluster,
+                    _ => return false,
+                };
+                (parent, fname)
+            }
+            None => (self.root_cluster, path),
+        };
+        if filename.is_empty() { return false; }
+
+        let (name8, ext3) = split_83(filename);
+
+        // Find existing entry.
+        let entry = self.find_in_dir(parent_cluster, filename);
+        let entry = match entry {
+            None => {
+                // File doesn't exist — delegate to write_file.
+                return self.write_file(path, data);
+            }
+            Some(e) if e.is_dir => return false,
+            Some(e) => e,
+        };
+
+        // Empty file (no cluster allocated yet) — delegate to write_to_dir_cluster which
+        // will overwrite the zeroed entry with a proper cluster chain.
+        if entry.cluster < 2 || entry.size == 0 {
+            return self.write_to_dir_cluster(parent_cluster, name8, ext3, data);
+        }
+
+        // Walk FAT chain to find the last cluster.
+        let cluster_bytes = (self.sectors_per_clus * self.bytes_per_sector) as usize;
+        let mut last_cluster = entry.cluster;
+        loop {
+            let next = match self.fat_entry(last_cluster) {
+                Some(n) => n,
+                None => return false,
+            };
+            if Self::is_eoc(next) { break; }
+            last_cluster = next;
+        }
+
+        // How many bytes are already used in the last cluster?
+        let used_in_last = (entry.size as usize) % cluster_bytes;
+        let free_in_last = if used_in_last == 0 { 0 } else { cluster_bytes - used_in_last };
+
+        let mut rem = data;
+
+        // Fill partial space in the last cluster (read-modify-write at sector level).
+        if free_in_last > 0 {
+            let to_fill = free_in_last.min(rem.len());
+            let last_lba = self.cluster_to_lba(last_cluster);
+            // Which sector within the cluster holds byte `used_in_last`?
+            let start_sec = used_in_last / 512;
+            let start_off = used_in_last % 512;
+            let mut written_in_last = 0usize;
+            let mut s = start_sec;
+            while s < self.sectors_per_clus as usize && written_in_last < to_fill {
+                let mut sec = [0u8; 512];
+                if !self.disk.read(last_lba + s as u64, &mut sec) { return false; }
+                let off = if s == start_sec { start_off } else { 0 };
+                let can = (512 - off).min(to_fill - written_in_last);
+                sec[off..off + can].copy_from_slice(&rem[written_in_last..written_in_last + can]);
+                if !self.disk.write(last_lba + s as u64, &sec) { return false; }
+                written_in_last += can;
+                s += 1;
+            }
+            rem = &rem[to_fill..];
+        }
+
+        // Allocate and write new clusters for any remaining data.
+        if !rem.is_empty() {
+            let mut cur = last_cluster;
+            loop {
+                let next = match self.alloc_cluster() { Some(c) => c, None => return false };
+                if !self.set_fat_entry(cur, next) { return false; }
+                cur = next;
+
+                let clus_lba = self.cluster_to_lba(cur);
+                let mut s = 0u32;
+                while s < self.sectors_per_clus && !rem.is_empty() {
+                    let mut sec = [0u8; 512];
+                    let to_write = rem.len().min(512);
+                    sec[..to_write].copy_from_slice(&rem[..to_write]);
+                    if !self.disk.write(clus_lba + s as u64, &sec) { return false; }
+                    rem = &rem[to_write..];
+                    s += 1;
+                }
+                if rem.is_empty() { break; }
+            }
+        }
+
+        // Update the directory entry size field in place.
+        let new_size = entry.size + data.len() as u32;
+        self.update_dir_entry_size(parent_cluster, name8, ext3, new_size)
+    }
+
+    /// Overwrite just the `size` field of a directory entry in-place.
+    fn update_dir_entry_size(&mut self, parent_cluster: u32, name8: [u8;8], ext3: [u8;3], new_size: u32) -> bool {
+        let epe = (self.bytes_per_sector / 32) as usize;
+        let mut cluster = parent_cluster;
+        while !Self::is_eoc(cluster) && cluster >= 2 {
+            let lba = self.cluster_to_lba(cluster);
+            for s in 0..self.sectors_per_clus {
+                let mut sec = [0u8; 512];
+                if !self.disk.read(lba + s as u64, &mut sec) { return false; }
+                for i in 0..epe {
+                    let off = i * 32;
+                    let de = unsafe { &*(sec.as_ptr().add(off) as *const RawDirEntry) };
+                    if de.is_end() { return false; }
+                    if de.is_free() || de.is_lfn() || de.is_volume_id() { continue; }
+                    if de.name == name8 && de.ext == ext3 {
+                        let de_mut = unsafe { &mut *(sec.as_mut_ptr().add(off) as *mut RawDirEntry) };
+                        de_mut.size = new_size.to_le();
+                        return self.disk.write(lba + s as u64, &sec);
+                    }
+                }
+            }
+            cluster = self.fat_entry(cluster).unwrap_or(FAT32_EOC);
+        }
+        false
+    }
+
     /// Create an empty file at `path`. If the file already exists, succeeds without modification.
     pub fn create_empty_file(&mut self, path: &str) -> bool {
         let path = path.trim_matches('/');
@@ -421,7 +553,7 @@ impl<D: BlockDev> Fat32<D> {
                     let de = unsafe { &*(sec.as_ptr().add(off) as *const RawDirEntry) };
                     if de.is_end() { return false; }
                     if de.is_free() || de.is_lfn() || de.is_volume_id() { continue; }
-                    if &de.name == &name8 && &de.ext == &ext3 {
+                    if de.name == name8 && de.ext == ext3 {
                         sec[off] = 0xE5;
                         return self.disk.write(lba + s as u64, &sec);
                     }
@@ -466,7 +598,7 @@ impl<D: BlockDev> Fat32<D> {
                     let de = unsafe { &*(sec.as_ptr().add(off) as *const RawDirEntry) };
                     if de.is_end() { return false; }
                     if de.is_free() || de.is_lfn() || de.is_volume_id() { continue; }
-                    if &de.name == &old_name8 && &de.ext == &old_ext3 {
+                    if de.name == old_name8 && de.ext == old_ext3 {
                         let de_mut = unsafe { &mut *(sec.as_mut_ptr().add(off) as *mut RawDirEntry) };
                         de_mut.name = new_name8;
                         de_mut.ext  = new_ext3;
@@ -1135,5 +1267,75 @@ mod tests {
         assert!(fs.create_empty_file("EXIST.TXT"));
         let entry = fs.lookup("EXIST.TXT").unwrap();
         assert_eq!(entry.size, 4);
+    }
+
+    #[test]
+    fn append_to_nonexistent_creates_file() {
+        let mut disk = make_disk();
+        {
+            let mut fs = Fat32::mount(MemDisk(disk.0.clone())).unwrap();
+            assert!(fs.append_file("NEW.LOG", b"hello"));
+            disk.0 = fs.disk.0;
+        }
+        let content = read_via_fatfs(&mut disk, "NEW.LOG");
+        assert_eq!(content, b"hello");
+    }
+
+    #[test]
+    fn append_to_existing_extends_content() {
+        let mut disk = disk_with_file("A.LOG", b"hello ");
+        {
+            let mut fs = Fat32::mount(MemDisk(disk.0.clone())).unwrap();
+            assert!(fs.append_file("A.LOG", b"world"));
+            disk.0 = fs.disk.0;
+        }
+        let content = read_via_fatfs(&mut disk, "A.LOG");
+        assert_eq!(content, b"hello world");
+    }
+
+    #[test]
+    fn append_across_cluster_boundary() {
+        // Write a file that nearly fills one cluster (4096 bytes with 8 sectors/cluster).
+        // Then append enough to spill into the next cluster.
+        let cluster_bytes = 512 * 8; // sectors_per_clus=8 on a 40 MB image
+        let initial: Vec<u8> = (0u8..=255).cycle().take(cluster_bytes - 3).collect();
+        let extra = b"XYZ";
+        let mut expected = initial.clone();
+        expected.extend_from_slice(extra);
+
+        let mut disk = disk_with_file("BIG.BIN", &initial);
+        {
+            let mut fs = Fat32::mount(MemDisk(disk.0.clone())).unwrap();
+            assert!(fs.append_file("BIG.BIN", extra));
+            disk.0 = fs.disk.0;
+        }
+        let content = read_via_fatfs(&mut disk, "BIG.BIN");
+        assert_eq!(content, expected);
+    }
+
+    #[test]
+    fn append_empty_data_is_noop() {
+        let mut disk = disk_with_file("X.TXT", b"abc");
+        {
+            let mut fs = Fat32::mount(MemDisk(disk.0.clone())).unwrap();
+            assert!(fs.append_file("X.TXT", b""));
+            disk.0 = fs.disk.0;
+        }
+        let content = read_via_fatfs(&mut disk, "X.TXT");
+        assert_eq!(content, b"abc");
+    }
+
+    #[test]
+    fn append_multiple_times() {
+        let mut disk = make_disk();
+        {
+            let mut fs = Fat32::mount(MemDisk(disk.0.clone())).unwrap();
+            assert!(fs.append_file("LOG.TXT", b"line1\n"));
+            assert!(fs.append_file("LOG.TXT", b"line2\n"));
+            assert!(fs.append_file("LOG.TXT", b"line3\n"));
+            disk.0 = fs.disk.0;
+        }
+        let content = read_via_fatfs(&mut disk, "LOG.TXT");
+        assert_eq!(content, b"line1\nline2\nline3\n");
     }
 }

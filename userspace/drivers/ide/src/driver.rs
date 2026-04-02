@@ -222,13 +222,13 @@ impl IdeDriver {
 
         // Build PRDT entries
         let prdt = prdt_virt as *mut [u32; 2];
-        for i in 0..n_pages {
+        for (i, dma_buf) in dma_bufs[..n_pages].iter().enumerate() {
             let bytes_this_page = if i == n_pages - 1 {
                 total_bytes - i * 4096
             } else {
                 4096
             };
-            let phys = dma_bufs[i].1 as u32;
+            let phys = dma_buf.1 as u32;
             let byte_count = if bytes_this_page == 0x10000 { 0u16 } else { bytes_this_page as u16 };
             let eot: u32 = if i == n_pages - 1 { 0x8000_0000 } else { 0 };
             unsafe {
@@ -280,8 +280,8 @@ impl IdeDriver {
 
         // Copy from DMA buffers to caller's buffer
         let mut copied = 0usize;
-        for i in 0..n_pages {
-            let src = dma_bufs[i].0;
+        for dma_buf in &dma_bufs[..n_pages] {
+            let src = dma_buf.0;
             let chunk = (total_bytes - copied).min(4096);
             unsafe {
                 core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr().add(copied), chunk);

@@ -14,6 +14,7 @@ const ISO_BINARIES: &[(&str, &str, &str)] = &[
     ("init_task",      "init_task",      "init_task"),
     ("display_server", "display_server", "display_server"),
     ("fs_server",      "fs_server",      "fs_server"),
+    ("logd",           "logd",           "logd"),
     ("e1000",          "e1000",          "e1000"),
     ("net_server",     "net_server",     "net_server"),
     ("ide",            "ide",            "ide"),
@@ -115,7 +116,9 @@ fn main() {
         ensure_symlink(limine_dir.join(file), efi_dir.join(file)).unwrap();
     }
 
-    // FAT32 disk image
+    // FAT32 disk image — kept in OUT_DIR (inside target/, gitignored, stable hash).
+    // First run: create from scratch. Subsequent runs: update only the binaries/configs,
+    // leaving user-created files and logs untouched.
     let disk_img = out_dir.join("disk.img");
     create_fat32_disk_image(&disk_img, &runner_dir);
     println!("cargo:rustc-env=DISK_IMG={}", disk_img.display());
@@ -188,8 +191,18 @@ fn check_command_exists(cmd: &str) {
 
 // ── FAT32 disk image ──────────────────────────────────────────────────────────
 
+/// Create fresh or update existing disk image, preserving user files between runs.
 fn create_fat32_disk_image(path: &Path, runner_dir: &Path) {
-    const DISK_SIZE: u64 = 128 * 1024 * 1024; // 128 MB (needs room for doom1.wad ~14 MB)
+    if path.exists() {
+        update_fat32_disk_image(path, runner_dir);
+    } else {
+        create_fat32_disk_image_fresh(path, runner_dir);
+    }
+}
+
+/// First-run: format a new 128 MB FAT32 image and populate it.
+fn create_fat32_disk_image_fresh(path: &Path, runner_dir: &Path) {
+    const DISK_SIZE: u64 = 128 * 1024 * 1024;
 
     let mut disk: Cursor<Vec<u8>> = Cursor::new(vec![0u8; DISK_SIZE as usize]);
     fatfs::format_volume(
@@ -203,50 +216,69 @@ fn create_fat32_disk_image(path: &Path, runner_dir: &Path) {
     {
         let fs = fatfs::FileSystem::new(&mut disk, fatfs::FsOptions::new())
             .expect("fatfs: FileSystem::new failed");
-        let root = fs.root_dir();
-
-        for &(dep, bin, fat_name) in FAT32_BINARIES {
-            let bin_path = artifact_bin(dep, bin);
-            match std::fs::read(&bin_path) {
-                Ok(data) => {
-                    let mut f = root.create_file(fat_name).expect("fatfs: create_file failed");
-                    f.truncate().unwrap();
-                    f.write_all(&data).unwrap();
-                }
-                Err(e) => eprintln!("build.rs: skipping {fat_name}: {e}"),
-            }
-        }
-
-        let conf_src = runner_dir.join("bos_ds.conf");
-        let config = std::fs::read(&conf_src)
-            .unwrap_or_else(|e| panic!("build.rs: cannot read {}: {e}", conf_src.display()));
-        root.create_file("bos_ds.conf").expect("fatfs: create bos_ds.conf")
-            .write_all(&config).unwrap();
-
-        // Launcher config
-        let launcher_conf = std::fs::read(runner_dir.join("launcher.conf")).unwrap_or_default();
-        root.create_file("LAUNCH.CFG").expect("fatfs: create LAUNCH.CFG")
-            .write_all(&launcher_conf).unwrap();
-
-        // Network config
-        let net_conf = std::fs::read(runner_dir.join("net.conf")).unwrap_or_default();
-        root.create_file("net.conf").expect("fatfs: create net.conf")
-            .write_all(&net_conf).unwrap();
-
-        // Doom WAD file
-        let wad_path = runner_dir.join("assets/doom1.wad");
-        if wad_path.exists() {
-            let wad_data = std::fs::read(&wad_path)
-                .unwrap_or_else(|e| panic!("build.rs: cannot read doom1.wad: {e}"));
-            root.create_file("DOOM1.WAD").expect("fatfs: create DOOM1.WAD")
-                .write_all(&wad_data).unwrap();
-            println!("build.rs: wrote doom1.wad ({} MB)", wad_data.len() / 1_048_576);
-        } else {
-            println!("cargo:warning=doom1.wad not found at {}; Doom will fail to start", wad_path.display());
-        }
-        println!("cargo:rerun-if-changed={}", wad_path.display());
+        write_fat32_managed_files(&fs.root_dir(), runner_dir);
     }
 
     std::fs::write(path, disk.into_inner()).expect("build.rs: failed to write disk.img");
-    println!("build.rs: wrote {} MB disk image to {}", DISK_SIZE / 1_048_576, path.display());
+    println!("build.rs: created fresh disk.img ({} MB)", DISK_SIZE / 1_048_576);
+}
+
+/// Subsequent runs: open existing image and overwrite only the managed files
+/// (binaries, configs, WAD). User-created files (text files, logs, etc.) are untouched.
+fn update_fat32_disk_image(path: &Path, runner_dir: &Path) {
+    let mut data = std::fs::read(path).expect("build.rs: failed to read disk.img");
+    {
+        let mut cursor = Cursor::new(&mut data);
+        let fs = fatfs::FileSystem::new(&mut cursor, fatfs::FsOptions::new())
+            .expect("fatfs: failed to open existing disk.img");
+        write_fat32_managed_files(&fs.root_dir(), runner_dir);
+    }
+    std::fs::write(path, &data).expect("build.rs: failed to write disk.img");
+    println!("build.rs: updated disk.img (binaries refreshed, user files preserved)");
+}
+
+/// Write all build-managed files into an open FAT32 root directory.
+/// Calling this on an existing filesystem overwrites managed files and leaves everything else.
+fn write_fat32_managed_files(root: &fatfs::Dir<impl fatfs::ReadWriteSeek>, runner_dir: &Path) {
+    for &(dep, bin, fat_name) in FAT32_BINARIES {
+        let bin_path = artifact_bin(dep, bin);
+        match std::fs::read(&bin_path) {
+            Ok(bin_data) => {
+                let mut f = root.create_file(fat_name).expect("fatfs: create_file failed");
+                f.truncate().unwrap();
+                f.write_all(&bin_data).unwrap();
+            }
+            Err(e) => eprintln!("build.rs: skipping {fat_name}: {e}"),
+        }
+    }
+
+    let conf_src = runner_dir.join("bos_ds.conf");
+    let config = std::fs::read(&conf_src)
+        .unwrap_or_else(|e| panic!("build.rs: cannot read {}: {e}", conf_src.display()));
+    let mut f = root.create_file("bos_ds.conf").expect("fatfs: create bos_ds.conf");
+    f.truncate().unwrap();
+    f.write_all(&config).unwrap();
+
+    let launcher_conf = std::fs::read(runner_dir.join("launcher.conf")).unwrap_or_default();
+    let mut f = root.create_file("LAUNCH.CFG").expect("fatfs: create LAUNCH.CFG");
+    f.truncate().unwrap();
+    f.write_all(&launcher_conf).unwrap();
+
+    let net_conf = std::fs::read(runner_dir.join("net.conf")).unwrap_or_default();
+    let mut f = root.create_file("net.conf").expect("fatfs: create net.conf");
+    f.truncate().unwrap();
+    f.write_all(&net_conf).unwrap();
+
+    let wad_path = runner_dir.join("assets/doom1.wad");
+    if wad_path.exists() {
+        let wad_data = std::fs::read(&wad_path)
+            .unwrap_or_else(|e| panic!("build.rs: cannot read doom1.wad: {e}"));
+        let mut f = root.create_file("DOOM1.WAD").expect("fatfs: create DOOM1.WAD");
+        f.truncate().unwrap();
+        f.write_all(&wad_data).unwrap();
+        println!("build.rs: wrote doom1.wad ({} MB)", wad_data.len() / 1_048_576);
+    } else {
+        println!("cargo:warning=doom1.wad not found at {}; Doom will fail to start", wad_path.display());
+    }
+    println!("cargo:rerun-if-changed={}", wad_path.display());
 }

@@ -196,22 +196,16 @@ impl Launcher {
         use kernel_api_types::KeyEventType;
         match k.event_type {
             KeyEventType::Escape => return Action::Hide,
-            KeyEventType::Enter => {
-                if self.nfilt > 0 {
-                    return Action::Launch(self.filtered[self.sel]);
-                }
+            KeyEventType::Enter if self.nfilt > 0 => {
+                return Action::Launch(self.filtered[self.sel]);
             }
-            KeyEventType::ArrowDown => {
-                if self.nfilt > 0 && self.sel + 1 < self.nfilt {
-                    self.sel += 1;
-                    self.dirty = true;
-                }
+            KeyEventType::ArrowDown if self.nfilt > 0 && self.sel + 1 < self.nfilt => {
+                self.sel += 1;
+                self.dirty = true;
             }
-            KeyEventType::ArrowUp => {
-                if self.sel > 0 {
-                    self.sel -= 1;
-                    self.dirty = true;
-                }
+            KeyEventType::ArrowUp if self.sel > 0 => {
+                self.sel -= 1;
+                self.dirty = true;
             }
             KeyEventType::Backspace => {
                 self.search.pop();

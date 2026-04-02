@@ -76,8 +76,7 @@ impl Log for KernelLogger {
             let tsc_now    = crate::time::tsc::value();
             let start_tsc  = LOG_START_TSC.load(Ordering::Relaxed);
             let ticks_per_ms = crate::time::tsc::TSC_TICKS_PER_MS.load(Ordering::Relaxed);
-            if ticks_per_ms > 0 {
-                let ms = tsc_now.saturating_sub(start_tsc) / ticks_per_ms;
+            if let Some(ms) = tsc_now.saturating_sub(start_tsc).checked_div(ticks_per_ms) {
                 inner.write_with_color(Color::Gray, format_args!("[{ms:>6}ms] "));
             }
 

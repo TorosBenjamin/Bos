@@ -40,10 +40,6 @@ fn now() -> Instant {
 const PING_IDENT: u16 = 0x0B05;
 const PING_SEQ:   u16 = 1;
 
-const TAG_PING_SENT:    u64 = 0x00BE_EF01;
-const TAG_PING_REPLY:   u64 = 0x00BE_EF02;
-const TAG_PING_TIMEOUT: u64 = 0x00BE_EF03;
-
 // ── TCP socket table ───────────────────────────────────────────────────────────
 const MAX_TCP: usize = 16;
 const MAX_DNS: usize = 4;
@@ -210,6 +206,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
     // ── Service registration ───────────────────────────────────────────────────
     let (net_send_fd, net_recv_fd) = ulib::handle::channel(64).unwrap();
     ulib::handle::register_service(b"net", net_send_fd);
+    ulib::log::write(ulib::log::LogLevel::Info, "net", "started");
 
     // ── State ─────────────────────────────────────────────────────────────────
     // In static mode the gateway is known upfront; in DHCP mode it's set later.
@@ -256,7 +253,12 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
         match dhcp_action {
             DhcpAction::None => {}
             DhcpAction::Configured { address, router, dns } => {
-                ulib::sys_debug_log(u32::from_be_bytes(address.address().0) as u64, 0x00DC_0001);
+                let ip = address.address().0;
+                let msg = alloc::format!(
+                    "DHCP configured: {}.{}.{}.{}/{}",
+                    ip[0], ip[1], ip[2], ip[3], address.prefix_len()
+                );
+                ulib::log::write(ulib::log::LogLevel::Info, "net", &msg);
 
                 iface.update_ip_addrs(|addrs| {
                     addrs.clear();
@@ -269,10 +271,10 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                     iface.routes_mut().remove_default_ipv4_route();
                 }
 
-                // DEBUG: log DNS server count and first server IP
-                ulib::sys_debug_log(dns.len() as u64, 0x00DC_0003);
                 if let Some(IpAddress::Ipv4(a)) = dns.first() {
-                    ulib::sys_debug_log(u32::from_be_bytes(a.0) as u64, 0x00DC_0004);
+                    let d = a.0;
+                    let dns_msg = alloc::format!("DNS server: {}.{}.{}.{}", d[0], d[1], d[2], d[3]);
+                    ulib::log::write(ulib::log::LogLevel::Info, "net", &dns_msg);
                 }
 
                 sockets.get_mut::<dns::Socket>(dns_handle).update_servers(&dns);
@@ -281,7 +283,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                 ping_target = router.map(IpAddress::Ipv4);
             }
             DhcpAction::Deconfigured => {
-                ulib::sys_debug_log(0, 0x00DC_0002);
+                ulib::log::write(ulib::log::LogLevel::Warn, "net", "DHCP deconfigured");
                 iface.update_ip_addrs(|addrs| addrs.clear());
                 iface.routes_mut().remove_default_ipv4_route();
                 ping_target = None;
@@ -304,7 +306,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                         repr.emit(&mut pkt, &ChecksumCapabilities::default());
                         ping_sent    = true;
                         ping_sent_at = sys_get_time_ns();
-                        ulib::sys_debug_log(PING_SEQ as u64, TAG_PING_SENT);
+                        ulib::log::write(ulib::log::LogLevel::Info, "net", "ping sent");
                     }
                 }
             }
@@ -319,7 +321,8 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                                 if ident == PING_IDENT && seq_no == PING_SEQ {
                                     let rtt_ms =
                                         (sys_get_time_ns() - ping_sent_at) / 1_000_000;
-                                    ulib::sys_debug_log(rtt_ms, TAG_PING_REPLY);
+                                    let msg = alloc::format!("ping reply rtt={}ms", rtt_ms);
+                                    ulib::log::write(ulib::log::LogLevel::Info, "net", &msg);
                                     ping_done = true;
                                 }
                             }
@@ -330,7 +333,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                 if !ping_done
                     && sys_get_time_ns().saturating_sub(ping_sent_at) > 5_000_000_000
                 {
-                    ulib::sys_debug_log(0, TAG_PING_TIMEOUT);
+                    ulib::log::write(ulib::log::LogLevel::Warn, "net", "ping timeout");
                     ping_done = true;
                 }
             }
@@ -352,7 +355,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
             let state = sockets.get::<tcp::Socket>(handle).state();
             match state {
                 tcp::State::Established => {
-                    ulib::sys_debug_log(id as u64, 0xBEEF_2004);
+                    ulib::log::write(ulib::log::LogLevel::Info, "net", "TCP connected");
                     let mut rep = [0u8; 8];
                     rep[0..4].copy_from_slice(&(id as u32).to_le_bytes());
                     // rep[4..8] = NET_OK (zero)
@@ -361,7 +364,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                     slot.as_mut().unwrap().reply_fd = None;
                 }
                 tcp::State::Closed | tcp::State::CloseWait => {
-                    ulib::sys_debug_log(id as u64, 0xBEEF_2005);
+                    ulib::log::write(ulib::log::LogLevel::Warn, "net", "TCP connect refused");
                     let mut rep = [0u8; 8];
                     rep[4..8].copy_from_slice(&NET_ERR_REFUSED.to_le_bytes());
                     sys_try_channel_send(rp as u64, &rep);
@@ -371,7 +374,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                 }
                 _ if timed_out => {
                     // SynSent / SynReceived too long — give up.
-                    ulib::sys_debug_log(id as u64, 0xBEEF_2006);
+                    ulib::log::write(ulib::log::LogLevel::Warn, "net", "TCP connect timeout");
                     sockets.get_mut::<tcp::Socket>(handle).abort();
                     let mut rep = [0u8; 8];
                     rep[4..8].copy_from_slice(&NET_ERR_TIMEOUT.to_le_bytes());
@@ -425,11 +428,11 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                     let mut rep = [0u8; 8];
                     if let Some(IpAddress::Ipv4(v4)) = addrs.first().copied() {
                         rep[4..8].copy_from_slice(&v4.0);
-                        // DEBUG: log resolved IP as u32 big-endian
-                        ulib::sys_debug_log(u32::from_be_bytes(v4.0) as u64, 0xBEEF_1001);
+                        let d = v4.0;
+                        let msg = alloc::format!("DNS resolved: {}.{}.{}.{}", d[0], d[1], d[2], d[3]);
+                        ulib::log::write(ulib::log::LogLevel::Info, "net", &msg);
                     } else {
-                        // No IPv4 address: treat as failure so caller gets DnsError
-                        ulib::sys_debug_log(addrs.len() as u64, 0xBEEF_1002);
+                        ulib::log::write(ulib::log::LogLevel::Warn, "net", "DNS: no IPv4 result");
                         rep[0..4].copy_from_slice(&NET_ERR_TIMEOUT.to_le_bytes());
                     }
                     sys_try_channel_send(entry.reply_ep, &rep);
@@ -438,7 +441,7 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                 }
                 Err(dns::GetQueryResultError::Pending) => {}
                 Err(_) => {
-                    ulib::sys_debug_log(0, 0xBEEF_1003);
+                    ulib::log::write(ulib::log::LogLevel::Error, "net", "DNS query failed");
                     let mut rep = [0u8; 8];
                     rep[0..4].copy_from_slice(&NET_ERR_TIMEOUT.to_le_bytes());
                     sys_try_channel_send(entry.reply_ep, &rep);
@@ -480,12 +483,13 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                     let mut socket = tcp::Socket::new(rx_buf, tx_buf);
 
                     let cx = iface.context();
-                    // DEBUG: log connect attempt — high 32 bits = IP, low 16 = port
                     let ip_u32 = u32::from_be_bytes(ip);
-                    ulib::sys_debug_log(((ip_u32 as u64) << 16) | port as u64, 0xBEEF_2001);
+                    {
+                        let msg = alloc::format!("TCP connect {}.{}.{}.{}:{}", ip[0], ip[1], ip[2], ip[3], port);
+                        ulib::log::write(ulib::log::LogLevel::Info, "net", &msg);
+                    }
                     match socket.connect(cx, remote, local_port) {
                         Ok(()) => {
-                            ulib::sys_debug_log(id as u64, 0xBEEF_2002);
                             let handle = sockets.add(socket);
                             tcp_table[id] = Some(TcpEntry {
                                 handle,
@@ -496,7 +500,8 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
                             });
                         }
                         Err(_) => {
-                            ulib::sys_debug_log(ip_u32 as u64, 0xBEEF_2003);
+                            let _ = ip_u32;
+                            ulib::log::write(ulib::log::LogLevel::Error, "net", "TCP connect failed");
                             let mut rep = [0u8; 8];
                             rep[4..8].copy_from_slice(&NET_ERR_INVALID.to_le_bytes());
                             sys_try_channel_send(reply_ep, &rep);

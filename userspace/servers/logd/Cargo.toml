@@ -1,0 +1,13 @@
+[package]
+name = "logd"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "logd"
+test = false
+
+[dependencies]
+ulib             = { path = "../../frameworks/ulib" }
+kernel_api_types = { path = "../../../../kernel-api" }

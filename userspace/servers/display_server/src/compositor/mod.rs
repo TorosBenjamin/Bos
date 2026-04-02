@@ -54,6 +54,7 @@ pub struct Compositor {
     next_window_id: WindowId,
     recv_fd: u32,
     /// Keyboard handle fd (opened once at init).
+    #[allow(dead_code)]
     kb_fd: u32,
     /// z_order[0] = bottom-most, z_order[n_windows-1] = top-most
     z_order: [WindowId; MAX_WINDOWS],

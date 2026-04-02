@@ -58,10 +58,7 @@ impl Window {
             return None;
         }
         // Wrap the raw send endpoint as a handle fd (direction=1 for send).
-        let event_send_fd = match ulib::handle::handle_from_channel(event_send_ep, 1) {
-            Some(fd) => fd,
-            None => 0,
-        };
+        let event_send_fd = ulib::handle::handle_from_channel(event_send_ep, 1).unwrap_or_default();
         Some(Window {
             id,
             x,

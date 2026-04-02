@@ -82,9 +82,9 @@ impl Pipe {
         }
 
         let to_read = buf.len().min(inner.len);
-        for i in 0..to_read {
+        for slot in &mut buf[..to_read] {
             let pos = inner.read_pos;
-            buf[i] = inner.buf[pos];
+            *slot = inner.buf[pos];
             inner.read_pos = (pos + 1) % PIPE_BUF_SIZE;
         }
         inner.len -= to_read;
@@ -109,9 +109,9 @@ impl Pipe {
         }
 
         let to_write = data.len().min(available);
-        for i in 0..to_write {
+        for &byte in &data[..to_write] {
             let pos = inner.write_pos;
-            inner.buf[pos] = data[i];
+            inner.buf[pos] = byte;
             inner.write_pos = (pos + 1) % PIPE_BUF_SIZE;
         }
         inner.len += to_write;

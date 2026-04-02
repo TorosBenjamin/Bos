@@ -430,14 +430,6 @@ fn render_blocks(
 fn do_fetch(url: &str) -> Page {
     match http_client::http_get(url) {
         Err(e) => {
-            let code: u64 = match e {
-                http_client::HttpError::DnsError     => 1,
-                http_client::HttpError::ConnectError => 2,
-                http_client::HttpError::TooLarge     => 3,
-                http_client::HttpError::ParseError   => 4,
-                http_client::HttpError::TlsError     => 5,
-            };
-            ulib::sys_debug_log(code, 0xB05E_0001);
             let msg = match e {
                 http_client::HttpError::DnsError     => "DNS resolution failed",
                 http_client::HttpError::ConnectError => "TCP connection failed",
@@ -445,10 +437,12 @@ fn do_fetch(url: &str) -> Page {
                 http_client::HttpError::ParseError   => "Invalid HTTP response",
                 http_client::HttpError::TlsError     => "TLS handshake failed",
             };
+            ulib::log::write(ulib::log::LogLevel::Error, "boser", msg);
             Page::Error { url: String::from(url), msg: String::from(msg) }
         }
         Ok(resp) => {
-            ulib::sys_debug_log(resp.status as u64, 0xB05E_0002);
+            let status_msg = alloc::format!("HTTP {} {}", resp.status, url);
+            ulib::log::write(ulib::log::LogLevel::Info, "boser", &status_msg);
             let body_text = core::str::from_utf8(&resp.body).unwrap_or("(binary body)");
             let content = html_renderer::parse_html(body_text, 100);
             let blocks = build_blocks(&content);

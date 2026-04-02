@@ -1,0 +1,11 @@
+[package]
+name = "log_reader"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "log_reader"
+
+[dependencies]
+fatfs = "0.3"

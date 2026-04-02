@@ -9,6 +9,7 @@ use kernel_api_types::fs::{
     DeleteFileRequest, DeleteFileResponse,
     MkdirRequest, MkdirResponse,
     RenameRequest, RenameResponse,
+    AppendFileRequest, AppendFileResponse,
 };
 use kernel_api_types::{MMAP_WRITE, SVC_ERR_NOT_FOUND};
 
@@ -217,11 +218,11 @@ const MAX_MSG_SIZE: usize = 4096;
 pub fn run(recv_fd: u32) -> ! {
     let mut fs = match Fat32::mount(IpcDisk::wait_for_ide()) {
         Some(f) => {
-            ulib::sys_debug_log(1, 0xFA32_0000); // "fatfs: mounted"
+            ulib::log::write(ulib::log::LogLevel::Info, "fatfs", "mounted");
             f
         }
         None => {
-            ulib::sys_debug_log(0, 0xFA32_DEAD); // "fatfs: mount failed"
+            ulib::log::write(ulib::log::LogLevel::Error, "fatfs", "mount failed");
             loop { ulib::sys_sleep_ms(100); }
         }
     };
@@ -249,6 +250,7 @@ pub fn run(recv_fd: u32) -> ! {
                     t if t == FsMessageType::DeleteFile as u8 => handle_delete_file(&mut fs, msg),
                     t if t == FsMessageType::Mkdir as u8      => handle_mkdir(&mut fs, msg),
                     t if t == FsMessageType::Rename as u8     => handle_rename(&mut fs, msg),
+                    t if t == FsMessageType::AppendFile as u8 => handle_append_file(&mut fs, msg),
                     _ => {}
                 }
             }
@@ -555,4 +557,36 @@ fn handle_rename(fs: &mut Fat32<IpcDisk>, msg: &[u8]) {
     };
     let ok = fs.rename(old_path, new_name);
     send_response(reply_ep, &err_resp(if ok { FsResult::Ok } else { FsResult::NotFound }));
+}
+
+fn handle_append_file(fs: &mut Fat32<IpcDisk>, msg: &[u8]) {
+    const REQ: usize = mem::size_of::<AppendFileRequest>();
+    let reply_ep = match extract_reply_ep(msg, 1 + REQ) {
+        Some(ep) => ep,
+        None => return,
+    };
+
+    let err_resp = |result: FsResult| AppendFileResponse { result: result as u64 };
+
+    if msg.len() < 1 + REQ {
+        send_response(reply_ep, &err_resp(FsResult::IoError));
+        return;
+    }
+    let req: AppendFileRequest = unsafe {
+        core::ptr::read_unaligned(msg.as_ptr().add(1) as *const AppendFileRequest)
+    };
+    let path = match path_str(&req.path, req.path_len) {
+        Some(p) => p,
+        None => { send_response(reply_ep, &err_resp(FsResult::IoError)); return; }
+    };
+
+    let ptr = ulib::sys_map_shared_buf(req.shared_buf_id);
+    if ptr.is_null() {
+        send_response(reply_ep, &err_resp(FsResult::IoError));
+        return;
+    }
+
+    let data = unsafe { core::slice::from_raw_parts(ptr as *const u8, req.size as usize) };
+    let ok = fs.append_file(path, data);
+    send_response(reply_ep, &err_resp(if ok { FsResult::Ok } else { FsResult::IoError }));
 }

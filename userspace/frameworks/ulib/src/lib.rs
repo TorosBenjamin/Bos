@@ -43,6 +43,7 @@ pub mod bench_harness;
 pub mod handle;
 pub mod display;
 pub mod fs;
+pub mod log;
 pub mod net;
 pub mod window;
 pub mod test_framework;

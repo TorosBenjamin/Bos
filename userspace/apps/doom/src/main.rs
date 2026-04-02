@@ -128,7 +128,7 @@ impl bos_egui::App for DoomApp {
 
         // Blit DG_ScreenBuffer to the canvas, scaled to fill the window.
         egui::CentralPanel::default().show(ctx, |ui| {
-            let mut canvas = ui.canvas();
+            let canvas = ui.canvas();
             unsafe {
                 let screen = DG_ScreenBuffer;
                 if screen.is_null() { return; }
@@ -186,7 +186,6 @@ const KEY_LEFTARROW:  u8 = 0xac;
 const KEY_UPARROW:    u8 = 0xad;
 const KEY_DOWNARROW:  u8 = 0xaf;
 const KEY_USE:        u8 = 0xa2;
-const KEY_FIRE:       u8 = 0xa3;
 const KEY_ESCAPE:     u8 = 27;
 const KEY_ENTER:      u8 = 13;
 const KEY_TAB:        u8 = 9;
@@ -280,7 +279,7 @@ fn process_bos_key(key: kernel_api_types::KeyEvent) {
 /// Logs up to 4 consecutive 8-byte chunks so the full message is visible.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __doom_debug_str(s: *const u8, len: usize) {
-    let bytes = core::slice::from_raw_parts(s, len.min(32));
+    let bytes = unsafe { core::slice::from_raw_parts(s, len.min(32)) };
     for chunk in bytes.chunks(8) {
         let mut tag: u64 = 0;
         for (i, &b) in chunk.iter().enumerate() {
@@ -1044,7 +1043,7 @@ unsafe extern "C" fn fread(ptr: *mut u8, size: usize, count: usize, stream: *mut
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn fwrite(_ptr: *const u8, size: usize, count: usize, _stream: *mut u8) -> usize {
+unsafe extern "C" fn fwrite(_ptr: *const u8, _size: usize, count: usize, _stream: *mut u8) -> usize {
     count // pretend success (writes discarded)
 }
 

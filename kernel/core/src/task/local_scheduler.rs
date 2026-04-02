@@ -2,7 +2,7 @@ use crate::memory::cpu_local_data::{CpuLocalData, get_local, get_cpu, local_apic
 use crate::time::tsc;
 use crate::memory::MEMORY;
 use crate::task::task::{CpuContext, Task, TaskState};
-use crate::task::policy::{SchedulingPolicy, RoundRobinPolicy, PriorityPolicy, IpcAwarePolicy};
+use crate::task::policy::{SchedulingPolicy, PriorityPolicy};
 
 /// A waiter slot used by `sys_wait_for_event` to register a sleeping task
 /// against a single event source. Woken via `try_wake_slot` which uses a CAS
@@ -135,12 +135,11 @@ pub fn schedule_from_interrupt(cpu: &CpuLocalData) -> *mut CpuContext {
 
         // Accumulate fine-grained CPU time from the TSC slice.
         let ticks_per_ms = crate::time::tsc::TSC_TICKS_PER_MS.load(Ordering::Relaxed);
-        if ticks_per_ms > 0 {
-            let start = prev_task.slice_start_tsc.load(Ordering::Relaxed);
-            if start > 0 {
-                let elapsed_tsc = now_tsc.saturating_sub(start);
-                // elapsed_tsc * 1_000_000 ns/ms / ticks_per_ms
-                let elapsed_ns = elapsed_tsc.saturating_mul(1_000_000) / ticks_per_ms;
+        let start = prev_task.slice_start_tsc.load(Ordering::Relaxed);
+        if start > 0 {
+            let elapsed_tsc = now_tsc.saturating_sub(start);
+            // elapsed_tsc * 1_000_000 ns/ms / ticks_per_ms
+            if let Some(elapsed_ns) = elapsed_tsc.saturating_mul(1_000_000).checked_div(ticks_per_ms) {
                 prev_task.cpu_ns.fetch_add(elapsed_ns, Ordering::Relaxed);
             }
         }

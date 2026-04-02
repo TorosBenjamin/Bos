@@ -21,6 +21,7 @@ use kernel_api_types::SVC_ERR_NOT_FOUND;
 unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
     let (send_fd, recv_fd) = ulib::handle::channel(16).unwrap();
     ulib::handle::register_service(b"display", send_fd);
+    ulib::log::write(ulib::log::LogLevel::Info, "display", "started");
 
     let config = load_config();
     let mut compositor = Compositor::new(recv_fd, config);

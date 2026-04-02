@@ -7,6 +7,7 @@ use limine::request::{ExecutableFileRequest, FramebufferRequest, HhdmRequest, Me
 pub const INIT_TASK_PATH: &CStr = c"/init_task";
 pub const DISPLAY_SERVER_PATH: &CStr = c"/display_server";
 pub const FS_SERVER_PATH: &CStr = c"/fs_server";
+pub const LOGD_PATH: &CStr = c"/logd";
 pub const E1000_PATH: &CStr = c"/e1000";
 pub const NET_SERVER_PATH: &CStr = c"/net_server";
 pub const IDE_DRIVER_PATH: &CStr = c"/ide";
@@ -46,6 +47,7 @@ pub static MODULE_REQUEST: ModuleRequest =
         &InternalModule::new().with_path(INIT_TASK_PATH),
         &InternalModule::new().with_path(DISPLAY_SERVER_PATH),
         &InternalModule::new().with_path(FS_SERVER_PATH),
+        &InternalModule::new().with_path(LOGD_PATH),
         &InternalModule::new().with_path(E1000_PATH),
         &InternalModule::new().with_path(NET_SERVER_PATH),
         &InternalModule::new().with_path(IDE_DRIVER_PATH),

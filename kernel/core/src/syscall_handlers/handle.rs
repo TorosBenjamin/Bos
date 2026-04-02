@@ -4,11 +4,10 @@
 use crate::handle::{Handle, PipeEnd, IpcChannelEnd};
 use crate::memory::cpu_local_data::get_local;
 use crate::pipe::{Pipe, PipeReadResult, PipeWriteResult};
-use crate::task::task::{TaskKind, TaskState};
+use crate::task::task::TaskState;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
-use super::{validate_user_ptr, current_task_and_cpu};
+use super::validate_user_ptr;
 use kernel_api_types::*;
 
 // ---------------------------------------------------------------------------
@@ -839,11 +838,11 @@ pub fn sys_handle_wait(
         };
         let inner = task.inner.lock();
 
-        for i in 0..count {
+        for (i, ep_slot) in ep_ids[..count].iter_mut().enumerate() {
             let fd = unsafe { core::ptr::read_unaligned((fds_ptr as *const u32).add(i)) };
             match inner.handles.get(fd) {
                 Some(Handle::IpcChannel(ep_id, IpcChannelEnd::Recv)) => {
-                    ep_ids[i] = *ep_id;
+                    *ep_slot = *ep_id;
                 }
                 _ => return RESULT_INVALID,
             }
@@ -916,7 +915,7 @@ pub fn sys_handle_register_service(
     match crate::service_registry::register(name_bytes, ep_id, task.id) {
         Ok(()) => {
             let name_str = core::str::from_utf8(name_bytes).unwrap_or("?");
-            log::info!("sys_handle_register_service: ok name={:?} ep={}", name_str, ep_id);
+            ::log::info!("sys_handle_register_service: ok name={:?} ep={}", name_str, ep_id);
             let mut name_arr = [0u8; MAX_SERVICE_NAME_LEN];
             let copy_len = name_bytes.len().min(MAX_SERVICE_NAME_LEN);
             name_arr[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
