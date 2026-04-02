@@ -46,7 +46,7 @@ impl Default for StressState {
             fs_ops: 0,
             ipc_msgs: 0,
             apps_spawned: 0,
-            last_app: alloc::string::String::from("None"),
+            last_app: alloc::string::String::new(),
             current_phase: "Idle",
             log: alloc::vec::Vec::new(),
             auto_mode: true,
@@ -98,6 +98,7 @@ impl StressState {
             }
             _ => {}
         }
+        ulib::handle::close(fs_fd);
         self.fs_ops += 1;
     }
 
@@ -126,12 +127,14 @@ impl StressState {
             if !ptr.is_null() {
                 let elf_data = unsafe { core::slice::from_raw_parts(ptr, size as usize) };
                 let _ = ulib::sys_spawn(elf_data, 0);
+                ulib::sys_munmap(ptr, size);
                 self.apps_spawned += 1;
                 self.last_app = alloc::string::String::from(app_name);
                 self.add_log(format!("Spawned {}", app_name));
             }
             ulib::sys_destroy_shared_buf(buf_id);
         }
+        ulib::handle::close(fs_fd);
     }
 }
 
