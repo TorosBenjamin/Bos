@@ -2,6 +2,12 @@
 #![no_main]
 #![allow(non_upper_case_globals)]
 #![allow(static_mut_refs)]
+#![allow(clippy::missing_safety_doc)]
+#![allow(clippy::manual_range_contains)]
+#![allow(clippy::manual_is_multiple_of)]
+#![allow(clippy::manual_c_str_literals)]
+#![allow(clippy::slow_vector_initialization)]
+#![allow(clippy::needless_range_loop)]
 
 extern crate alloc;
 
@@ -346,56 +352,64 @@ extern "C" fn DG_SetWindowTitle(_title: *const u8) {}
 #[unsafe(no_mangle)]
 unsafe extern "C" fn malloc(size: usize) -> *mut u8 {
     if size == 0 { return core::ptr::null_mut(); }
-    MALLOC_COUNT += 1;
-    // Log every 200th call so we can track init progress without spamming
-    if MALLOC_COUNT % 200 == 0 {
-        ulib::sys_debug_log(MALLOC_COUNT as u64, 0xCC); // 0xCC = malloc count milestone
+    unsafe {
+        MALLOC_COUNT += 1;
+        // Log every 200th call so we can track init progress without spamming
+        if MALLOC_COUNT % 200 == 0 {
+            ulib::sys_debug_log(MALLOC_COUNT as u64, 0xCC); // 0xCC = malloc count milestone
+        }
+        if size > 512 * 1024 {
+            ulib::sys_debug_log(size as u64, 0xAA); // 0xAA = large malloc, value=size
+        }
+        let layout = core::alloc::Layout::from_size_align(size + core::mem::size_of::<usize>(), 8).unwrap();
+        let ptr = alloc::alloc::alloc(layout);
+        if ptr.is_null() {
+            ulib::sys_debug_log(size as u64, 0xAB); // 0xAB = malloc FAILED
+            return core::ptr::null_mut();
+        }
+        // Store allocation size for free/realloc
+        *(ptr as *mut usize) = size;
+        ptr.add(core::mem::size_of::<usize>())
     }
-    if size > 512 * 1024 {
-        ulib::sys_debug_log(size as u64, 0xAA); // 0xAA = large malloc, value=size
-    }
-    let layout = core::alloc::Layout::from_size_align(size + core::mem::size_of::<usize>(), 8).unwrap();
-    let ptr = alloc::alloc::alloc(layout);
-    if ptr.is_null() {
-        ulib::sys_debug_log(size as u64, 0xAB); // 0xAB = malloc FAILED
-        return core::ptr::null_mut();
-    }
-    // Store allocation size for free/realloc
-    *(ptr as *mut usize) = size;
-    ptr.add(core::mem::size_of::<usize>())
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn free(ptr: *mut u8) {
     if ptr.is_null() { return; }
-    let base = ptr.sub(core::mem::size_of::<usize>());
-    let size = *(base as *const usize);
-    let layout = core::alloc::Layout::from_size_align(size + core::mem::size_of::<usize>(), 8).unwrap();
-    alloc::alloc::dealloc(base, layout);
+    unsafe {
+        let base = ptr.sub(core::mem::size_of::<usize>());
+        let size = *(base as *const usize);
+        let layout = core::alloc::Layout::from_size_align(size + core::mem::size_of::<usize>(), 8).unwrap();
+        alloc::alloc::dealloc(base, layout);
+    }
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn realloc(ptr: *mut u8, new_size: usize) -> *mut u8 {
-    if ptr.is_null() { return malloc(new_size); }
-    if new_size == 0 { free(ptr); return core::ptr::null_mut(); }
-    let base = ptr.sub(core::mem::size_of::<usize>());
-    let old_size = *(base as *const usize);
-    let new_ptr = malloc(new_size);
-    if new_ptr.is_null() { return core::ptr::null_mut(); }
-    let copy_len = old_size.min(new_size);
-    core::ptr::copy_nonoverlapping(ptr, new_ptr, copy_len);
-    free(ptr);
-    new_ptr
+    unsafe {
+        if ptr.is_null() { return malloc(new_size); }
+        if new_size == 0 { free(ptr); return core::ptr::null_mut(); }
+        let base = ptr.sub(core::mem::size_of::<usize>());
+        let old_size = *(base as *const usize);
+        let new_ptr = malloc(new_size);
+        if new_ptr.is_null() { return core::ptr::null_mut(); }
+        let copy_len = old_size.min(new_size);
+        core::ptr::copy_nonoverlapping(ptr, new_ptr, copy_len);
+        free(ptr);
+        new_ptr
+    }
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn calloc(count: usize, size: usize) -> *mut u8 {
     let total = count.saturating_mul(size);
-    let ptr = malloc(total);
-    if !ptr.is_null() {
-        core::ptr::write_bytes(ptr, 0, total);
+    unsafe {
+        let ptr = malloc(total);
+        if !ptr.is_null() {
+            core::ptr::write_bytes(ptr, 0, total);
+        }
+        ptr
     }
-    ptr
 }
 
 // String functions
@@ -403,30 +417,36 @@ unsafe extern "C" fn calloc(count: usize, size: usize) -> *mut u8 {
 #[unsafe(no_mangle)]
 unsafe extern "C" fn strlen(s: *const u8) -> usize {
     let mut n = 0;
-    while *s.add(n) != 0 { n += 1; }
+    unsafe {
+        while *s.add(n) != 0 { n += 1; }
+    }
     n
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn strcpy(dst: *mut u8, src: *const u8) -> *mut u8 {
     let mut i = 0;
-    loop {
-        let c = *src.add(i);
-        *dst.add(i) = c;
-        if c == 0 { break; }
-        i += 1;
+    unsafe {
+        loop {
+            let c = *src.add(i);
+            *dst.add(i) = c;
+            if c == 0 { break; }
+            i += 1;
+        }
     }
     dst
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn strncpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
-    for i in 0..n {
-        let c = *src.add(i);
-        *dst.add(i) = c;
-        if c == 0 {
-            for j in (i + 1)..n { *dst.add(j) = 0; }
-            return dst;
+    unsafe {
+        for i in 0..n {
+            let c = *src.add(i);
+            *dst.add(i) = c;
+            if c == 0 {
+                for j in (i + 1)..n { *dst.add(j) = 0; }
+                return dst;
+            }
         }
     }
     dst
@@ -435,22 +455,26 @@ unsafe extern "C" fn strncpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn strcmp(s1: *const u8, s2: *const u8) -> i32 {
     let mut i = 0;
-    loop {
-        let a = *s1.add(i);
-        let b = *s2.add(i);
-        if a != b { return (a as i32) - (b as i32); }
-        if a == 0 { return 0; }
-        i += 1;
+    unsafe {
+        loop {
+            let a = *s1.add(i);
+            let b = *s2.add(i);
+            if a != b { return (a as i32) - (b as i32); }
+            if a == 0 { return 0; }
+            i += 1;
+        }
     }
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn strncmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
-    for i in 0..n {
-        let a = *s1.add(i);
-        let b = *s2.add(i);
-        if a != b { return (a as i32) - (b as i32); }
-        if a == 0 { return 0; }
+    unsafe {
+        for i in 0..n {
+            let a = *s1.add(i);
+            let b = *s2.add(i);
+            if a != b { return (a as i32) - (b as i32); }
+            if a == 0 { return 0; }
+        }
     }
     0
 }
@@ -462,42 +486,50 @@ unsafe fn ascii_lower(c: u8) -> u8 {
 #[unsafe(no_mangle)]
 unsafe extern "C" fn strcasecmp(s1: *const u8, s2: *const u8) -> i32 {
     let mut i = 0;
-    loop {
-        let a = ascii_lower(*s1.add(i));
-        let b = ascii_lower(*s2.add(i));
-        if a != b { return (a as i32) - (b as i32); }
-        if a == 0 { return 0; }
-        i += 1;
+    unsafe {
+        loop {
+            let a = ascii_lower(*s1.add(i));
+            let b = ascii_lower(*s2.add(i));
+            if a != b { return (a as i32) - (b as i32); }
+            if a == 0 { return 0; }
+            i += 1;
+        }
     }
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn strncasecmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
-    for i in 0..n {
-        let a = ascii_lower(*s1.add(i));
-        let b = ascii_lower(*s2.add(i));
-        if a != b { return (a as i32) - (b as i32); }
-        if a == 0 { return 0; }
+    unsafe {
+        for i in 0..n {
+            let a = ascii_lower(*s1.add(i));
+            let b = ascii_lower(*s2.add(i));
+            if a != b { return (a as i32) - (b as i32); }
+            if a == 0 { return 0; }
+        }
     }
     0
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn strcat(dst: *mut u8, src: *const u8) -> *mut u8 {
-    let len = strlen(dst as *const u8);
-    strcpy(dst.add(len), src);
+    unsafe {
+        let len = strlen(dst as *const u8);
+        strcpy(dst.add(len), src);
+    }
     dst
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn strncat(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
-    let len = strlen(dst as *const u8);
-    for i in 0..n {
-        let c = *src.add(i);
-        *dst.add(len + i) = c;
-        if c == 0 { return dst; }
+    unsafe {
+        let len = strlen(dst as *const u8);
+        for i in 0..n {
+            let c = *src.add(i);
+            *dst.add(len + i) = c;
+            if c == 0 { return dst; }
+        }
+        *dst.add(len + n) = 0;
     }
-    *dst.add(len + n) = 0;
     dst
 }
 
@@ -505,44 +537,52 @@ unsafe extern "C" fn strncat(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 
 unsafe extern "C" fn strchr(s: *const u8, c: i32) -> *mut u8 {
     let ch = c as u8;
     let mut i = 0;
-    loop {
-        let b = *s.add(i);
-        if b == ch { return s.add(i) as *mut u8; }
-        if b == 0  { return core::ptr::null_mut(); }
-        i += 1;
+    unsafe {
+        loop {
+            let b = *s.add(i);
+            if b == ch { return s.add(i) as *mut u8; }
+            if b == 0  { return core::ptr::null_mut(); }
+            i += 1;
+        }
     }
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn strrchr(s: *const u8, c: i32) -> *mut u8 {
     let ch = c as u8;
-    let len = strlen(s);
-    let mut i = len as isize;
-    while i >= 0 {
-        if *s.add(i as usize) == ch { return s.add(i as usize) as *mut u8; }
-        i -= 1;
+    unsafe {
+        let len = strlen(s);
+        let mut i = len as isize;
+        while i >= 0 {
+            if *s.add(i as usize) == ch { return s.add(i as usize) as *mut u8; }
+            i -= 1;
+        }
     }
     core::ptr::null_mut()
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn strdup(s: *const u8) -> *mut u8 {
-    let len = strlen(s);
-    let dst = malloc(len + 1);
-    if dst.is_null() { return core::ptr::null_mut(); }
-    core::ptr::copy_nonoverlapping(s, dst, len + 1);
-    dst
+    unsafe {
+        let len = strlen(s);
+        let dst = malloc(len + 1);
+        if dst.is_null() { return core::ptr::null_mut(); }
+        core::ptr::copy_nonoverlapping(s, dst, len + 1);
+        dst
+    }
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn strstr(haystack: *const u8, needle: *const u8) -> *mut u8 {
-    let nlen = strlen(needle);
-    if nlen == 0 { return haystack as *mut u8; }
-    let hlen = strlen(haystack);
-    if hlen < nlen { return core::ptr::null_mut(); }
-    for i in 0..=(hlen - nlen) {
-        if strncmp(haystack.add(i), needle, nlen) == 0 {
-            return haystack.add(i) as *mut u8;
+    unsafe {
+        let nlen = strlen(needle);
+        if nlen == 0 { return haystack as *mut u8; }
+        let hlen = strlen(haystack);
+        if hlen < nlen { return core::ptr::null_mut(); }
+        for i in 0..=(hlen - nlen) {
+            if strncmp(haystack.add(i), needle, nlen) == 0 {
+                return haystack.add(i) as *mut u8;
+            }
         }
     }
     core::ptr::null_mut()
@@ -552,28 +592,30 @@ static mut STRTOK_STATE: *mut u8 = core::ptr::null_mut();
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn strtok(s: *mut u8, delim: *const u8) -> *mut u8 {
-    let ptr = if !s.is_null() { s } else { STRTOK_STATE };
-    if ptr.is_null() { return core::ptr::null_mut(); }
-    // Skip leading delimiters
-    let mut cur = ptr;
-    loop {
-        let c = *cur;
-        if c == 0 { STRTOK_STATE = core::ptr::null_mut(); return core::ptr::null_mut(); }
-        if strchr(delim, c as i32).is_null() { break; }
-        cur = cur.add(1);
-    }
-    let start = cur;
-    loop {
-        let c = *cur;
-        if c == 0 { STRTOK_STATE = cur; break; }
-        if !strchr(delim, c as i32).is_null() {
-            *cur = 0;
-            STRTOK_STATE = cur.add(1);
-            break;
+    unsafe {
+        let ptr = if !s.is_null() { s } else { STRTOK_STATE };
+        if ptr.is_null() { return core::ptr::null_mut(); }
+        // Skip leading delimiters
+        let mut cur = ptr;
+        loop {
+            let c = *cur;
+            if c == 0 { STRTOK_STATE = core::ptr::null_mut(); return core::ptr::null_mut(); }
+            if strchr(delim, c as i32).is_null() { break; }
+            cur = cur.add(1);
         }
-        cur = cur.add(1);
+        let start = cur;
+        loop {
+            let c = *cur;
+            if c == 0 { STRTOK_STATE = cur; break; }
+            if !strchr(delim, c as i32).is_null() {
+                *cur = 0;
+                STRTOK_STATE = cur.add(1);
+                break;
+            }
+            cur = cur.add(1);
+        }
+        start
     }
-    start
 }
 
 #[unsafe(no_mangle)]
@@ -588,7 +630,9 @@ unsafe extern "C" fn strerror(_errnum: i32) -> *mut u8 {
 #[unsafe(no_mangle)]
 unsafe extern "C" fn memset(s: *mut u8, c: i32, n: usize) -> *mut u8 {
     let byte = c as u8;
-    for i in 0..n { *s.add(i) = byte; }
+    unsafe {
+        for i in 0..n { *s.add(i) = byte; }
+    }
     s
 }
 
@@ -596,28 +640,34 @@ unsafe extern "C" fn memset(s: *mut u8, c: i32, n: usize) -> *mut u8 {
 unsafe extern "C" fn memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     // Do NOT call copy_nonoverlapping here — the compiler lowers it to a `call memcpy`
     // instruction, which would recurse back into this function and exhaust the stack.
-    for i in 0..n { *dst.add(i) = *src.add(i); }
+    unsafe {
+        for i in 0..n { *dst.add(i) = *src.add(i); }
+    }
     dst
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn memmove(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     // Do NOT call core::ptr::copy here — same recursion risk as memcpy.
-    if (dst as usize) <= (src as usize) || (dst as usize) >= (src as usize).wrapping_add(n) {
-        for i in 0..n { *dst.add(i) = *src.add(i); }
-    } else {
-        let mut i = n;
-        while i > 0 { i -= 1; *dst.add(i) = *src.add(i); }
+    unsafe {
+        if (dst as usize) <= (src as usize) || (dst as usize) >= (src as usize).wrapping_add(n) {
+            for i in 0..n { *dst.add(i) = *src.add(i); }
+        } else {
+            let mut i = n;
+            while i > 0 { i -= 1; *dst.add(i) = *src.add(i); }
+        }
     }
     dst
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
-    for i in 0..n {
-        let a = *s1.add(i);
-        let b = *s2.add(i);
-        if a != b { return (a as i32) - (b as i32); }
+    unsafe {
+        for i in 0..n {
+            let a = *s1.add(i);
+            let b = *s2.add(i);
+            if a != b { return (a as i32) - (b as i32); }
+        }
     }
     0
 }
@@ -671,71 +721,75 @@ unsafe extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn atoi(s: *const u8) -> i32 {
-    strtol_impl(s, core::ptr::null_mut(), 10) as i32
+    unsafe { strtol_impl(s, core::ptr::null_mut(), 10) as i32 }
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn atol(s: *const u8) -> i64 {
-    strtol_impl(s, core::ptr::null_mut(), 10)
+    unsafe { strtol_impl(s, core::ptr::null_mut(), 10) }
 }
 
 unsafe fn strtol_impl(s: *const u8, endptr: *mut *mut u8, base: i32) -> i64 {
-    let mut p = s;
-    while isspace(*p as i32) != 0 { p = p.add(1); }
-    let neg = if *p == b'-' { p = p.add(1); true }
-              else if *p == b'+' { p = p.add(1); false }
-              else { false };
-    let base: u64 = if base == 0 {
-        if *p == b'0' {
+    unsafe {
+        let mut p = s;
+        while isspace(*p as i32) != 0 { p = p.add(1); }
+        let neg = if *p == b'-' { p = p.add(1); true }
+                  else if *p == b'+' { p = p.add(1); false }
+                  else { false };
+        let base_val: u64 = if base == 0 {
+            if *p == b'0' {
+                p = p.add(1);
+                if *p == b'x' || *p == b'X' { p = p.add(1); 16 } else { 8 }
+            } else { 10 }
+        } else { base as u64 };
+        let mut val: u64 = 0;
+        loop {
+            let c = *p;
+            let digit: u64 = if c >= b'0' && c <= b'9' { (c - b'0') as u64 }
+                else if c >= b'a' && c <= b'z' { (c - b'a' + 10) as u64 }
+                else if c >= b'A' && c <= b'Z' { (c - b'A' + 10) as u64 }
+                else { break };
+            if digit >= base_val { break; }
+            val = val.wrapping_mul(base_val).wrapping_add(digit);
             p = p.add(1);
-            if *p == b'x' || *p == b'X' { p = p.add(1); 16 } else { 8 }
-        } else { 10 }
-    } else { base as u64 };
-    let mut val: u64 = 0;
-    loop {
-        let c = *p;
-        let digit: u64 = if c >= b'0' && c <= b'9' { (c - b'0') as u64 }
-            else if c >= b'a' && c <= b'z' { (c - b'a' + 10) as u64 }
-            else if c >= b'A' && c <= b'Z' { (c - b'A' + 10) as u64 }
-            else { break };
-        if digit >= base { break; }
-        val = val.wrapping_mul(base).wrapping_add(digit);
-        p = p.add(1);
+        }
+        if !endptr.is_null() { *endptr = p as *mut u8; }
+        if neg { -(val as i64) } else { val as i64 }
     }
-    if !endptr.is_null() { *endptr = p as *mut u8; }
-    if neg { -(val as i64) } else { val as i64 }
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn strtol(s: *const u8, endptr: *mut *mut u8, base: i32) -> i64 {
-    strtol_impl(s, endptr, base)
+    unsafe { strtol_impl(s, endptr, base) }
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn strtoul(s: *const u8, endptr: *mut *mut u8, base: i32) -> u64 {
-    strtol_impl(s, endptr, base) as u64
+    unsafe { strtol_impl(s, endptr, base) as u64 }
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn atof(s: *const u8) -> f64 {
     // Very minimal: handle integer part and one decimal place
-    let mut p = s;
-    while isspace(*p as i32) != 0 { p = p.add(1); }
-    let neg = if *p == b'-' { p = p.add(1); true } else if *p == b'+' { p = p.add(1); false } else { false };
-    let mut int_part: f64 = 0.0;
-    while *p >= b'0' && *p <= b'9' { int_part = int_part * 10.0 + (*p - b'0') as f64; p = p.add(1); }
-    let mut frac: f64 = 0.0;
-    if *p == b'.' {
-        p = p.add(1);
-        let mut div = 10.0f64;
-        while *p >= b'0' && *p <= b'9' {
-            frac += (*p - b'0') as f64 / div;
-            div *= 10.0;
+    unsafe {
+        let mut p = s;
+        while isspace(*p as i32) != 0 { p = p.add(1); }
+        let neg = if *p == b'-' { p = p.add(1); true } else if *p == b'+' { p = p.add(1); false } else { false };
+        let mut int_part: f64 = 0.0;
+        while *p >= b'0' && *p <= b'9' { int_part = int_part * 10.0 + (*p - b'0') as f64; p = p.add(1); }
+        let mut frac: f64 = 0.0;
+        if *p == b'.' {
             p = p.add(1);
+            let mut div = 10.0f64;
+            while *p >= b'0' && *p <= b'9' {
+                frac += (*p - b'0') as f64 / div;
+                div *= 10.0;
+                p = p.add(1);
+            }
         }
+        let val = int_part + frac;
+        if neg { -val } else { val }
     }
-    let val = int_part + frac;
-    if neg { -val } else { val }
 }
 
 #[unsafe(no_mangle)]
@@ -757,11 +811,13 @@ static mut ATEXIT_COUNT: usize = 0;
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn atexit(func: unsafe extern "C" fn()) -> i32 {
-    if ATEXIT_COUNT < 16 {
-        ATEXIT_FUNCS[ATEXIT_COUNT] = Some(func);
-        ATEXIT_COUNT += 1;
-        0
-    } else { -1 }
+    unsafe {
+        if ATEXIT_COUNT < 16 {
+            ATEXIT_FUNCS[ATEXIT_COUNT] = Some(func);
+            ATEXIT_COUNT += 1;
+            0
+        } else { -1 }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -811,14 +867,16 @@ unsafe extern "C" fn qsort(
     if count <= 1 { return; }
     let mut tmp = Vec::with_capacity(size);
     tmp.resize(size, 0u8);
-    for i in 1..count {
-        core::ptr::copy_nonoverlapping(base.add(i * size), tmp.as_mut_ptr(), size);
-        let mut j = i;
-        while j > 0 && cmp(base.add((j-1)*size), tmp.as_ptr()) > 0 {
-            core::ptr::copy_nonoverlapping(base.add((j-1)*size), base.add(j*size), size);
-            j -= 1;
+    unsafe {
+        for i in 1..count {
+            core::ptr::copy_nonoverlapping(base.add(i * size), tmp.as_mut_ptr(), size);
+            let mut j = i;
+            while j > 0 && cmp(base.add((j-1)*size), tmp.as_ptr()) > 0 {
+                core::ptr::copy_nonoverlapping(base.add((j-1)*size), base.add(j*size), size);
+                j -= 1;
+            }
+            core::ptr::copy_nonoverlapping(tmp.as_ptr(), base.add(j*size), size);
         }
-        core::ptr::copy_nonoverlapping(tmp.as_ptr(), base.add(j*size), size);
     }
 }
 
@@ -859,10 +917,12 @@ static mut FILE_CACHE: [FileCacheEntry; FILE_CACHE_CAP] = [
 
 // Look up a path in the cache; returns (data, size, shared_buf_id) or None.
 unsafe fn cache_lookup(path_bytes: &[u8]) -> Option<(*const u8, usize, u64)> {
-    for entry in FILE_CACHE.iter() {
-        if entry.data.is_null() { continue; }
-        if entry.name_len == path_bytes.len() && entry.name[..entry.name_len] == *path_bytes {
-            return Some((entry.data, entry.size, entry.shared_buf_id));
+    unsafe {
+        for entry in FILE_CACHE.iter() {
+            if entry.data.is_null() { continue; }
+            if entry.name_len == path_bytes.len() && entry.name[..entry.name_len] == *path_bytes {
+                return Some((entry.data, entry.size, entry.shared_buf_id));
+            }
         }
     }
     None
@@ -870,15 +930,17 @@ unsafe fn cache_lookup(path_bytes: &[u8]) -> Option<(*const u8, usize, u64)> {
 
 // Store a mapping in the cache. Silently no-ops if cache is full.
 unsafe fn cache_insert(path_bytes: &[u8], shared_buf_id: u64, data: *const u8, size: usize) {
-    for entry in FILE_CACHE.iter_mut() {
-        if entry.data.is_null() {
-            let len = path_bytes.len().min(64);
-            entry.name[..len].copy_from_slice(&path_bytes[..len]);
-            entry.name_len = len;
-            entry.shared_buf_id = shared_buf_id;
-            entry.data = data;
-            entry.size = size;
-            return;
+    unsafe {
+        for entry in FILE_CACHE.iter_mut() {
+            if entry.data.is_null() {
+                let len = path_bytes.len().min(64);
+                entry.name[..len].copy_from_slice(&path_bytes[..len]);
+                entry.name_len = len;
+                entry.shared_buf_id = shared_buf_id;
+                entry.data = data;
+                entry.size = size;
+                return;
+            }
         }
     }
 }
@@ -921,16 +983,18 @@ static mut STDOUT_PTR: *mut u8 = core::ptr::null_mut();
 static mut STDERR_PTR: *mut u8 = core::ptr::null_mut();
 
 unsafe fn alloc_file_slot() -> Option<*mut MemFile> {
-    // Slots 0-2 are pre-allocated for stdin/stdout/stderr
-    for i in 3..MAX_OPEN_FILES {
-        if !FILE_SLOTS[i].active {
-            FILE_SLOTS[i].active = true;
-            FILE_SLOTS[i].data = core::ptr::null();
-            FILE_SLOTS[i].size = 0;
-            FILE_SLOTS[i].cursor = 0;
-            FILE_SLOTS[i].shared_buf_id = 0;
-            FILE_SLOTS[i].from_cache = false;
-            return Some(&raw mut FILE_SLOTS[i]);
+    unsafe {
+        // Slots 0-2 are pre-allocated for stdin/stdout/stderr
+        for i in 3..MAX_OPEN_FILES {
+            if !FILE_SLOTS[i].active {
+                FILE_SLOTS[i].active = true;
+                FILE_SLOTS[i].data = core::ptr::null();
+                FILE_SLOTS[i].size = 0;
+                FILE_SLOTS[i].cursor = 0;
+                FILE_SLOTS[i].shared_buf_id = 0;
+                FILE_SLOTS[i].from_cache = false;
+                return Some(&raw mut FILE_SLOTS[i]);
+            }
         }
     }
     None
@@ -938,108 +1002,114 @@ unsafe fn alloc_file_slot() -> Option<*mut MemFile> {
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn fopen(path: *const u8, mode: *const u8) -> *mut u8 {
-    // Only support read mode
-    let mode_byte = *mode;
-    if mode_byte != b'r' {
-        // Write mode — return a dummy writable slot so Doom doesn't crash
-        // (config writes are silently discarded)
-        return match alloc_file_slot() {
-            Some(slot) => {
-                // Leave data=null, writes go nowhere
+    unsafe {
+        // Only support read mode
+        let mode_byte = *mode;
+        if mode_byte != b'r' {
+            // Write mode — return a dummy writable slot so Doom doesn't crash
+            // (config writes are silently discarded)
+            return match alloc_file_slot() {
+                Some(slot) => {
+                    // Leave data=null, writes go nowhere
+                    slot as *mut u8
+                }
+                None => core::ptr::null_mut(),
+            };
+        }
+
+        let slot = match alloc_file_slot() {
+            Some(s) => s,
+            None => return core::ptr::null_mut(),
+        };
+
+        // Build path string from C pointer
+        let len = strlen(path);
+        let path_bytes = core::slice::from_raw_parts(path, len);
+        let path_str = core::str::from_utf8_unchecked(path_bytes);
+
+        // Debug: log first 8 bytes of filename as a tag
+        let mut name_tag: u64 = 0;
+        for (i, &b) in path_bytes.iter().take(8).enumerate() {
+            name_tag |= (b as u64) << (i * 8);
+        }
+        ulib::sys_debug_log(name_tag, 0xF0); // 0xF0 = fopen called, value=first 8 chars of path
+
+        // Check cache first — doom opens DOOM1.WAD twice (M_FileExists + W_AddFile)
+        if let Some((cached_data, cached_size, cached_buf_id)) = cache_lookup(path_bytes) {
+            (*slot).data = cached_data;
+            (*slot).size = cached_size;
+            (*slot).cursor = 0;
+            (*slot).shared_buf_id = cached_buf_id;
+            (*slot).from_cache = true;
+            ulib::sys_debug_log(cached_size as u64, 0xF1);
+            return slot as *mut u8;
+        }
+
+        // Cache miss: map the file via the FS server
+        match ulib::fs::fs_map_file(FS_FD, path_str) {
+            Some((buf_id, file_size)) => {
+                let data_ptr = ulib::sys_map_shared_buf(buf_id);
+                (*slot).data = data_ptr;
+                (*slot).size = file_size as usize;
+                (*slot).cursor = 0;
+                (*slot).shared_buf_id = buf_id;
+                // Populate the cache for future opens of the same file.
+                // The cache now owns the shared buffer lifetime — mark from_cache=true
+                // so that fclose on THIS slot also doesn't destroy the buffer.
+                cache_insert(path_bytes, buf_id, data_ptr, file_size as usize);
+                (*slot).from_cache = true;
+                ulib::sys_debug_log(file_size, 0xF1); // 0xF1 = fopen succeeded, value=file_size
+                // Log first 8 bytes of the mapped data so we can verify WAD magic + numlumps
+                if !data_ptr.is_null() && file_size >= 8 {
+                    let mut hdr: u64 = 0;
+                    for i in 0..8usize {
+                        hdr |= (*data_ptr.add(i) as u64) << (i * 8);
+                    }
+                    ulib::sys_debug_log(hdr, 0xF3); // 0xF3 = first 8 bytes of file data
+                }
                 slot as *mut u8
             }
-            None => core::ptr::null_mut(),
-        };
-    }
-
-    let slot = match alloc_file_slot() {
-        Some(s) => s,
-        None => return core::ptr::null_mut(),
-    };
-
-    // Build path string from C pointer
-    let len = strlen(path);
-    let path_bytes = core::slice::from_raw_parts(path, len);
-    let path_str = core::str::from_utf8_unchecked(path_bytes);
-
-    // Debug: log first 8 bytes of filename as a tag
-    let mut name_tag: u64 = 0;
-    for (i, &b) in path_bytes.iter().take(8).enumerate() {
-        name_tag |= (b as u64) << (i * 8);
-    }
-    ulib::sys_debug_log(name_tag, 0xF0); // 0xF0 = fopen called, value=first 8 chars of path
-
-    // Check cache first — doom opens DOOM1.WAD twice (M_FileExists + W_AddFile)
-    if let Some((cached_data, cached_size, cached_buf_id)) = cache_lookup(path_bytes) {
-        (*slot).data = cached_data;
-        (*slot).size = cached_size;
-        (*slot).cursor = 0;
-        (*slot).shared_buf_id = cached_buf_id;
-        (*slot).from_cache = true;
-        ulib::sys_debug_log(cached_size as u64, 0xF1);
-        return slot as *mut u8;
-    }
-
-    // Cache miss: map the file via the FS server
-    match ulib::fs::fs_map_file(FS_FD, path_str) {
-        Some((buf_id, file_size)) => {
-            let data_ptr = ulib::sys_map_shared_buf(buf_id);
-            (*slot).data = data_ptr;
-            (*slot).size = file_size as usize;
-            (*slot).cursor = 0;
-            (*slot).shared_buf_id = buf_id;
-            // Populate the cache for future opens of the same file.
-            // The cache now owns the shared buffer lifetime — mark from_cache=true
-            // so that fclose on THIS slot also doesn't destroy the buffer.
-            cache_insert(path_bytes, buf_id, data_ptr, file_size as usize);
-            (*slot).from_cache = true;
-            ulib::sys_debug_log(file_size, 0xF1); // 0xF1 = fopen succeeded, value=file_size
-            // Log first 8 bytes of the mapped data so we can verify WAD magic + numlumps
-            if !data_ptr.is_null() && file_size >= 8 {
-                let mut hdr: u64 = 0;
-                for i in 0..8usize {
-                    hdr |= (*data_ptr.add(i) as u64) << (i * 8);
-                }
-                ulib::sys_debug_log(hdr, 0xF3); // 0xF3 = first 8 bytes of file data
+            None => {
+                // File not found
+                ulib::sys_debug_log(name_tag, 0xF2); // 0xF2 = fopen FAILED
+                (*slot).active = false;
+                core::ptr::null_mut()
             }
-            slot as *mut u8
-        }
-        None => {
-            // File not found
-            ulib::sys_debug_log(name_tag, 0xF2); // 0xF2 = fopen FAILED
-            (*slot).active = false;
-            core::ptr::null_mut()
         }
     }
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn fclose(stream: *mut u8) -> i32 {
-    if stream.is_null() { return -1; }
-    let slot = &mut *(stream as *mut MemFile);
-    if !slot.active { return -1; }
-    // Only destroy the shared buf if this slot owns it (not a cache hit).
-    if slot.shared_buf_id != 0 && !slot.from_cache {
-        ulib::sys_destroy_shared_buf(slot.shared_buf_id);
-        slot.shared_buf_id = 0;
-        slot.data = core::ptr::null();
+    unsafe {
+        if stream.is_null() { return -1; }
+        let slot = &mut *(stream as *mut MemFile);
+        if !slot.active { return -1; }
+        // Only destroy the shared buf if this slot owns it (not a cache hit).
+        if slot.shared_buf_id != 0 && !slot.from_cache {
+            ulib::sys_destroy_shared_buf(slot.shared_buf_id);
+            slot.shared_buf_id = 0;
+            slot.data = core::ptr::null();
+        }
+        slot.active = false;
+        0
     }
-    slot.active = false;
-    0
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn fread(ptr: *mut u8, size: usize, count: usize, stream: *mut u8) -> usize {
-    if stream.is_null() || ptr.is_null() { return 0; }
-    let slot = &mut *(stream as *mut MemFile);
-    if slot.data.is_null() { return 0; }
-    let total = size.saturating_mul(count);
-    let available = slot.size.saturating_sub(slot.cursor);
-    let to_read = total.min(available);
-    if to_read == 0 { return 0; }
-    core::ptr::copy_nonoverlapping(slot.data.add(slot.cursor), ptr, to_read);
-    slot.cursor += to_read;
-    to_read / size.max(1)
+    unsafe {
+        if stream.is_null() || ptr.is_null() { return 0; }
+        let slot = &mut *(stream as *mut MemFile);
+        if slot.data.is_null() { return 0; }
+        let total = size.saturating_mul(count);
+        let available = slot.size.saturating_sub(slot.cursor);
+        let to_read = total.min(available);
+        if to_read == 0 { return 0; }
+        core::ptr::copy_nonoverlapping(slot.data.add(slot.cursor), ptr, to_read);
+        slot.cursor += to_read;
+        to_read / size.max(1)
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1049,25 +1119,29 @@ unsafe extern "C" fn fwrite(_ptr: *const u8, _size: usize, count: usize, _stream
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn fseek(stream: *mut u8, offset: i64, whence: i32) -> i32 {
-    if stream.is_null() { return -1; }
-    let slot = &mut *(stream as *mut MemFile);
-    if slot.data.is_null() { return 0; } // allow seeks on null-data files (write mode)
-    let new_cursor: i64 = match whence {
-        0 /* SEEK_SET */ => offset,
-        1 /* SEEK_CUR */ => slot.cursor as i64 + offset,
-        2 /* SEEK_END */ => slot.size as i64 + offset,
-        _ => return -1,
-    };
-    if new_cursor < 0 { return -1; }
-    slot.cursor = new_cursor as usize;
-    0
+    unsafe {
+        if stream.is_null() { return -1; }
+        let slot = &mut *(stream as *mut MemFile);
+        if slot.data.is_null() { return 0; } // allow seeks on null-data files (write mode)
+        let new_cursor: i64 = match whence {
+            0 /* SEEK_SET */ => offset,
+            1 /* SEEK_CUR */ => slot.cursor as i64 + offset,
+            2 /* SEEK_END */ => slot.size as i64 + offset,
+            _ => return -1,
+        };
+        if new_cursor < 0 { return -1; }
+        slot.cursor = new_cursor as usize;
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn ftell(stream: *mut u8) -> i64 {
-    if stream.is_null() { return -1; }
-    let slot = &*(stream as *const MemFile);
-    slot.cursor as i64
+    unsafe {
+        if stream.is_null() { return -1; }
+        let slot = &*(stream as *const MemFile);
+        slot.cursor as i64
+    }
 }
 
 #[unsafe(no_mangle)]

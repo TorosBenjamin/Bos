@@ -1,0 +1,110 @@
+    Checking ulib v0.1.0 (/home/bendzsi/RustroverProjects/Bos/os/userspace/frameworks/ulib)
+   Compiling doom v0.1.0 (/home/bendzsi/RustroverProjects/Bos/os/userspace/apps/doom)
+    Checking bos_egui v0.1.0 (/home/bendzsi/RustroverProjects/Bos/os/userspace/frameworks/bos_egui)
+error: manual `RangeInclusive::contains` implementation
+   --> userspace/apps/doom/src/main.rs:259:20
+    |
+259 |                 if c >= b'A' && c <= b'Z' { c + 32 } else { c }
+    |                    ^^^^^^^^^^^^^^^^^^^^^^ help: use: `(b'A'..=b'Z').contains(&c)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_range_contains
+    = note: `-D clippy::manual-range-contains` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_range_contains)]`
+
+error: unsafe function's docs are missing a `# Safety` section
+   --> userspace/apps/doom/src/main.rs:281:1
+    |
+281 | pub unsafe extern "C" fn __doom_debug_str(s: *const u8, len: usize) {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#missing_safety_doc
+    = note: `-D clippy::missing-safety-doc` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::missing_safety_doc)]`
+
+error: manual implementation of `.is_multiple_of()`
+   --> userspace/apps/doom/src/main.rs:352:12
+    |
+352 |         if MALLOC_COUNT % 200 == 0 {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `MALLOC_COUNT.is_multiple_of(200)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_is_multiple_of
+    = note: `-D clippy::manual-is-multiple-of` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_is_multiple_of)]`
+
+error: manual `RangeInclusive::contains` implementation
+   --> userspace/apps/doom/src/main.rs:477:8
+    |
+477 |     if c >= b'A' && c <= b'Z' { c + 32 } else { c }
+    |        ^^^^^^^^^^^^^^^^^^^^^^ help: use: `(b'A'..=b'Z').contains(&c)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_range_contains
+
+error: manually constructing a nul-terminated string
+   --> userspace/apps/doom/src/main.rs:617:5
+    |
+617 |     b"error\0".as_ptr() as *mut u8
+    |     ^^^^^^^^^^ help: use a `c""` literal: `c"error"`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_c_str_literals
+    = note: `-D clippy::manual-c-str-literals` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_c_str_literals)]`
+
+error: manual `Range::contains` implementation
+   --> userspace/apps/doom/src/main.rs:699:8
+    |
+699 |     if c >= 0x20 && c < 0x7F { 1 } else { 0 }
+    |        ^^^^^^^^^^^^^^^^^^^^^ help: use: `(0x20..0x7F).contains(&c)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_range_contains
+
+error: manual `RangeInclusive::contains` implementation
+   --> userspace/apps/doom/src/main.rs:742:33
+    |
+742 | ...if c >= b'0' && c <= b'9' { (c - b'0') as u64 }
+    |       ^^^^^^^^^^^^^^^^^^^^^^ help: use: `(b'0'..=b'9').contains(&c)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_range_contains
+
+error: manual `RangeInclusive::contains` implementation
+   --> userspace/apps/doom/src/main.rs:743:25
+    |
+743 |                 else if c >= b'a' && c <= b'z' { (c - b'a' + 10) as u64 }
+    |                         ^^^^^^^^^^^^^^^^^^^^^^ help: use: `(b'a'..=b'z').contains(&c)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_range_contains
+
+error: manual `RangeInclusive::contains` implementation
+   --> userspace/apps/doom/src/main.rs:744:25
+    |
+744 |                 else if c >= b'A' && c <= b'Z' { (c - b'A' + 10) as u64 }
+    |                         ^^^^^^^^^^^^^^^^^^^^^^ help: use: `(b'A'..=b'Z').contains(&c)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_range_contains
+
+error: slow zero-filling initialization
+   --> userspace/apps/doom/src/main.rs:862:19
+    |
+862 |       let mut tmp = Vec::with_capacity(size);
+    |  ___________________^
+863 | |     tmp.resize(size, 0u8);
+    | |_________________________^ help: consider replacing this with: `vec![0; size]`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#slow_vector_initialization
+    = note: `-D clippy::slow-vector-initialization` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::slow_vector_initialization)]`
+
+error: the loop variable `i` is only used to index `FILE_SLOTS`
+   --> userspace/apps/doom/src/main.rs:982:18
+    |
+982 |         for i in 3..MAX_OPEN_FILES {
+    |                  ^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+    = note: `-D clippy::needless-range-loop` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_range_loop)]`
+help: consider using an iterator
+    |
+982 -         for i in 3..MAX_OPEN_FILES {
+982 +         for <item> in FILE_SLOTS.iter_mut().take(MAX_OPEN_FILES).skip(3) {
+    |
+
