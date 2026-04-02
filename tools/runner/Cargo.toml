@@ -22,6 +22,7 @@ e1000      = {path = "../../userspace/drivers/e1000",       artifact = "bin", ta
 ide        = {path = "../../userspace/drivers/ide",         artifact = "bin", target = "x86_64-unknown-none"}
 net_server = {path = "../../userspace/servers/net_server", artifact = "bin", target = "x86_64-unknown-none"}
 utest = { path = "../../userspace/apps/utest", artifact = "bin", target = "x86_64-unknown-none", optional = true }
+stress_test = { path = "../../userspace/apps/stress_test", artifact = "bin", target = "x86_64-unknown-none", optional = true }
 fatfs = "0.3"
 
 [features]
@@ -39,6 +40,7 @@ test_scheduler = ["kernel_test"]
 test_elf      = ["kernel_test"]
 test_sched         = ["kernel_test"]
 test_sched_noelf   = ["kernel_test"]
+stress_test = ["dep:stress_test"]
 
 [[bin]]
 name = "runner"

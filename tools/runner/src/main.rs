@@ -106,14 +106,24 @@ fn main() {
     let number_of_cpus = 5;
     let mut qemu = Command::new("qemu-system-x86_64");
     // Force GTK to use XWayland so QEMU gets proper relative PS/2 mouse events.
-    qemu.env("GDK_BACKEND", "x11");
+    // qemu.env("GDK_BACKEND", "x11");
     // Point SLIRP DNS relay at systemd-resolved stub instead of uplink resolv.conf.
     qemu.env("QEMU_RESOLV_CONF", "/run/systemd/resolve/stub-resolv.conf");
 
     qemu.arg("-enable-kvm");
     qemu.arg("-m").arg("512M");
-    qemu.arg("-display").arg("gtk");
+    if env::var("CARGO_FEATURE_STRESS_TEST").is_ok() || env::var("CARGO_FEATURE_USERSPACE_TEST").is_ok() {
+        // If testing, we still want to see the GUI if the user specifically asked for it via GUI=1
+        if env::var("GUI").is_ok() {
+            qemu.arg("-display").arg("gtk");
+        } else {
+            qemu.arg("-display").arg("none");
+        }
+    } else {
+        qemu.arg("-display").arg("gtk");
+    }
     qemu.arg("-cdrom").arg(env!("ISO"));
+    qemu.arg("-monitor").arg("none"); // Disable monitor on stdio to avoid conflict with serial mon:stdio
 
     // Unit 0: The Code (Read-Only is fine)
     qemu.arg("-drive").arg(format!(
@@ -127,7 +137,7 @@ fn main() {
     // ... rest of your SMP, Serial, and CPU arguments ...
     qemu.arg("--smp").arg(number_of_cpus.to_string());
     qemu.arg("--no-reboot");
-    qemu.arg("-serial").arg("stdio");
+    qemu.arg("-serial").arg("mon:stdio");
     qemu.arg("-device").arg("isa-debug-exit,iobase=0xf4,iosize=0x04");
     qemu.arg("-cpu").arg("host");
     // qemu.arg("-display").arg("none");
@@ -144,6 +154,7 @@ fn main() {
     // Filter QEMU serial output: strip ANSI escape sequences and blank lines
     // produced by the OVMF UEFI firmware before the kernel starts.
     qemu.stdout(process::Stdio::piped());
+    qemu.stderr(process::Stdio::inherit()); // Inherit stderr to see QEMU errors
     let mut child = qemu.spawn().expect("Failed to run QEMU");
     let stdout = child.stdout.take().unwrap();
 

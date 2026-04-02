@@ -37,6 +37,17 @@ pub struct Pipe {
     pub event_waiter: EventWaiterSlot,
 }
 
+impl core::fmt::Debug for Pipe {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Pipe")
+            .field("read_closed", &self.read_closed)
+            .field("write_closed", &self.write_closed)
+            .field("write_count", &self.write_count)
+            .finish()
+    }
+}
+
+#[derive(Debug)]
 struct PipeInner {
     buf: [u8; PIPE_BUF_SIZE],
     read_pos: usize,

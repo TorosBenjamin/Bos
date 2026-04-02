@@ -68,7 +68,7 @@ pub fn write(level: LogLevel, source: &str, message: &str) {
             mem::size_of::<LogWriteRequest>(),
         );
     }
-    let _ = crate::handle::write(fd, &msg);
+    let _ = crate::handle::try_write(fd, &msg);
 }
 
 /// Read up to `max_count` entries from logd.

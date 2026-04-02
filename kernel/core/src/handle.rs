@@ -16,6 +16,7 @@ pub enum IpcChannelEnd {
 }
 
 /// A handle to a kernel I/O object.
+#[derive(Debug)]
 pub enum Handle {
     /// Read or write end of a byte-stream pipe.
     Pipe(Arc<Pipe>, PipeEnd),

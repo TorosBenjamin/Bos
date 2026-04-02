@@ -1,0 +1,16 @@
+[package]
+name = "stress_test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ulib = { path = "../../frameworks/ulib" }
+kernel_api_types = { path = "../../../../kernel-api" }
+linked_list_allocator = "0.10.5"
+bos_egui = { path = "../../frameworks/bos_egui" }
+
+[[bin]]
+name = "stress_test"
+test = false
+bench = false

@@ -204,7 +204,7 @@ pub fn run(recv_fd: u32) -> ! {
         if fs_fd.is_none() {
             let ep = ulib::sys_lookup_service(b"fatfs");
             if ep != SVC_ERR_NOT_FOUND {
-                fs_fd = ulib::handle::handle_from_channel(ep, 1);
+                fs_fd = ulib::handle::handle_from_channel(ep, 0); // 0 = send (to fatfs)
             }
         }
 

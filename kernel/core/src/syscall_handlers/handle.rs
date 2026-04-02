@@ -1,9 +1,9 @@
 //! Syscall handlers for the handle (file-descriptor) subsystem:
 //! sys_pipe, sys_read, sys_write, sys_close, sys_dup, sys_dup2.
 
-use crate::handle::{Handle, PipeEnd, IpcChannelEnd};
+use crate::handle::{Handle, IpcChannelEnd};
 use crate::memory::cpu_local_data::get_local;
-use crate::pipe::{Pipe, PipeReadResult, PipeWriteResult};
+use crate::pipe::{Pipe, PipeEnd, PipeReadResult, PipeWriteResult};
 use crate::task::task::TaskState;
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
@@ -374,17 +374,19 @@ pub fn sys_handle_write(
             Some(Handle::IpcChannel(ep_id, IpcChannelEnd::Send)) => HandleWriteInfo::IpcSend(*ep_id),
             Some(Handle::Null) => return buf_len, // discard silently
             _ => {
-                log::warn!("task {}: sys_handle_write to invalid fd {}", task.id.to_u64(), fd);
+                ::log::warn!("task {}: sys_handle_write to invalid fd {}", task.id.to_u64(), fd);
                 return HANDLE_ERR_BAD_FD;
             }
         }
     };
 
+    /*
     if fd == 1 || fd == 2 {
-        if let Some(s) = core::str::from_utf8(unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, buf_len as usize) }) {
-            log::info!("task {} {}: {}", task.id.to_u64(), fd, s.trim_end());
+        if let Some(s) = core::str::from_utf8(unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, buf_len as usize) }).ok() {
+            ::log::info!("task {} {}: {}", task.id.to_u64(), fd, s.trim_end());
         }
     }
+    */
 
     if nonblock {
         match handle_info {
@@ -548,7 +550,7 @@ pub fn sys_handle_dup(
             }
         },
         None => {
-            drop(inner);
+            ::log::warn!("task {}: sys_handle_dup to invalid fd {}", task.id.to_u64(), old_fd);
             return HANDLE_ERR_BAD_FD;
         }
     };
@@ -675,10 +677,7 @@ pub fn sys_handle_from_channel(
     // Track the cloned endpoint for cleanup on task exit.
     inner.owned_endpoints.push(new_ep_id);
     let fd = match inner.handles.alloc(Handle::IpcChannel(new_ep_id, dir)) {
-        Some(fd) => {
-            log::info!("task {}: handle_from_channel(ep {}) -> fd {}", task.id.to_u64(), new_ep_id, fd);
-            fd as u64
-        }
+        Some(fd) => fd as u64,
         None => {
             // Rollback: destroy the cloned endpoint.
             inner.owned_endpoints.retain(|&id| id != new_ep_id);
@@ -922,8 +921,8 @@ pub fn sys_handle_register_service(
 
     match crate::service_registry::register(name_bytes, ep_id, task.id) {
         Ok(()) => {
-            let name_str = core::str::from_utf8(name_bytes).unwrap_or("?");
-            ::log::info!("sys_handle_register_service: ok name={:?} ep={}", name_str, ep_id);
+            // let name_str = core::str::from_utf8(name_bytes).unwrap_or("?");
+            // ::log::info!("sys_handle_register_service: ok name={:?} ep={}", name_str, ep_id);
             let mut name_arr = [0u8; MAX_SERVICE_NAME_LEN];
             let copy_len = name_bytes.len().min(MAX_SERVICE_NAME_LEN);
             name_arr[..copy_len].copy_from_slice(&name_bytes[..copy_len]);

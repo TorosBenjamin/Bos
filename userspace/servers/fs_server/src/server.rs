@@ -74,11 +74,13 @@ impl BlockDev for IpcDisk {
             Some(n) => n,
             None => {
                 ulib::handle::close(recv_fd);
+                ulib::sys_channel_close(reply_send);
                 ulib::sys_channel_close(reply_recv);
                 return false;
             }
         };
         ulib::handle::close(recv_fd);
+        ulib::sys_channel_close(reply_send);
         ulib::sys_channel_close(reply_recv);
 
         if n < 514 || resp[0] != IDE_MSG_READ_RESP || resp[1] != 0 {
@@ -132,12 +134,14 @@ impl BlockDev for IpcDisk {
             Some(n) => n,
             None => {
                 ulib::handle::close(recv_fd);
+                ulib::sys_channel_close(reply_send);
                 ulib::sys_channel_close(reply_recv);
                 ulib::sys_destroy_shared_buf(buf_id);
                 return false;
             }
         };
         ulib::handle::close(recv_fd);
+        ulib::sys_channel_close(reply_send);
         ulib::sys_channel_close(reply_recv);
         ulib::sys_destroy_shared_buf(buf_id);
 
@@ -182,11 +186,13 @@ impl BlockDev for IpcDisk {
             Some(n) => n,
             None => {
                 ulib::handle::close(recv_fd);
+                ulib::sys_channel_close(reply_send);
                 ulib::sys_channel_close(reply_recv);
                 return false;
             }
         };
         ulib::handle::close(recv_fd);
+        ulib::sys_channel_close(reply_send);
         ulib::sys_channel_close(reply_recv);
 
         if n < 14 || resp[0] != IDE_MSG_READ_RESP || resp[1] != 0 {

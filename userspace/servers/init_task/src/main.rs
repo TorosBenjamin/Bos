@@ -8,9 +8,10 @@ fn rust_panic(info: &core::panic::PanicInfo) -> ! {
 
 #[unsafe(no_mangle)]
 unsafe extern "sysv64" fn entry_point() -> ! {
-    // Detect test mode: if a "/utest" Limine module is present, run integration tests.
+    // Detect test mode: if a "/utest" or "/stress_test" Limine module is present, run them.
     let utest_size = ulib::sys_get_module("utest", core::ptr::null_mut(), 0);
-    let is_test_mode = utest_size > 0;
+    let stress_size = ulib::sys_get_module("stress_test", core::ptr::null_mut(), 0);
+    let is_test_mode = utest_size > 0 || stress_size > 0;
 
     // Load and spawn IDE driver (registers "ide" service) with High priority.
     // Must be spawned before fs_server since fs_server depends on the "ide" service.
@@ -134,14 +135,28 @@ unsafe extern "sysv64" fn entry_point() -> ! {
     ulib::sys_transfer_display(ds_id);
 
     if is_test_mode {
-        // Test mode: spawn utest; skip normal apps
-        let utest_buf = ulib::sys_mmap(utest_size, kernel_api_types::MMAP_WRITE);
-        let _ = ulib::sys_get_module("utest", utest_buf, utest_size);
-
-        let utest_elf = unsafe { core::slice::from_raw_parts(utest_buf, utest_size as usize) };
-        let utest_id = ulib::sys_spawn(utest_elf, 0);
-        ulib::sys_wait_task_ready(utest_id);
-        ulib::sys_munmap(utest_buf, utest_size);
+        if utest_size > 0 {
+            ulib::log::write(ulib::log::LogLevel::Info, "init", "spawning utest");
+            let utest_buf = ulib::sys_mmap(utest_size, kernel_api_types::MMAP_WRITE);
+            let _ = ulib::sys_get_module("utest", utest_buf, utest_size);
+            let utest_elf = unsafe { core::slice::from_raw_parts(utest_buf, utest_size as usize) };
+            let utest_id = ulib::sys_spawn(utest_elf, 0);
+            ulib::sys_wait_task_ready(utest_id);
+            ulib::sys_munmap(utest_buf, utest_size);
+            ulib::log::write(ulib::log::LogLevel::Info, "init", "utest finished");
+        }
+        if stress_size > 0 {
+            ulib::log::write(ulib::log::LogLevel::Info, "init", "spawning stress_test");
+            let stress_buf = ulib::sys_mmap(stress_size, kernel_api_types::MMAP_WRITE);
+            let _ = ulib::sys_get_module("stress_test", stress_buf, stress_size);
+            let stress_elf = unsafe { core::slice::from_raw_parts(stress_buf, stress_size as usize) };
+            let stress_id = ulib::sys_spawn(stress_elf, 0);
+            // Must wait for the async ELF loader to finish reading parent pages before unmapping.
+            ulib::sys_wait_task_ready(stress_id);
+            ulib::sys_munmap(stress_buf, stress_size);
+        }
+        // Infinite yield — children (stress_test / utest) call sys_shutdown when done.
+        loop { ulib::sys_yield(); }
     } else {
         // Normal mode: load apps from FAT32 filesystem
         let fs_fd = ulib::fs::fs_lookup();

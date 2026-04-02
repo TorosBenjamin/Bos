@@ -81,9 +81,30 @@ fn main() {
     let cmdline = test_suite
         .map(|s| format!("    cmdline: test_suite={s}\n"))
         .unwrap_or_default();
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_STRESS_TEST");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_USERSPACE_TEST");
+    
+    let is_stress = env::var("CARGO_FEATURE_STRESS_TEST").is_ok();
+    if is_stress {
+        println!("cargo:warning=STRESS TEST FEATURE DETECTED IN BUILD SCRIPT");
+    }
+
+    let utest_module = if env::var("CARGO_FEATURE_USERSPACE_TEST").is_ok() {
+        "    module_path: boot():/utest\n"
+    } else {
+        ""
+    };
+    let stress_module = if is_stress {
+        "    module_path: boot():/stress_test\n"
+    } else {
+        ""
+    };
+
     std::fs::write(
         iso_dir.join("limine.conf"),
-        format!("TIMEOUT 0\nDEFAULT_ENTRY 0\n\n/Bos\n    protocol: limine\n    kernel_path: boot():/kernel\n{cmdline}"),
+        format!(
+            "TIMEOUT 0\nDEFAULT_ENTRY 0\n\n/Bos\n    protocol: limine\n    kernel_path: boot():/kernel\n{cmdline}{utest_module}{stress_module}"
+        ),
     ).unwrap();
 
     // Kernel (or test kernel)
@@ -102,6 +123,11 @@ fn main() {
     // Optional integration-test binary
     if env::var("CARGO_FEATURE_USERSPACE_TEST").is_ok() {
         ensure_symlink(artifact_bin("utest", "utest"), iso_dir.join("utest")).unwrap();
+    }
+
+    // Optional stress-test binary
+    if env::var("CARGO_FEATURE_STRESS_TEST").is_ok() {
+        ensure_symlink(artifact_bin("stress_test", "stress_test"), iso_dir.join("stress_test")).unwrap();
     }
 
     // Limine boot files

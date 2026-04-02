@@ -354,12 +354,12 @@ extern "sysv64" fn elf_loader_entry_inner(args_ptr: u64) -> ! {
             if !inherited_handles.is_empty() {
                 let mut inner = stub.inner.lock();
                 for (child_fd, handle) in inherited_handles {
-                    log::info!("task {}: inheriting handle fd {} ({:?})", stub.id.to_u64(), child_fd, handle);
+                    // log::info!("task {}: inheriting handle fd {} ({:?})", stub.id.to_u64(), child_fd, handle);
                     inner.handles.alloc_at(child_fd, handle);
                 }
                 drop(inner);
             }
-            log::info!("async ELF load complete for task {}", stub.id.to_u64());
+            // log::info!("async ELF load complete for task {}", stub.id.to_u64());
             spawn_task_activate(stub); // consumes the Arc
         }
         Err(e) => {

@@ -31,10 +31,10 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
 /// Try to load `/bos_ds.conf` from the `fatfs` service.
 /// Polls for up to ~200 ms (200 yields), then falls back to defaults on any failure.
 fn load_config() -> DisplayConfig {
-    // Wait up to 200 yields for the fatfs service to come up.
+    // Wait up to 500 yields for the fatfs service to come up.
     let fs_fd = {
         let mut ep = SVC_ERR_NOT_FOUND;
-        for _ in 0..200u32 {
+        for _ in 0..500u32 {
             ep = ulib::sys_lookup_service(b"fatfs");
             if ep != SVC_ERR_NOT_FOUND {
                 break;
