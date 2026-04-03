@@ -121,6 +121,7 @@ impl BlockDev for IpcDisk {
         req[21..29].copy_from_slice(&reply_send.to_le_bytes());
 
         if ulib::handle::write(self.ide_send_fd, &req).is_none() {
+            ulib::sys_munmap(ptr, 512);
             ulib::sys_destroy_shared_buf(buf_id);
             ulib::handle::close(recv_fd);
             ulib::sys_channel_close(reply_send);
@@ -136,6 +137,7 @@ impl BlockDev for IpcDisk {
                 ulib::handle::close(recv_fd);
                 ulib::sys_channel_close(reply_send);
                 ulib::sys_channel_close(reply_recv);
+                ulib::sys_munmap(ptr, 512);
                 ulib::sys_destroy_shared_buf(buf_id);
                 return false;
             }
@@ -143,6 +145,7 @@ impl BlockDev for IpcDisk {
         ulib::handle::close(recv_fd);
         ulib::sys_channel_close(reply_send);
         ulib::sys_channel_close(reply_recv);
+        ulib::sys_munmap(ptr, 512);
         ulib::sys_destroy_shared_buf(buf_id);
 
         n >= 2 && resp[0] == IDE_MSG_WRITE_RESP && resp[1] == 0
@@ -465,6 +468,7 @@ fn handle_write_file(fs: &mut Fat32<IpcDisk>, msg: &[u8]) {
 
     let data = unsafe { core::slice::from_raw_parts(ptr as *const u8, req.size as usize) };
     let ok = fs.write_file(path, data);
+    ulib::sys_munmap(ptr, req.size);
     send_response(reply_ep, &err_resp(if ok { FsResult::Ok } else { FsResult::IoError }));
 }
 
@@ -594,5 +598,6 @@ fn handle_append_file(fs: &mut Fat32<IpcDisk>, msg: &[u8]) {
 
     let data = unsafe { core::slice::from_raw_parts(ptr as *const u8, req.size as usize) };
     let ok = fs.append_file(path, data);
+    ulib::sys_munmap(ptr, req.size);
     send_response(reply_ep, &err_resp(if ok { FsResult::Ok } else { FsResult::IoError }));
 }

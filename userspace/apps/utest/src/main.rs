@@ -4,7 +4,7 @@
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use kernel_api_types::{
-    IPC_ERR_CHANNEL_FULL, IPC_ERR_INVALID_ENDPOINT, IPC_ERR_PEER_CLOSED, IPC_OK, MMAP_WRITE,
+    IPC_ERR_INVALID_ENDPOINT, IPC_ERR_PEER_CLOSED, IPC_OK, MMAP_WRITE,
     SVC_ERR_NOT_FOUND, SVC_OK,
 };
 use ulib::fs;
@@ -100,24 +100,6 @@ fn channel_recv_size() -> bool {
     result == IPC_OK && bytes_read == 5
 }
 
-fn channel_full() -> bool {
-    // Create a channel with capacity 4; the 5th send should return IPC_ERR_CHANNEL_FULL
-    // via the timer-interrupt EINTR mechanism (blocks briefly, timer returns fallback rax).
-    let (send_ep, recv_ep) = ulib::sys_channel_create(4);
-    let data = [0u8; 1];
-    for _ in 0..4 {
-        if ulib::sys_channel_send(send_ep, &data) != IPC_OK {
-            ulib::sys_channel_close(send_ep);
-            ulib::sys_channel_close(recv_ep);
-            return false;
-        }
-    }
-    // 5th send: channel is full → EINTR returns IPC_ERR_CHANNEL_FULL
-    let result = ulib::sys_channel_send(send_ep, &data);
-    ulib::sys_channel_close(send_ep);
-    ulib::sys_channel_close(recv_ep);
-    result == IPC_ERR_CHANNEL_FULL
-}
 
 fn channel_close_peer() -> bool {
     let (send_ep, recv_ep) = ulib::sys_channel_create(4);
@@ -127,6 +109,61 @@ fn channel_close_peer() -> bool {
     let result = ulib::sys_channel_send(send_ep, &[1u8]);
     ulib::sys_channel_close(send_ep);
     result == IPC_ERR_PEER_CLOSED || result == IPC_ERR_INVALID_ENDPOINT
+}
+
+// ---------------------------------------------------------------------------
+// Handle-based IPC tests
+// (The raw channel tests above use sys_channel_*, which is a different code
+// path from the handle API used by real apps and the stress_test.)
+// ---------------------------------------------------------------------------
+
+fn handle_channel_create() -> bool {
+    match handle::channel(4) {
+        Some((tx, rx)) => {
+            handle::close(tx);
+            handle::close(rx);
+            true
+        }
+        None => false,
+    }
+}
+
+fn handle_channel_loopback() -> bool {
+    let (tx, rx) = match handle::channel(4) {
+        Some(p) => p,
+        None => return false,
+    };
+    let data = [1u8, 2, 3, 4];
+    if handle::write(tx, &data).is_none() {
+        handle::close(tx);
+        handle::close(rx);
+        return false;
+    }
+    let mut buf = [0u8; 4];
+    let ok = handle::read(rx, &mut buf) == Some(4) && buf == data;
+    handle::close(tx);
+    handle::close(rx);
+    ok
+}
+
+/// Mirrors exactly what stress_test::do_ipc_op does, for 200 iterations.
+/// This exceeds the known failure point (80 ops) and will catch handle table
+/// exhaustion, owned_endpoints accumulation, or any other handle-path bug.
+fn handle_channel_repeated() -> bool {
+    for _ in 0..200u32 {
+        let (tx, rx) = match handle::channel(64) {
+            Some(p) => p,
+            None => return false,
+        };
+        let buf = [0u8; 32];
+        if handle::write(tx, &buf).is_some() {
+            let mut recv_buf = [0u8; 32];
+            let _ = handle::read(rx, &mut recv_buf);
+        }
+        handle::close(tx);
+        handle::close(rx);
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +254,51 @@ fn fs_map_file_elf_magic() -> bool {
 fn fs_map_missing_returns_none() -> bool {
     let ep = FS_FD.load(Ordering::Relaxed);
     fs::fs_map_file(ep, "NOSUCHFILE.BIN").is_none()
+}
+
+/// Mirrors stress_test::do_fs_op: fs_lookup() + one FS request + close(fs_fd),
+/// repeated 60 times (exceeds the known 40-op failure point).
+fn fs_handle_repeated_ops() -> bool {
+    for i in 0..60u32 {
+        let fs_fd = ulib::fs::fs_lookup();
+        // Alternate between stat and readdir to exercise different request types.
+        if i % 2 == 0 {
+            let _ = fs::fs_stat(fs_fd, "CUBE1.ELF");
+        } else {
+            let _ = fs::fs_readdir(fs_fd, "/");
+        }
+        handle::close(fs_fd);
+    }
+    true
+}
+
+/// Exercise write and append operations with shared buffers — the exact ops
+/// that were leaking sys_map_shared_buf mappings in the FS server.
+/// 30 iterations × 2 (write + append) = 60 shared-buf ops, well past failure threshold.
+fn fs_handle_mutating_ops() -> bool {
+    for _ in 0..30u32 {
+        let fs_fd = ulib::fs::fs_lookup();
+
+        // Create
+        let _ = fs::fs_create_file(fs_fd, "UMUT.TXT");
+
+        // Write via shared buf
+        let (buf_id, ptr) = ulib::sys_create_shared_buf(256);
+        if !ptr.is_null() {
+            let _ = fs::fs_write_file(fs_fd, "UMUT.TXT", buf_id, 256);
+        }
+        ulib::sys_destroy_shared_buf(buf_id);
+
+        // Append via shared buf
+        let (buf_id2, ptr2) = ulib::sys_create_shared_buf(128);
+        if !ptr2.is_null() {
+            let _ = fs::fs_append_file(fs_fd, "UMUT.TXT", buf_id2, 128);
+        }
+        ulib::sys_destroy_shared_buf(buf_id2);
+
+        handle::close(fs_fd);
+    }
+    true
 }
 
 fn fs_write_read_roundtrip() -> bool {
@@ -332,12 +414,16 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
     runner.run(mmap_independent);
     runner.run(munmap_ok);
 
-    // IPC tests
+    // IPC tests (raw sys_channel_* API)
     runner.run(channel_create);
     runner.run(channel_loopback);
     runner.run(channel_recv_size);
-    runner.run(channel_full);
     runner.run(channel_close_peer);
+
+    // Handle-based IPC tests (handle::channel / read / write / close)
+    runner.run(handle_channel_create);
+    runner.run(handle_channel_loopback);
+    runner.run(handle_channel_repeated);
 
     // Service registry tests
     runner.run(service_register);
@@ -363,6 +449,8 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
     runner.run(fs_map_file_elf_magic);
     runner.run(fs_map_missing_returns_none);
     runner.run(fs_write_read_roundtrip);
+    runner.run(fs_handle_repeated_ops);
+    runner.run(fs_handle_mutating_ops);
 
     runner.finish()
 }

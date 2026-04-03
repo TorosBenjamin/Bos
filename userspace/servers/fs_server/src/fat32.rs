@@ -752,8 +752,9 @@ impl<D: BlockDev> Fat32<D> {
     fn alloc_cluster(&mut self) -> Option<u32> {
         let fat_lba = self.reserved_sectors as u64;
         for fat_sec in 0..self.fat_size as u64 {
+            let lba = fat_lba + fat_sec;
             let mut sec = [0u8; 512];
-            if !self.disk.read(fat_lba + fat_sec, &mut sec) { return None; }
+            if !self.disk.read(lba, &mut sec) { return None; }
             for i in 0..(512 / 4) {
                 let cluster = (fat_sec * (512 / 4) as u64 + i as u64) as u32;
                 if cluster < 2 { continue; }
@@ -762,7 +763,13 @@ impl<D: BlockDev> Fat32<D> {
                 if entry == 0 {
                     let eoc = 0x0FFF_FFFF_u32.to_le_bytes();
                     sec[off..off+4].copy_from_slice(&eoc);
-                    if !self.disk.write(fat_lba + fat_sec, &sec) { return None; }
+                    if !self.disk.write(lba, &sec) { return None; }
+                    // Keep the FAT cache consistent: if this sector is currently
+                    // cached, update it so subsequent fat_entry() calls see the
+                    // allocated cluster as EOC rather than free (0).
+                    if self.fat_cache_valid && self.fat_cache_lba == lba {
+                        self.fat_cache = sec;
+                    }
                     return Some(cluster);
                 }
             }
@@ -1337,5 +1344,92 @@ mod tests {
         }
         let content = read_via_fatfs(&mut disk, "LOG.TXT");
         assert_eq!(content, b"line1\nline2\nline3\n");
+    }
+
+    // ── Repeated create+write+append (mirrors fs_handle_mutating_ops utest) ────
+
+    /// Single iteration: create → write 256 → append 128.
+    /// Verifies the combined content is correct.
+    #[test]
+    fn create_write_append_single() {
+        let write_data = vec![0xABu8; 256];
+        let append_data = vec![0xCDu8; 128];
+        let mut disk = make_disk();
+        {
+            let mut fs = Fat32::mount(MemDisk(disk.0.clone())).unwrap();
+            assert!(fs.create_empty_file("UMUT.TXT"));
+            assert!(fs.write_file("UMUT.TXT", &write_data));
+            assert!(fs.append_file("UMUT.TXT", &append_data));
+            disk.0 = fs.disk.0;
+        }
+        let content = read_via_fatfs(&mut disk, "UMUT.TXT");
+        assert_eq!(content.len(), 384);
+        assert_eq!(&content[..256], write_data.as_slice());
+        assert_eq!(&content[256..], append_data.as_slice());
+    }
+
+    /// 5 iterations of create → write 256 → append 128 on the same file.
+    /// Each write overwrites, so the final file is always 384 bytes.
+    /// Catches cluster-chain or free-cluster tracking bugs that appear after the
+    /// first overwrite (when old clusters must be freed before new ones are allocated).
+    #[test]
+    fn create_write_append_repeated_5() {
+        let write_data = vec![0xABu8; 256];
+        let append_data = vec![0xCDu8; 128];
+        let mut disk = make_disk();
+        {
+            let mut fs = Fat32::mount(MemDisk(disk.0.clone())).unwrap();
+            for i in 0..5usize {
+                assert!(fs.create_empty_file("UMUT.TXT"), "create failed at {i}");
+                assert!(fs.write_file("UMUT.TXT", &write_data), "write failed at {i}");
+                assert!(fs.append_file("UMUT.TXT", &append_data), "append failed at {i}");
+            }
+            disk.0 = fs.disk.0;
+        }
+        let content = read_via_fatfs(&mut disk, "UMUT.TXT");
+        assert_eq!(content.len(), 384, "wrong final size");
+        assert_eq!(&content[..256], write_data.as_slice());
+        assert_eq!(&content[256..], append_data.as_slice());
+    }
+
+    /// 30 iterations — mirrors the exact count in fs_handle_mutating_ops.
+    /// If this hangs, the bug is in the FAT32 driver (e.g. alloc_cluster infinite
+    /// loop because freed clusters are never returned to the free list).
+    /// If this passes quickly, the bug is in the IPC / shared-buffer layer.
+    #[test]
+    fn create_write_append_repeated_30() {
+        let write_data = vec![0xABu8; 256];
+        let append_data = vec![0xCDu8; 128];
+        let mut disk = make_disk();
+        {
+            let mut fs = Fat32::mount(MemDisk(disk.0.clone())).unwrap();
+            for i in 0..30usize {
+                assert!(fs.create_empty_file("UMUT.TXT"), "create failed at {i}");
+                assert!(fs.write_file("UMUT.TXT", &write_data), "write failed at {i}");
+                assert!(fs.append_file("UMUT.TXT", &append_data), "append failed at {i}");
+            }
+            disk.0 = fs.disk.0;
+        }
+        let content = read_via_fatfs(&mut disk, "UMUT.TXT");
+        assert_eq!(content.len(), 384, "wrong final size");
+        assert_eq!(&content[..256], write_data.as_slice());
+        assert_eq!(&content[256..], append_data.as_slice());
+    }
+
+    /// Write-only repeated on the same file — isolates write_file's cluster
+    /// free/alloc cycle without the append complication.
+    #[test]
+    fn write_same_file_repeated_30() {
+        let write_data = vec![0x55u8; 256];
+        let mut disk = make_disk();
+        {
+            let mut fs = Fat32::mount(MemDisk(disk.0.clone())).unwrap();
+            for i in 0..30usize {
+                assert!(fs.write_file("REPEAT.TXT", &write_data), "write failed at {i}");
+            }
+            disk.0 = fs.disk.0;
+        }
+        let content = read_via_fatfs(&mut disk, "REPEAT.TXT");
+        assert_eq!(content, write_data);
     }
 }
