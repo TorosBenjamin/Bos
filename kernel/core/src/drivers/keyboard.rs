@@ -124,11 +124,32 @@ pub fn handle_scancode(scancode: u8) {
     // Extended keys: modifiers first, then arrow keys
     if is_extended {
         // Right Alt / AltGr
-        if code == 0x38 { *ALT_PRESSED.lock() = pressed; return; }
+        if code == 0x38 {
+            *ALT_PRESSED.lock() = pressed;
+            let mut ev = KeyEvent::char('\0');
+            ev.modifiers = current_modifiers();
+            ev.pressed = pressed;
+            push_event(ev);
+            return;
+        }
         // Right Ctrl
-        if code == 0x1D { *CTRL_PRESSED.lock() = pressed; return; }
+        if code == 0x1D {
+            *CTRL_PRESSED.lock() = pressed;
+            let mut ev = KeyEvent::char('\0');
+            ev.modifiers = current_modifiers();
+            ev.pressed = pressed;
+            push_event(ev);
+            return;
+        }
         // Left Super (0x5B) / Right Super (0x5C)
-        if code == 0x5B || code == 0x5C { *SUPER_PRESSED.lock() = pressed; return; }
+        if code == 0x5B || code == 0x5C {
+            *SUPER_PRESSED.lock() = pressed;
+            let mut ev = KeyEvent::char('\0');
+            ev.modifiers = current_modifiers();
+            ev.pressed = pressed;
+            push_event(ev);
+            return;
+        }
 
         let mods = current_modifiers();
         let event = match code {
@@ -155,18 +176,30 @@ pub fn handle_scancode(scancode: u8) {
     // Left Shift / Right Shift
     if code == 0x2A || code == 0x36 {
         *SHIFT_PRESSED.lock() = pressed;
+        let mut ev = KeyEvent::char('\0');
+        ev.modifiers = current_modifiers();
+        ev.pressed = pressed;
+        push_event(ev);
         return;
     }
 
     // Left Alt
     if code == 0x38 {
         *ALT_PRESSED.lock() = pressed;
+        let mut ev = KeyEvent::char('\0');
+        ev.modifiers = current_modifiers();
+        ev.pressed = pressed;
+        push_event(ev);
         return;
     }
 
     // Left Ctrl
     if code == 0x1D {
         *CTRL_PRESSED.lock() = pressed;
+        let mut ev = KeyEvent::char('\0');
+        ev.modifiers = current_modifiers();
+        ev.pressed = pressed;
+        push_event(ev);
         return;
     }
 

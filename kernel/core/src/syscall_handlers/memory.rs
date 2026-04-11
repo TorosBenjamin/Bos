@@ -75,6 +75,20 @@ pub fn sys_munmap(addr: u64, size: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
     let mut inner = task.inner.lock();
 
     let total_size = n_pages * Size4KiB::SIZE;
+
+    // Record which pages must NOT have their frames freed by us (SharedBuf frames are
+    // owned by the shared buffer registry and freed by sys_destroy_shared_buf).
+    // Must be done before free_user_vma removes the VMA entries.
+    let owned_frames: alloc::vec::Vec<bool> = (0..n_pages)
+        .map(|i| {
+            let page_addr = addr + i * Size4KiB::SIZE;
+            !matches!(
+                user_vaddr::lookup_vma(&inner.user_vmas, page_addr),
+                Some(e) if e.backing == VmaBacking::SharedBuf
+            )
+        })
+        .collect();
+
     if !user_vaddr::free_user_vma(&mut inner.user_vmas, addr, total_size) {
         return !0u64;
     }
@@ -94,7 +108,9 @@ pub fn sys_munmap(addr: u64, size: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
 
         if let Ok((frame, _, flush)) = mapper.unmap(page) {
             flush.flush();
-            let _ = physical_memory.free_frame(frame, MemoryType::UsedByUserMode);
+            if owned_frames[i as usize] {
+                let _ = physical_memory.free_frame(frame, MemoryType::UsedByUserMode);
+            }
         }
     }
 

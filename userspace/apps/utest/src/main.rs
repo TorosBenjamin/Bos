@@ -256,6 +256,145 @@ fn fs_map_missing_returns_none() -> bool {
     fs::fs_map_file(ep, "NOSUCHFILE.BIN").is_none()
 }
 
+/// Verify DOOM1.WAD is fully readable and the lump directory is intact.
+/// Logs DBG[0xD0..0xD5] for post-mortem inspection:
+///   0xD0 = file_size, 0xD1 = numlumps, 0xD2 = infotableofs,
+///   0xD3 = dir_end (infotableofs + numlumps*16),
+///   0xD4 = first lump name (8 bytes), 0xD5 = last lump name (8 bytes)
+fn fs_doom_wad_valid() -> bool {
+    let ep = FS_FD.load(Ordering::Relaxed);
+    let (buf_id, file_size) = match fs::fs_map_file(ep, "DOOM1.WAD") {
+        Some(v) => v,
+        None => return false,
+    };
+    ulib::sys_debug_log(file_size, 0xD0);
+
+    if file_size < 12 {
+        ulib::sys_destroy_shared_buf(buf_id);
+        return false;
+    }
+
+    let ptr = ulib::sys_map_shared_buf(buf_id);
+    if ptr.is_null() {
+        ulib::sys_destroy_shared_buf(buf_id);
+        return false;
+    }
+
+    let ok = unsafe {
+        // Verify IWAD magic
+        let magic_ok = ptr.read() == b'I'
+            && ptr.add(1).read() == b'W'
+            && ptr.add(2).read() == b'A'
+            && ptr.add(3).read() == b'D';
+
+        let numlumps = u32::from_le_bytes([
+            ptr.add(4).read(), ptr.add(5).read(),
+            ptr.add(6).read(), ptr.add(7).read(),
+        ]);
+        let infotableofs = u32::from_le_bytes([
+            ptr.add(8).read(), ptr.add(9).read(),
+            ptr.add(10).read(), ptr.add(11).read(),
+        ]);
+        ulib::sys_debug_log(numlumps as u64, 0xD1);
+        ulib::sys_debug_log(infotableofs as u64, 0xD2);
+
+        let dir_size = numlumps as u64 * 16;
+        let dir_end  = infotableofs as u64 + dir_size;
+        ulib::sys_debug_log(dir_end, 0xD3);
+
+        // Read first lump name (bytes 8..16 of first directory entry)
+        let first_name_off = infotableofs as usize + 8; // filepos(4) + size(4) + name(8)
+        let last_name_off  = infotableofs as usize + (numlumps as usize - 1) * 16 + 8;
+
+        let mut first_name = 0u64;
+        let mut last_name  = 0u64;
+        if dir_end <= file_size && numlumps > 0 {
+            for i in 0..8usize {
+                first_name |= (ptr.add(first_name_off + i).read() as u64) << (i * 8);
+                last_name  |= (ptr.add(last_name_off  + i).read() as u64) << (i * 8);
+            }
+        }
+        ulib::sys_debug_log(first_name, 0xD4);
+        ulib::sys_debug_log(last_name,  0xD5);
+
+        magic_ok && numlumps > 0 && dir_end <= file_size
+    };
+
+    ulib::sys_munmap(ptr, file_size);
+    ulib::sys_destroy_shared_buf(buf_id);
+    ok
+}
+
+/// Search the DOOM1.WAD lump directory for "STBAR".
+/// Logs DBG[0xD6] = lump index of STBAR (0xFFFF if not found).
+/// Also logs DBG[0xD7] = name of lump at index 900 for orientation.
+fn fs_doom_wad_has_stbar() -> bool {
+    let ep = FS_FD.load(Ordering::Relaxed);
+    let (buf_id, file_size) = match fs::fs_map_file(ep, "DOOM1.WAD") {
+        Some(v) => v,
+        None => return false,
+    };
+    let ptr = ulib::sys_map_shared_buf(buf_id);
+    if ptr.is_null() {
+        ulib::sys_destroy_shared_buf(buf_id);
+        return false;
+    }
+
+    let found = unsafe {
+        if file_size < 12 {
+            ulib::sys_munmap(ptr, file_size);
+            ulib::sys_destroy_shared_buf(buf_id);
+            return false;
+        }
+        let numlumps = u32::from_le_bytes([
+            ptr.add(4).read(), ptr.add(5).read(),
+            ptr.add(6).read(), ptr.add(7).read(),
+        ]);
+        let infotableofs = u32::from_le_bytes([
+            ptr.add(8).read(), ptr.add(9).read(),
+            ptr.add(10).read(), ptr.add(11).read(),
+        ]);
+
+        let mut stbar_idx: u32 = 0xFFFF;
+        for i in 0..numlumps as usize {
+            let entry_off = infotableofs as usize + i * 16 + 8; // skip filepos+size
+            if entry_off + 8 > file_size as usize { break; }
+            let mut name = [0u8; 8];
+            for j in 0..8usize { name[j] = ptr.add(entry_off + j).read(); }
+            // Case-insensitive compare against "STBAR"
+            let matches = name[0].to_ascii_uppercase() == b'S'
+                && name[1].to_ascii_uppercase() == b'T'
+                && name[2].to_ascii_uppercase() == b'B'
+                && name[3].to_ascii_uppercase() == b'A'
+                && name[4].to_ascii_uppercase() == b'R'
+                && (name[5] == 0 || name[5].to_ascii_uppercase() == b' ');
+            if matches {
+                stbar_idx = i as u32;
+                break;
+            }
+        }
+        ulib::sys_debug_log(stbar_idx as u64, 0xD6); // 0xD6 = STBAR lump index (0xFFFF = not found)
+
+        // Log name of lump at index 900 for orientation
+        if numlumps > 900 {
+            let entry_off = infotableofs as usize + 900 * 16 + 8;
+            if entry_off + 8 <= file_size as usize {
+                let mut name900: u64 = 0;
+                for j in 0..8usize {
+                    name900 |= (ptr.add(entry_off + j).read() as u64) << (j * 8);
+                }
+                ulib::sys_debug_log(name900, 0xD7); // 0xD7 = name of lump[900]
+            }
+        }
+
+        stbar_idx != 0xFFFF
+    };
+
+    ulib::sys_munmap(ptr, file_size);
+    ulib::sys_destroy_shared_buf(buf_id);
+    found
+}
+
 /// Mirrors stress_test::do_fs_op: fs_lookup() + one FS request + close(fs_fd),
 /// repeated 60 times (exceeds the known 40-op failure point).
 fn fs_handle_repeated_ops() -> bool {
@@ -451,6 +590,8 @@ unsafe extern "sysv64" fn entry_point(_arg: u64) -> ! {
     runner.run(fs_write_read_roundtrip);
     runner.run(fs_handle_repeated_ops);
     runner.run(fs_handle_mutating_ops);
+    runner.run(fs_doom_wad_valid);
+    runner.run(fs_doom_wad_has_stbar);
 
     runner.finish()
 }

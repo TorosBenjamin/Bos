@@ -16,11 +16,14 @@ use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame};
 /// Whether a VMA's backing frames are pre-installed or filled on demand.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VmaBacking {
-    /// Frames were installed at region creation (ELF segments, shared bufs).
+    /// Frames were installed at region creation (ELF segments).
     /// A not-present fault inside this region is always a bug — kill the task.
     EagerlyMapped,
     /// Zero-fill on first access (anonymous mmap, user stack).
     Anonymous,
+    /// Frames are owned by a shared buffer in `SHARED_BUF_REGISTRY`.
+    /// `sys_munmap` must NOT free these frames — `sys_destroy_shared_buf` does it.
+    SharedBuf,
 }
 
 /// Metadata stored per virtual-memory region in the VMA map.

@@ -113,23 +113,22 @@ impl bos_egui::App for DoomApp {
                 FILE_SLOTS[2].active = true;
 
                 // argv: ["doom", "-iwad", "DOOM1.WAD"]
+                // MUST be static — doomgeneric_Create stores myargv = argv, and
+                // M_CheckParm reads myargv long after this frame returns.
                 static ARG0: &[u8] = b"doom\0";
                 static ARG1: &[u8] = b"-iwad\0";
                 static ARG2: &[u8] = b"DOOM1.WAD\0";
-                let mut argv: [*mut u8; 4] = [
-                    ARG0.as_ptr() as *mut u8,
-                    ARG1.as_ptr() as *mut u8,
-                    ARG2.as_ptr() as *mut u8,
-                    core::ptr::null_mut(),
-                ];
+                static mut ARGV: [*mut u8; 4] = [core::ptr::null_mut(); 4];
+                ARGV[0] = ARG0.as_ptr() as *mut u8;
+                ARGV[1] = ARG1.as_ptr() as *mut u8;
+                ARGV[2] = ARG2.as_ptr() as *mut u8;
+                ARGV[3] = core::ptr::null_mut();
                 ulib::sys_debug_log(0, 0x0003); // 0x0003 = about to call doomgeneric_Create
-                doomgeneric_Create(3, argv.as_mut_ptr());
+                doomgeneric_Create(3, ARGV.as_mut_ptr());
                 ulib::sys_debug_log(0, 0x0004); // 0x0004 = doomgeneric_Create returned (we should never see this if it crashes)
             }
         } else {
-            ulib::sys_debug_log(0, 0x5A); // 0x5A = doomgeneric_Tick() entry
             unsafe { doomgeneric_Tick(); }
-            ulib::sys_debug_log(0, 0x5B); // 0x5B = doomgeneric_Tick() returned
         }
 
         // Blit DG_ScreenBuffer to the canvas, scaled to fill the window.
@@ -281,6 +280,13 @@ fn process_bos_key(key: kernel_api_types::KeyEvent) {
 
 // ── Debug helper for C (I_Error messages) ────────────────────────────────────
 
+/// Generic value logger callable from C. tag must fit in u8.
+/// Usage in C: extern void __doom_log(unsigned long long val, unsigned long long tag);
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __doom_log(val: u64, tag: u64) {
+    ulib::sys_debug_log(val, tag);
+}
+
 /// Called from bos_libc.c's vfprintf to emit error messages to the debug log.
 /// Logs up to 4 consecutive 8-byte chunks so the full message is visible.
 #[unsafe(no_mangle)]
@@ -304,14 +310,13 @@ extern "C" fn DG_Init() {
 
 #[unsafe(no_mangle)]
 extern "C" fn DG_DrawFrame() {
-    ulib::sys_debug_log(0, 0x20); // 0x20 = DG_DrawFrame called (frame rendered!)
+
     // DG_ScreenBuffer already contains the rendered frame; nothing to do here.
     // The Rust update() reads it directly after doomgeneric_Tick() returns.
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn DG_SleepMs(ms: u32) {
-    ulib::sys_debug_log(ms as u64, 0x30); // 0x30 = DG_SleepMs called, value=ms
     ulib::sys_sleep_ms(ms as u64);
 }
 

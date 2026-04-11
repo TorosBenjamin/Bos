@@ -120,7 +120,7 @@ fn main() {
             qemu.arg("-display").arg("none");
         }
     } else {
-        qemu.arg("-display").arg("gtk");
+        qemu.arg("-display").arg("gtk,grab-on-hover=on");
     }
     qemu.arg("-cdrom").arg(env!("ISO"));
     qemu.arg("-monitor").arg("none"); // Disable monitor on stdio to avoid conflict with serial mon:stdio

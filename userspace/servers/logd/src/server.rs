@@ -204,7 +204,7 @@ pub fn run(recv_fd: u32) -> ! {
         if fs_fd.is_none() {
             let ep = ulib::sys_lookup_service(b"fatfs");
             if ep != SVC_ERR_NOT_FOUND {
-                fs_fd = ulib::handle::handle_from_channel(ep, 0); // 0 = send (to fatfs)
+                fs_fd = ulib::handle::handle_from_channel(ep, 1); // 1 = send (to fatfs)
             }
         }
 
@@ -253,6 +253,7 @@ fn handle_write(msg: &[u8], ring: &mut RingBuffer, fs_fd: Option<u32>) {
     if rate_check(&entry, ring) {
         ring.push(entry);
         if let Some(fd) = fs_fd {
+            ensure_logs_dir(fd);
             append_entry_to_disk(fd, &entry);
         }
     }
@@ -313,7 +314,7 @@ fn send_response<T: Sized>(reply_ep: u64, response: &T) {
 
 /// Create the `logs` directory. Ignores failure (directory may already exist).
 fn ensure_logs_dir(fs_fd: u32) {
-    let _ = ulib::fs::fs_mkdir(fs_fd, "logs");
+    let _ = ulib::fs::fs_mkdir(fs_fd, "/logs");
 }
 
 /// Append one formatted entry to `logs/<source>.log`.
@@ -335,17 +336,17 @@ fn append_entry_to_disk(fs_fd: u32, entry: &LogEntry) {
     if off > 0 {
         // Build path: logs/<source>.log  (max 6 + 24 + 4 = 34 bytes)
         let mut path = [0u8; 40];
-        path[..5].copy_from_slice(b"logs/");
+        path[..6].copy_from_slice(b"/logs/");
         let slen = (entry.source_len as usize).min(24);
         let name_len = if slen > 0 {
-            path[5..5 + slen].copy_from_slice(&entry.source[..slen]);
+            path[6..6 + slen].copy_from_slice(&entry.source[..slen]);
             slen
         } else {
-            path[5..12].copy_from_slice(b"unknown");
+            path[6..13].copy_from_slice(b"unknown");
             7
         };
-        path[5 + name_len..5 + name_len + 4].copy_from_slice(b".log");
-        let path_len = 5 + name_len + 4;
+        path[6 + name_len..6 + name_len + 4].copy_from_slice(b".log");
+        let path_len = 6 + name_len + 4;
         if let Ok(path_str) = core::str::from_utf8(&path[..path_len]) {
             ulib::fs::fs_append_file(fs_fd, path_str, buf_id, off as u64);
         }

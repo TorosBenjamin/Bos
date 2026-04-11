@@ -81,10 +81,14 @@ fn handle_read(driver: &IdeDriver, msg: &[u8]) {
 
         let buf = unsafe { core::slice::from_raw_parts_mut(ptr, byte_count as usize) };
         if !driver.read_sectors(lba, count, buf) {
+            ulib::sys_munmap(ptr, byte_count);
             sys_destroy_shared_buf(buf_id);
             send_read_error(reply_ep);
             return;
         }
+
+        // Unmap our view — physical frames stay alive in the registry for the client.
+        ulib::sys_munmap(ptr, byte_count);
 
         // Response: [1:type][1:result][8:shared_buf_id LE][4:byte_count LE] = 14 bytes
         let mut resp = [0u8; 14];

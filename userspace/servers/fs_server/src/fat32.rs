@@ -681,6 +681,7 @@ impl<D: BlockDev> Fat32<D> {
         let mut sec = [0u8; 512];
         if !self.disk.read(entry_lba, &mut sec) { return false; }
         let de = unsafe { &mut *(sec.as_mut_ptr().add(entry_idx * 32) as *mut RawDirEntry) };
+        let was_end = de.is_end();
         *de = RawDirEntry {
             name: name8, ext: ext3, attr: 0x20,
             _nt: 0, _crt_tenths: 0, _crt_time: 0, _crt_date: 0, _acc_date: 0,
@@ -689,6 +690,13 @@ impl<D: BlockDev> Fat32<D> {
             cluster_lo: (first_cluster as u16).to_le(),
             size: (data.len() as u32).to_le(),
         };
+
+        // If we filled an "end" slot, mark the next slot as "end" to keep the chain valid.
+        if was_end && entry_idx + 1 < epe {
+            let next_de = unsafe { &mut *(sec.as_mut_ptr().add((entry_idx + 1) * 32) as *mut RawDirEntry) };
+            next_de.name[0] = 0x00;
+        }
+
         self.disk.write(entry_lba, &sec)
     }
 
@@ -706,6 +714,7 @@ impl<D: BlockDev> Fat32<D> {
                     let off = i * 32;
                     let de = unsafe { &*(sec.as_ptr().add(off) as *const RawDirEntry) };
                     if de.is_free() {
+                        let was_end = de.is_end();
                         let new_de = unsafe { &mut *(sec.as_mut_ptr().add(off) as *mut RawDirEntry) };
                         *new_de = RawDirEntry {
                             name: name8, ext: ext3, attr,
@@ -715,6 +724,13 @@ impl<D: BlockDev> Fat32<D> {
                             cluster_lo: (first_cluster as u16).to_le(),
                             size: size.to_le(),
                         };
+
+                        // If we filled an "end" slot, mark the next slot as "end" to keep the chain valid.
+                        if was_end && i + 1 < epe {
+                            let next_de = unsafe { &mut *(sec.as_mut_ptr().add((i + 1) * 32) as *mut RawDirEntry) };
+                            next_de.name[0] = 0x00;
+                        }
+
                         return self.disk.write(lba + s as u64, &sec);
                     }
                 }
@@ -725,6 +741,7 @@ impl<D: BlockDev> Fat32<D> {
     }
 
     fn find_in_dir(&mut self, start_cluster: u32, name: &str) -> Option<Entry> {
+        let (q_name8, q_ext3) = split_83(name);
         let epe = (self.bytes_per_sector / 32) as usize;
         let mut cluster = start_cluster;
         while !Self::is_eoc(cluster) && cluster >= 2 {
@@ -732,13 +749,13 @@ impl<D: BlockDev> Fat32<D> {
             for s in 0..self.sectors_per_clus {
                 let mut sec = [0u8; 512];
                 if !self.disk.read(lba + s as u64, &mut sec) { return None; }
-                let raw = unsafe { core::slice::from_raw_parts(sec.as_ptr() as *const RawDirEntry, epe) };
-                for de in raw {
+                for i in 0..epe {
+                    let off = i * 32;
+                    let de = unsafe { &*(sec.as_ptr().add(off) as *const RawDirEntry) };
                     if de.is_end() { return None; }
                     if de.is_free() || de.is_lfn() || de.is_volume_id() { continue; }
-                    let (sname, slen) = de.short_name();
-                    let s = core::str::from_utf8(&sname[..slen]).unwrap_or("");
-                    if names_match(s, name) {
+                    if de.name == q_name8 && de.ext == q_ext3 {
+                        let (sname, slen) = de.short_name();
                         return Some(Entry { cluster: de.cluster(), size: de.size(),
                                             is_dir: de.is_dir(), name: sname, name_len: slen });
                     }

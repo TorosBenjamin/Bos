@@ -116,6 +116,11 @@ pub fn tests() -> &'static [TestEntry] {
         TestEntry { group: TestGroup::Memory, test: &memory::mmap::test_user_vaddr_no_overlap },
         TestEntry { group: TestGroup::Memory, test: &memory::mmap::test_mmap_flags_in_api },
 
+        // Memory — shared buffer lifecycle (regression for double-free bug)
+        TestEntry { group: TestGroup::Memory, test: &memory::shared_buf::test_shared_buf_create_and_destroy },
+        TestEntry { group: TestGroup::Memory, test: &memory::shared_buf::test_shared_buf_munmap_does_not_double_free },
+        TestEntry { group: TestGroup::Memory, test: &memory::shared_buf::test_shared_buf_lifecycle_stress },
+
         // Memory — physical frames
         TestEntry { group: TestGroup::Memory, test: &memory::physical::alloc_one_frame },
         TestEntry { group: TestGroup::Memory, test: &memory::physical::free_and_reuse_kernel_frame },

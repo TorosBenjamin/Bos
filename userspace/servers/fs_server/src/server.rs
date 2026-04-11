@@ -336,10 +336,15 @@ fn handle_map_file(fs: &mut Fat32<IpcDisk>, msg: &[u8]) {
 
     let actual = unsafe { fs.read_file(entry.cluster, entry.size, ptr) };
     if actual < entry.size as usize {
+        ulib::sys_munmap(ptr, file_size.max(1));
         ulib::sys_destroy_shared_buf(buf_id);
         send_response(reply_ep, &err_resp(FsResult::IoError));
         return;
     }
+
+    // Unmap our own view before handing off the buf_id.  The physical frames
+    // stay alive in the registry until the client calls sys_destroy_shared_buf.
+    ulib::sys_munmap(ptr, file_size.max(1));
 
     send_response(reply_ep, &MapFileResponse {
         result: FsResult::Ok as u64,

@@ -35,7 +35,7 @@ pub fn create_shared_buf(task: &Task, n_pages: u64) -> Option<(SharedBufId, u64)
         | PageTableFlags::WRITABLE
         | PageTableFlags::USER_ACCESSIBLE
         | PageTableFlags::NO_EXECUTE;
-    let vma_entry = VmaEntry { flags: page_flags, backing: VmaBacking::EagerlyMapped };
+    let vma_entry = VmaEntry { flags: page_flags, backing: VmaBacking::SharedBuf };
     let start_vaddr = user_vaddr::allocate_user_vma(&mut inner.user_vmas, n_pages, vma_entry)?;
 
     let hhdm = hhdm_offset();
@@ -119,7 +119,7 @@ pub fn map_shared_buf(id: SharedBufId, task: &Task) -> Option<u64> {
         | PageTableFlags::WRITABLE
         | PageTableFlags::USER_ACCESSIBLE
         | PageTableFlags::NO_EXECUTE;
-    let vma_entry = VmaEntry { flags: page_flags, backing: VmaBacking::EagerlyMapped };
+    let vma_entry = VmaEntry { flags: page_flags, backing: VmaBacking::SharedBuf };
     let start_vaddr = user_vaddr::allocate_user_vma(&mut inner.user_vmas, n_pages, vma_entry)?;
 
     let hhdm = hhdm_offset();
