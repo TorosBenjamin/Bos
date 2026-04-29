@@ -87,6 +87,20 @@ unsafe extern "sysv64" fn entry_point() -> ! {
         }
     };
 
+    // Load and spawn sound_server (registers "audio" service) with Normal priority
+    let snd_id = {
+        let snd_size = ulib::sys_get_module("sound_server", core::ptr::null_mut(), 0);
+        if snd_size > 0 {
+            let snd_buf = ulib::sys_mmap(snd_size, kernel_api_types::MMAP_WRITE);
+            let _ = ulib::sys_get_module("sound_server", snd_buf, snd_size);
+            let snd_elf = unsafe { core::slice::from_raw_parts(snd_buf, snd_size as usize) };
+            let id = ulib::sys_spawn_named(snd_elf, 0, b"sound_server");
+            Some((id, snd_buf, snd_size))
+        } else {
+            None
+        }
+    };
+
     // Load and spawn display_server with High priority
     let ds_size = ulib::sys_get_module("display_server", core::ptr::null_mut(), 0);
     let ds_buf = ulib::sys_mmap(ds_size, kernel_api_types::MMAP_WRITE);
@@ -125,6 +139,11 @@ unsafe extern "sysv64" fn entry_point() -> ! {
     if let Some((id, buf, size)) = e1000_id {
         ulib::sys_wait_task_ready(id);
         ulib::log::write(ulib::log::LogLevel::Info, "init", "e1000: ready");
+        ulib::sys_munmap(buf, size);
+    }
+    if let Some((id, buf, size)) = snd_id {
+        ulib::sys_wait_task_ready(id);
+        ulib::log::write(ulib::log::LogLevel::Info, "init", "sound: ready");
         ulib::sys_munmap(buf, size);
     }
     ulib::sys_wait_task_ready(ds_id);

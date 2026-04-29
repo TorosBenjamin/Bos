@@ -39,6 +39,7 @@
 
 #![no_std]
 
+pub mod audio;
 pub mod bench_harness;
 pub mod handle;
 pub mod stdio;

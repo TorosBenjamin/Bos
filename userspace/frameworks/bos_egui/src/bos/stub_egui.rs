@@ -43,6 +43,48 @@ pub const CODE:     Rgb888 = Rgb888::new(0xa6, 0xda, 0x95); // green
 pub const EMPHASIS: Rgb888 = Rgb888::new(0xb7, 0xbf, 0xf8); // lavender
 pub const DIMMED:   Rgb888 = Rgb888::new(0xa5, 0xad, 0xcb); // subtext
 
+// ── Color32 ───────────────────────────────────────────────────────────────────
+
+/// egui-compatible 32-bit RGBA colour.  Alpha is stored but ignored in rendering
+/// (the stub always blits fully opaque).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Color32(pub u8, pub u8, pub u8);
+
+impl Color32 {
+    pub const fn from_rgb(r: u8, g: u8, b: u8) -> Self { Color32(r, g, b) }
+    pub const fn from_rgba_unmultiplied(r: u8, g: u8, b: u8, _a: u8) -> Self { Color32(r, g, b) }
+    pub const WHITE: Self = Color32(255, 255, 255);
+    pub const BLACK: Self = Color32(0, 0, 0);
+    pub const RED:   Self = Color32(255, 0, 0);
+    pub const GREEN: Self = Color32(0, 255, 0);
+    pub const BLUE:  Self = Color32(0, 0, 255);
+}
+
+impl From<Color32> for Rgb888 {
+    fn from(c: Color32) -> Rgb888 { Rgb888::new(c.0, c.1, c.2) }
+}
+
+// ── Slider ────────────────────────────────────────────────────────────────────
+
+/// A horizontal slider widget.  Build with `Slider::new`, optionally chain
+/// `.text()` and `.logarithmic()`, then pass to `Ui::add()`.
+pub struct Slider<'a> {
+    pub value: &'a mut f32,
+    pub lo: f32,
+    pub hi: f32,
+    pub label: Option<&'a str>,
+    pub _log: bool,
+}
+
+impl<'a> Slider<'a> {
+    pub fn new(value: &'a mut f32, range: core::ops::RangeInclusive<f32>) -> Self {
+        let (lo, hi) = range.into_inner();
+        Slider { value, lo, hi, label: None, _log: false }
+    }
+    pub fn text(mut self, label: &'a str) -> Self { self.label = Some(label); self }
+    pub fn logarithmic(mut self, _v: bool) -> Self { self._log = _v; self }
+}
+
 // ── Context ───────────────────────────────────────────────────────────────────
 
 struct Inner {
@@ -190,7 +232,7 @@ impl<'a> Ui<'a> {
         let mut buf = self.ctx.pixels_mut(&mut inner);
         draw_text(&mut buf, &s, x, y, HEADING, &FONT_8X13_BOLD);
         inner.draw_y += 20;
-        Response { clicked: false }
+        Response { clicked: false, changed: false }
     }
 
     pub fn label(&mut self, text: impl ToString) -> Response {
@@ -201,7 +243,7 @@ impl<'a> Ui<'a> {
         let mut buf = self.ctx.pixels_mut(&mut inner);
         draw_text(&mut buf, &s, x, y, FG, &FONT_8X13);
         inner.draw_y += 17;
-        Response { clicked: false }
+        Response { clicked: false, changed: false }
     }
 
     pub fn separator(&mut self) -> Response {
@@ -217,7 +259,7 @@ impl<'a> Ui<'a> {
         .into_styled(PrimitiveStyle::with_stroke(SEP, 1))
         .draw(&mut buf);
         inner.draw_y += 14;
-        Response { clicked: false }
+        Response { clicked: false, changed: false }
     }
 
     pub fn button(&mut self, text: impl ToString) -> Response {
@@ -271,7 +313,7 @@ impl<'a> Ui<'a> {
         } else {
             inner.draw_y += btn_h + 8;
         }
-        Response { clicked }
+        Response { clicked, changed: false }
     }
 
     /// Draw a single-line text input with focus and cursor blink support.
@@ -344,7 +386,7 @@ impl<'a> Ui<'a> {
         }
 
         inner.draw_y += box_h + 8;
-        Response { clicked }
+        Response { clicked, changed: false }
     }
 
     pub fn selectable_label(&mut self, selected: bool, text: impl ToString) -> Response {
@@ -387,7 +429,7 @@ impl<'a> Ui<'a> {
         draw_text(&mut buf, &s, bx + 8, by_ + 8, FG, &FONT_8X13);
 
         inner.draw_y += row_h + 2;
-        Response { clicked }
+        Response { clicked, changed: false }
     }
 
     pub fn horizontal<R, F>(&mut self, f: F) -> R
@@ -426,6 +468,141 @@ impl<'a> Ui<'a> {
         };
         // Safety: the pixel buffer lives for the duration of the frame (owned by
         // the Window). The RefMut is released above but the raw pointer remains valid.
+        let buf = PixelBuf {
+            pixels: unsafe { core::slice::from_raw_parts_mut(pixels_ptr, (pw * ph) as usize) },
+            width: pw,
+            height: ph,
+            info,
+        };
+        Canvas { buf, origin_x, origin_y, width, height }
+    }
+
+    /// Render a label in a custom `Color32` colour.
+    pub fn colored_label(&mut self, color: Color32, text: impl ToString) -> Response {
+        let s = text.to_string();
+        let mut inner = self.ctx.inner.borrow_mut();
+        let x = if inner.in_horizontal { inner.draw_x } else { inner.margin };
+        let y = inner.draw_y;
+        let mut buf = self.ctx.pixels_mut(&mut inner);
+        draw_text(&mut buf, &s, x, y, color.into(), &FONT_8X13);
+        let text_w = s.len() as i32 * 8;
+        if inner.in_horizontal {
+            inner.draw_x += text_w + 6;
+            let h = 17i32;
+            if h > inner.horiz_max_h { inner.horiz_max_h = h; }
+        } else {
+            inner.draw_y += 17;
+        }
+        Response { clicked: false, changed: false }
+    }
+
+    /// Like `button` but with tighter padding — suitable for inline rows.
+    pub fn small_button(&mut self, text: impl ToString) -> Response {
+        self.button(text)
+    }
+
+    /// Render a horizontal slider for a value in `range`.
+    ///
+    /// Returns a `Response` with `changed == true` if the user clicked and
+    /// changed the value this frame.
+    ///
+    /// Pass a `Slider` built with the builder API:
+    /// ```ignore
+    /// ui.add(Slider::new(&mut val, 0.0..=1.0).text("Volume"))
+    /// ```
+    pub fn add(&mut self, widget: Slider<'_>) -> Response {
+        let label = widget.label.unwrap_or("");
+        let lo = widget.lo;
+        let hi = widget.hi;
+        let val = *widget.value;
+        let t = if hi > lo { ((val - lo) / (hi - lo)).clamp(0.0, 1.0) } else { 0.0 };
+
+        let mut inner = self.ctx.inner.borrow_mut();
+        let track_h  = 8i32;
+        let widget_h = 28i32;
+        let bx = inner.margin;
+        let by = inner.draw_y;
+        let avail_w = inner.width as i32 - inner.margin * 2;
+
+        // Reserve space for the text label on the right (≈ label.len * 8 + 8 for unit suffix).
+        let label_w = if label.is_empty() { 0 } else { label.len() as i32 * 8 + 16 };
+        let track_w = (avail_w - label_w).max(40);
+        let fill_w  = ((track_w as f32 * t) as i32).max(2);
+        let track_y = by + (widget_h - track_h) / 2;
+
+        // Hit test: click anywhere on the track updates the value.
+        let click_x = if let Some((clx, cly)) = inner.click {
+            let (clx, cly) = (clx as i32, cly as i32);
+            if clx >= bx && clx < bx + track_w && cly >= by && cly < by + widget_h {
+                inner.click = None; // consume
+                Some(clx)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let clicked = click_x.is_some();
+        let mut changed = false;
+        if let Some(clx) = click_x {
+            let new_t = ((clx - bx) as f32 / track_w as f32).clamp(0.0, 1.0);
+            let new_val = lo + new_t * (hi - lo);
+            *widget.value = new_val;
+            changed = true;
+        }
+
+        let mut buf = self.ctx.pixels_mut(&mut inner);
+
+        // Track background
+        let _ = Rectangle::new(
+            embedded_graphics::geometry::Point::new(bx, track_y),
+            embedded_graphics::geometry::Size::new(track_w as u32, track_h as u32),
+        )
+        .into_styled(PrimitiveStyle::with_fill(BTN_BG))
+        .draw(&mut buf);
+
+        // Filled portion
+        let fill_col = Rgb888::new(0x8a, 0xad, 0xf4); // accent blue
+        let _ = Rectangle::new(
+            embedded_graphics::geometry::Point::new(bx, track_y),
+            embedded_graphics::geometry::Size::new(fill_w as u32, track_h as u32),
+        )
+        .into_styled(PrimitiveStyle::with_fill(fill_col))
+        .draw(&mut buf);
+
+        // Thumb
+        let thumb_x = bx + fill_w - 2;
+        let _ = Rectangle::new(
+            embedded_graphics::geometry::Point::new(thumb_x, by + 4),
+            embedded_graphics::geometry::Size::new(4, (widget_h - 8) as u32),
+        )
+        .into_styled(PrimitiveStyle::with_fill(FG))
+        .draw(&mut buf);
+
+        // Label
+        if !label.is_empty() {
+            let lx = bx + track_w + 8;
+            draw_text(&mut buf, label, lx, by + 7, FG, &FONT_8X13);
+        }
+
+        inner.draw_y += widget_h + 4;
+        Response { clicked, changed }
+    }
+
+    /// Claim a fixed-height area as a raw pixel canvas for custom rendering.
+    ///
+    /// Unlike `canvas()`, this does not consume the remaining vertical space —
+    /// widgets can still be placed below it.
+    pub fn fixed_canvas(&mut self, height: i32) -> Canvas<'_> {
+        let (origin_x, origin_y, width, pixels_ptr, pw, ph, info) = {
+            let mut inner = self.ctx.inner.borrow_mut();
+            let origin_x = inner.margin;
+            let origin_y = inner.draw_y;
+            let width = inner.width as i32 - inner.margin * 2;
+            inner.draw_y += height + 8;
+            (origin_x, origin_y, width, inner.pixels, inner.width, inner.height, inner.info)
+        };
         let buf = PixelBuf {
             pixels: unsafe { core::slice::from_raw_parts_mut(pixels_ptr, (pw * ph) as usize) },
             width: pw,
@@ -477,7 +654,7 @@ impl<'a> Ui<'a> {
         inner.draw_y += box_h + 10;
 
         // In a stub, we aren't handling focus/keyboard yet
-        Response { clicked: false }
+        Response { clicked: false, changed: false }
     }
 }
 
@@ -566,10 +743,12 @@ impl<'a> Canvas<'a> {
 
 pub struct Response {
     pub clicked: bool,
+    pub changed: bool,
 }
 
 impl Response {
     pub fn clicked(&self) -> bool { self.clicked }
+    pub fn changed(&self) -> bool { self.changed }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

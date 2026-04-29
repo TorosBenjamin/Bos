@@ -2639,6 +2639,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mixer"
+version = "0.1.0"
+dependencies = [
+ "bos_egui",
+ "kernel_api_types",
+ "ulib",
+]
+
+[[package]]
 name = "moxcms"
 version = "0.7.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3518,8 +3527,10 @@ dependencies = [
  "kernel",
  "launcher",
  "logd",
+ "mixer",
  "net_server",
  "shell",
+ "sound_server",
  "stress_test",
  "tests",
  "user_land",
@@ -3854,6 +3865,14 @@ dependencies = [
  "defmt 0.3.100",
  "heapless 0.8.0",
  "managed",
+]
+
+[[package]]
+name = "sound_server"
+version = "0.1.0"
+dependencies = [
+ "kernel_api_types",
+ "ulib",
 ]
 
 [[package]]

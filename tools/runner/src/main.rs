@@ -150,6 +150,8 @@ fn main() {
 
     qemu.arg("-device").arg("e1000,netdev=net0");
     qemu.arg("-netdev").arg("user,id=net0");
+    qemu.arg("-audiodev").arg("pipewire,id=snd0");
+    qemu.arg("-device").arg("AC97,audiodev=snd0");
 
     // Filter QEMU serial output: strip ANSI escape sequences and blank lines
     // produced by the OVMF UEFI firmware before the kernel starts.

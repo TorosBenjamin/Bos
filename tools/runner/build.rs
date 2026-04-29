@@ -18,6 +18,7 @@ const ISO_BINARIES: &[(&str, &str, &str)] = &[
     ("e1000",          "e1000",          "e1000"),
     ("net_server",     "net_server",     "net_server"),
     ("ide",            "ide",            "ide"),
+    ("sound_server",   "sound_server",   "sound_server"),
 ];
 
 /// Binaries written into the FAT32 disk image for fs_server to load at runtime.
@@ -31,6 +32,7 @@ const FAT32_BINARIES: &[(&str, &str, &str)] = &[
     ("boser",      "boser",           "BOSER.ELF"),
     ("shell",      "shell",           "SHELL.ELF"),
     ("doom",       "doom",            "DOOM.ELF"),
+    ("mixer",      "mixer",           "MIXER.ELF"),
 ];
 
 /// Kernel test feature flags → test suite name passed on the kernel cmdline.
